@@ -199,16 +199,72 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
-  // POST /api/requests/:id/dismiss - Dismiss a request (hide from dashboard, don't touch torrent)
-  router.post("/:id/dismiss", (req: Request, res: Response) => {
+  // POST /api/requests/:id/dismiss - Dismiss + delete torrent + delete files
+  router.post("/:id/dismiss", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const release = db.prepare(
+        "SELECT rc.torrent_hash FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (release?.torrent_hash) {
+        try {
+          await qbittorrent.deleteTorrent(release.torrent_hash, true);
+          console.log(`[Dismiss] Deleted torrent ${release.torrent_hash} with files`);
+        } catch (err: any) {
+          console.error(`[Dismiss] Failed to delete torrent:`, err.message);
+        }
+      }
+
       const updateStmt = db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
       updateStmt.run(id);
-      res.json({ success: true, message: "Request dismissed" });
+      res.json({ success: true, message: "Request dismissed and torrent deleted" });
     } catch (error) {
       console.error("Error dismissing request:", error);
       res.status(500).json({ error: "Failed to dismiss request" });
+    }
+  });
+
+  // POST /api/requests/:id/remove-from-library - Delete hardlinked/copied file from library
+  router.post("/:id/remove-from-library", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (!request.radarr_id) return res.status(400).json({ error: "No Radarr movie ID" });
+
+      const release = db.prepare(
+        "SELECT rc.torrent_hash FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (!release?.torrent_hash) return res.status(400).json({ error: "No torrent tracked" });
+
+      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+
+      let contentPath = torrent.content_path;
+      if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) {
+        contentPath = "/media" + contentPath;
+      }
+
+      const movie = await radarr.getMovie(request.radarr_id);
+      const movieFolder = movie.path || movie.folderPath;
+      if (!movieFolder) return res.status(500).json({ error: "Could not determine movie folder" });
+
+      const destPath = path.join(movieFolder, path.basename(contentPath));
+
+      if (!fs.existsSync(destPath)) {
+        return res.json({ success: true, message: "File not in library", path: destPath });
+      }
+
+      fs.rmSync(destPath, { recursive: false, force: true });
+      console.log(`[RemoveFromLibrary] Deleted ${destPath}`);
+      res.json({ success: true, message: "Removed from library", path: destPath });
+    } catch (error: any) {
+      console.error("Error removing from library:", error);
+      res.status(500).json({ error: `Failed to remove: ${error.message}` });
     }
   });
 

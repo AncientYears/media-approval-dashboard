@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatus, moveToLibrary, dismissRequest } from "../api";
+import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatus, moveToLibrary, dismissRequest, removeFromLibrary } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -268,8 +268,19 @@ export default function RequestDetail() {
   };
 
   const handleDismiss = async () => {
+    if (!confirm("Delete torrent and all files? This cannot be undone.")) return;
     await dismissRequest(Number(id));
-    loadData();
+    navigate("/");
+  };
+
+  const handleRemoveFromLibrary = async () => {
+    if (!confirm("Remove file from library? Torrent will continue seeding.")) return;
+    try {
+      await removeFromLibrary(Number(id));
+      loadTorrentStatus();
+    } catch (err: any) {
+      alert(err?.response?.data?.error || err.message);
+    }
   };
 
   if (loading) return <div className="container"><p>Loading...</p></div>;
@@ -312,17 +323,6 @@ export default function RequestDetail() {
 
   return (
     <div className="container">
-      <div className="detail-topbar">
-        <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
-        <div className="detail-title">
-          <span className="detail-title-text">{request.title}</span>
-          <span className={`status-badge status-badge-sm ${request.status.toLowerCase()}`}>
-            {request.status.replace(/_/g, " ")}
-          </span>
-        </div>
-        <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Search</button>
-      </div>
-
       {hasTorrent && (
         <div className="torrent-panel">
           {approvedRelease && (
@@ -373,7 +373,10 @@ export default function RequestDetail() {
                     )}
                   </div>
                   {torrentStatus.in_library ? (
-                    <span className="badge-in-library">In Library</span>
+                    <div className="torrent-library-actions">
+                      <span className="badge-in-library">In Library</span>
+                      <button className="btn btn-secondary btn-tiny" onClick={handleRemoveFromLibrary}>Remove from Library</button>
+                    </div>
                   ) : moveResult?.source ? (
                     <div className="move-result">
                       <span>Hardlinked:</span>
@@ -388,7 +391,7 @@ export default function RequestDetail() {
                       {moving ? "Moving..." : "Move to Library"}
                     </button>
                   )}
-                  <button className="btn btn-secondary btn-tiny" onClick={handleDismiss}>Dismiss</button>
+                  <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
                 </div>
               )}
             </>
@@ -403,6 +406,17 @@ export default function RequestDetail() {
           <div className="torrent-meta"><span>Dismissed</span></div>
         </div>
       )}
+
+      <div className="detail-topbar">
+        <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
+        <div className="detail-title">
+          <span className="detail-title-text">{request.title}</span>
+          <span className={`status-badge status-badge-sm ${request.status.toLowerCase()}`}>
+            {request.status.replace(/_/g, " ")}
+          </span>
+        </div>
+        <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Search</button>
+      </div>
 
       <div className="release-toolbar">
         <div className="toolbar-filters">

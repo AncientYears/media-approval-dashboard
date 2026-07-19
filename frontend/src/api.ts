@@ -47,6 +47,11 @@ export async function dismissRequest(requestId: number) {
   return response.data;
 }
 
+export async function removeFromLibrary(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/remove-from-library`);
+  return response.data;
+}
+
 export async function testConnections() {
   const response = await api.post("/test-connections");
   return response.data;

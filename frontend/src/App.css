@@ -182,6 +182,16 @@ body {
   background: #475569;
 }
 
+.btn-danger {
+  background: #dc2626;
+  color: white;
+  font-weight: 700;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1142,6 +1152,36 @@ body {
   padding: 4px 10px;
   border-radius: 4px;
   font-weight: 600;
+}
+
+.torrent-library-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-section {
+  margin-bottom: 32px;
+}
+
+.dashboard-section h3 {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.request-card .approved-versions {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.request-card .approved-versions strong {
+  color: var(--primary);
 }
 
 @media (max-width: 768px) {
