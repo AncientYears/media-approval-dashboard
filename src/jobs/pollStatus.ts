@@ -52,8 +52,10 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         const prevState = req.status;
         let newState = prevState;
 
-        if (prevState === "AWAITING_APPROVAL" && torrent) {
-          newState = "DOWNLOADING";
+        if (prevState === "AWAITING_APPROVAL" || prevState === "SEEDING" || prevState === "COMPLETED" || prevState === "DOWNLOADING") {
+          if (torrent) {
+            newState = "DOWNLOADING";
+          }
         }
 
         if (newState !== prevState) {

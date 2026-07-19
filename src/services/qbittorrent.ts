@@ -72,6 +72,7 @@ export class QBittorrentService {
     try {
       await this.client.post(url, data, { headers: this.getHeaders() });
     } catch (error: any) {
+      console.error(`[qBittorrent] POST ${url} failed:`, error?.response?.status, error?.response?.data || error.message);
       if (error?.response?.status === 403) {
         this.sid = null;
         await this.login();

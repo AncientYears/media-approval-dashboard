@@ -65,7 +65,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         ).get(row.id) as any;
 
         const releaseStats = db.prepare(
-          "SELECT COUNT(*) as count, COALESCE(SUM(size_mb), 0) as total_size_mb FROM release_candidates WHERE request_id = ?"
+          "SELECT COUNT(*) as count, COALESCE(SUM(size_mb), 0) as total_size_mb FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
         ).get(row.id) as any;
 
         return {
@@ -182,6 +182,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         save_path: torrent.save_path,
         content_path: contentPath,
         dest_path: destPath,
+        library_path: destPath,
         in_library: inLibrary,
         size: torrent.size,
         num_seeds: torrent.num_seeds,
@@ -527,7 +528,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       await qbittorrent.pauseTorrent(release.torrent_hash);
       res.json({ success: true });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      console.error("[Pause] Error:", error.message || error);
+      res.status(500).json({ error: error.message || "Failed to pause torrent" });
     }
   });
 
@@ -540,7 +542,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       await qbittorrent.resumeTorrent(release.torrent_hash);
       res.json({ success: true });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      console.error("[Resume] Error:", error.message || error);
+      res.status(500).json({ error: error.message || "Failed to resume torrent" });
     }
   });
 
