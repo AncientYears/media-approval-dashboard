@@ -13,6 +13,6 @@
       - ./data:/app/data
       # Mount media folders — adjust paths to match your server
       # Downloads folder (where qBittorrent saves torrents)
-      - /Torrents/Seed:/Torrents/Seed
+      - /media/Torrents/Seed:/Torrents/Seed
       # Media library folder (where Radarr stores movies)
-      - /media/filmy:/media/filmy
+      - /media/Filmy:/media/Filmy

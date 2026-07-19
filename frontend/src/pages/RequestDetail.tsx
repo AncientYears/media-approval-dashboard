@@ -352,6 +352,9 @@ export default function RequestDetail() {
               </div>
               {torrentStatus.progress === 100 && (
                 <div className="torrent-actions">
+                  <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
+                    {torrentStatus.content_path}
+                  </span>
                   {moveResult?.source ? (
                     <div className="move-result">
                       <span>Hardlinked:</span>
@@ -361,15 +364,11 @@ export default function RequestDetail() {
                     </div>
                   ) : moveResult?.error ? (
                     <span className="move-error">{moveResult.error}</span>
-                  ) : (
-                    <>
-                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
-                        {torrentStatus.content_path}
-                      </span>
-                      <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
-                        {moving ? "Moving..." : "Move to Library"}
-                      </button>
-                    </>
+                  ) : null}
+                  {!moveResult?.source && (
+                    <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
+                      {moving ? "Moving..." : "Move to Library"}
+                    </button>
                   )}
                   <button className="btn btn-secondary btn-tiny" onClick={handleDismiss}>Dismiss</button>
                 </div>
