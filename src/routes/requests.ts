@@ -232,13 +232,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         hardlinkDirRecursive(contentPath, path.join(movieFolder, path.basename(contentPath)));
       } else {
         fs.mkdirSync(movieFolder, { recursive: true });
-        fs.linkSync(contentPath, destPath);
+        try {
+          fs.linkSync(contentPath, destPath);
+        } catch (linkErr: any) {
+          if (linkErr.code === "EXDEV") {
+            console.warn(`[MoveToLibrary] Cross-device link, falling back to copy`);
+            fs.copyFileSync(contentPath, destPath);
+          } else {
+            throw linkErr;
+          }
+        }
       }
 
       db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-      console.log(`[MoveToLibrary] Hardlinked ${contentPath} → ${destPath}`);
+      const method = fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied";
+      console.log(`[MoveToLibrary] ${method} ${contentPath} → ${destPath}`);
 
-      res.json({ success: true, message: "Files hardlinked to library", source: contentPath, destination: destPath });
+      res.json({ success: true, message: `Files ${method} to library`, source: contentPath, destination: destPath });
     } catch (error: any) {
       console.error("Error moving to library:", error);
       res.status(500).json({ error: `Failed to move to library: ${error.message}` });
