@@ -1,0 +1,16 @@
+﻿services:
+  media-approval:
+    build: .
+    container_name: media-approval
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      # Mount media folders — adjust paths to match your server
+      # Downloads folder (where qBittorrent saves torrents)
+      - /Torrents/Seed:/Torrents/Seed
+      # Media library folder (where Radarr stores movies)
+      - /media/filmy:/media/filmy

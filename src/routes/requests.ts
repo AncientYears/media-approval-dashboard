@@ -1,0 +1,415 @@
+﻿import { Router, Request, Response } from "express";
+import { Database } from "better-sqlite3";
+import { RadarrService } from "../services/radarr";
+import { QBittorrentService } from "../services/qbittorrent";
+import { RadarrSearchResult } from "../types/index";
+import { computeAppScore } from "../services/scoring";
+import fs from "fs";
+import path from "path";
+
+function parseReleases(rows: any[]) {
+  return rows.map((r: any) => {
+    const cf = JSON.parse(r.radarr_custom_formats || "[]");
+    return {
+      ...r,
+      radarr_custom_formats: cf,
+      positive_attrs: JSON.parse(r.positive_attrs || "[]"),
+      negative_attrs: JSON.parse(r.negative_attrs || "[]"),
+      app_score: r.user_score != null ? r.user_score : computeAppScore(r.radarr_quality, cf, r.size_mb, r.radarr_rank),
+    };
+  });
+}
+
+function hardlinkDirRecursive(srcDir: string, destDir: string) {
+  fs.mkdirSync(destDir, { recursive: true });
+  const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      hardlinkDirRecursive(srcPath, destPath);
+    } else {
+      if (!fs.existsSync(destPath)) {
+        try {
+          fs.linkSync(srcPath, destPath);
+        } catch (err: any) {
+          if (err.code === "EXDEV") {
+            // Cross-device link: fall back to copy
+            fs.copyFileSync(srcPath, destPath);
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+  }
+}
+
+export function createRequestRoutes(db: Database, radarr: RadarrService, qbittorrent: QBittorrentService) {
+  const router = Router();
+
+  // GET /api/requests - List all pending requests
+  router.get("/", (req: Request, res: Response) => {
+    try {
+      const stmt = db.prepare(`
+        SELECT * FROM media_requests 
+        ORDER BY created_at DESC 
+        LIMIT 100
+      `);
+      const rows = stmt.all();
+      
+      const parsedRows = rows.map((row: any) => ({
+        ...row,
+        requested_by: JSON.parse(row.requested_by || "[]"),
+      }));
+      
+      res.json(parsedRows);
+    } catch (error) {
+      console.error("Error fetching requests:", error);
+      res.status(500).json({ error: "Failed to fetch requests" });
+    }
+  });
+
+  // GET /api/requests/:id - Get specific request with releases
+  router.get("/:id", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const stmt = db.prepare("SELECT * FROM media_requests WHERE id = ?");
+      const request = stmt.get(id) as any;
+      
+      if (!request) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+
+      request.requested_by = JSON.parse(request.requested_by || "[]");
+
+      // Get approved release (if any)
+      const approvedRow = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? ORDER BY ah.approved_at DESC LIMIT 1"
+      ).get(id) as any;
+      const approved_release = approvedRow ? parseReleases([approvedRow])[0] : null;
+
+      // Get all releases, excluding the approved one
+      const releaseStmt = db.prepare("SELECT * FROM release_candidates WHERE request_id = ? ORDER BY radarr_rank ASC");
+      const allReleases = parseReleases(releaseStmt.all(id));
+      const releases = approved_release
+        ? allReleases.filter((r: any) => r.id !== approved_release.id)
+        : allReleases;
+
+      res.json({ ...request, releases, approved_release });
+    } catch (error) {
+      console.error("Error fetching request:", error);
+      res.status(500).json({ error: "Failed to fetch request" });
+    }
+  });
+
+  // GET /api/requests/:id/releases - Get releases for a request
+  router.get("/:id/releases", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const releaseStmt = db.prepare("SELECT * FROM release_candidates WHERE request_id = ? ORDER BY radarr_rank ASC");
+      const releases = parseReleases(releaseStmt.all(id));
+      res.json(releases);
+    } catch (error) {
+      console.error("Error fetching releases:", error);
+      res.status(500).json({ error: "Failed to fetch releases" });
+    }
+  });
+
+  // GET /api/requests/:id/torrent-status - Get live torrent status from qBittorrent
+  router.get("/:id/torrent-status", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const release = db.prepare(
+        "SELECT rc.torrent_hash, rc.save_path, rc.title FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (!release || !release.torrent_hash) {
+        return res.json({ found: false });
+      }
+
+      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+      if (!torrent) {
+        return res.json({ found: false, hash: release.torrent_hash });
+      }
+
+      res.json({
+        found: true,
+        hash: torrent.hash,
+        name: torrent.name,
+        state: torrent.state,
+        progress: Math.round(torrent.progress * 100),
+        dlspeed: torrent.dlspeed,
+        upspeed: torrent.upspeed,
+        ratio: Math.round(torrent.ratio * 100) / 100,
+        save_path: torrent.save_path,
+        content_path: torrent.content_path,
+        size: torrent.size,
+        num_seeds: torrent.num_seeds,
+        num_leechs: torrent.num_leechs,
+      });
+    } catch (error) {
+      console.error("Error fetching torrent status:", error);
+      res.status(500).json({ error: "Failed to fetch torrent status" });
+    }
+  });
+
+  // POST /api/requests/:id/reject - Reject a request
+  router.post("/:id/reject", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const updateStmt = db.prepare("UPDATE media_requests SET status = 'REJECTED', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+      updateStmt.run(id);
+      res.json({ success: true, message: "Request rejected" });
+    } catch (error) {
+      console.error("Error rejecting request:", error);
+      res.status(500).json({ error: "Failed to reject request" });
+    }
+  });
+
+  // POST /api/requests/:id/dismiss - Dismiss a request (hide from dashboard, don't touch torrent)
+  router.post("/:id/dismiss", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const updateStmt = db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+      updateStmt.run(id);
+      res.json({ success: true, message: "Request dismissed" });
+    } catch (error) {
+      console.error("Error dismissing request:", error);
+      res.status(500).json({ error: "Failed to dismiss request" });
+    }
+  });
+
+  // POST /api/requests/:id/move-to-library - Hardlink files from download folder to Radarr movie folder
+  router.post("/:id/move-to-library", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+
+      const release = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (!release || !release.torrent_hash) {
+        return res.status(400).json({ error: "No torrent found for this request" });
+      }
+
+      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+      if (!torrent) {
+        return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+      }
+
+      const contentPath = torrent.content_path;
+      if (!fs.existsSync(contentPath)) {
+        return res.status(404).json({ error: `Content path not found: ${contentPath}` });
+      }
+
+      if (!request.radarr_id) {
+        return res.status(400).json({ error: "No Radarr movie ID associated" });
+      }
+
+      const movie = await radarr.getMovie(request.radarr_id);
+      const movieFolder = movie.path || movie.folderPath;
+      if (!movieFolder) {
+        return res.status(500).json({ error: "Could not determine movie folder from Radarr" });
+      }
+
+      const fileName = path.basename(contentPath);
+      const destPath = path.join(movieFolder, fileName);
+
+      if (fs.existsSync(destPath)) {
+        return res.json({ success: true, message: "File already exists in library", source: contentPath, destination: destPath, alreadyExists: true });
+      }
+
+      const stat = fs.statSync(contentPath);
+      if (stat.isDirectory()) {
+        hardlinkDirRecursive(contentPath, path.join(movieFolder, path.basename(contentPath)));
+      } else {
+        fs.mkdirSync(movieFolder, { recursive: true });
+        fs.linkSync(contentPath, destPath);
+      }
+
+      db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+      console.log(`[MoveToLibrary] Hardlinked ${contentPath} → ${destPath}`);
+
+      res.json({ success: true, message: "Files hardlinked to library", source: contentPath, destination: destPath });
+    } catch (error: any) {
+      console.error("Error moving to library:", error);
+      res.status(500).json({ error: `Failed to move to library: ${error.message}` });
+    }
+  });
+
+  // POST /api/requests/:id/search - Re-search for releases
+  router.post("/:id/search", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+
+      if (!request) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+
+      db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
+      db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+
+      const radarrId = request.radarr_id;
+      if (!radarrId) {
+        return res.status(400).json({ error: "No Radarr ID associated with this request" });
+      }
+
+      const releases = await radarr.searchReleases(radarrId);
+
+      const insertStmt = db.prepare(`
+        INSERT INTO release_candidates
+        (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
+          title = excluded.title,
+          indexer = excluded.indexer,
+          size_mb = excluded.size_mb,
+          radarr_quality = excluded.radarr_quality,
+          radarr_custom_formats = excluded.radarr_custom_formats,
+          app_score = excluded.app_score,
+          radarr_rank = excluded.radarr_rank,
+          language = CASE WHEN excluded.language != '' THEN excluded.language ELSE release_candidates.language END,
+          info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END,
+          seeders = excluded.seeders,
+          leechers = excluded.leechers,
+          release_group = CASE WHEN excluded.release_group != '' THEN excluded.release_group ELSE release_candidates.release_group END,
+          edition = CASE WHEN excluded.edition != '' THEN excluded.edition ELSE release_candidates.edition END,
+          protocol = CASE WHEN excluded.protocol != '' THEN excluded.protocol ELSE release_candidates.protocol END,
+          publish_date = CASE WHEN excluded.publish_date != '' THEN excluded.publish_date ELSE release_candidates.publish_date END,
+          radarr_indexer_id = CASE WHEN excluded.radarr_indexer_id != 0 THEN excluded.radarr_indexer_id ELSE release_candidates.radarr_indexer_id END
+      `);
+
+      for (let i = 0; i < releases.length; i++) {
+        const r = releases[i];
+        const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
+        const qualityName = r.quality?.quality?.name || "Unknown";
+        const cfNames = r.customFormats?.map((f: any) => f.name) || [];
+        const customFormats = JSON.stringify(cfNames);
+        const appScore = computeAppScore(qualityName, cfNames, sizeMb, i + 1);
+        const language = r.languages?.map((l: any) => l.name).join(", ") || r.language?.name || "";
+
+        insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0);
+      }
+
+      const newStatus = releases.length > 0 ? "AWAITING_APPROVAL" : "SEARCHING";
+      db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
+
+      res.json({ success: true, releasesFound: releases.length });
+    } catch (error) {
+      console.error("Error searching releases:", error);
+      res.status(500).json({ error: "Failed to search releases" });
+    }
+  });
+
+  // POST /api/requests/:id/approve - Approve a release and grab via Radarr
+  router.post("/:id/approve", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { releaseId, reason } = req.body;
+
+      const release = db.prepare("SELECT * FROM release_candidates WHERE id = ?").get(releaseId) as any;
+      if (!release) {
+        return res.status(404).json({ error: "Release not found" });
+      }
+
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+
+      const stmt = db.prepare(`
+        INSERT INTO approval_history (request_id, release_id, approved_by, approval_reason)
+        VALUES (?, ?, ?, ?)
+      `);
+      stmt.run(id, releaseId, "web-user", reason || "");
+
+      if (request.radarr_id && release.radarr_release_id) {
+        try {
+          console.log(`[Radarr] Refreshing release cache for ${request.title} before grab...`);
+          let refreshedReleases: RadarrSearchResult[] = [];
+          try {
+            refreshedReleases = await radarr.searchReleases(request.radarr_id);
+          } catch {
+            // proceed with stale guid
+          }
+
+          let indexerId = release.radarr_indexer_id || 0;
+          let guid = release.radarr_release_id;
+
+          if (refreshedReleases.length > 0) {
+            const match = refreshedReleases.find((r) => r.guid === guid);
+            if (match) {
+              indexerId = match.indexerId || indexerId;
+            }
+          }
+
+          // Snapshot existing torrents before grab to detect the new one
+          let preGrabHashes: Set<string> = new Set();
+          try {
+            const preTorrents = await qbittorrent.getTorrents();
+            preGrabHashes = new Set(preTorrents.map((t) => t.hash));
+          } catch {
+            // qBittorrent might not be reachable, fall back to title search
+          }
+
+          await radarr.grabRelease(guid, indexerId);
+          console.log(`[Radarr] Grabbed release for ${request.title}: ${release.title}`);
+
+          // Find the NEW torrent in qBittorrent (poll up to 30s)
+          const detectTorrent = async (attempt: number) => {
+            try {
+              const postTorrents = await qbittorrent.getTorrents();
+              const newTorrent = postTorrents.find((t) => !preGrabHashes.has(t.hash));
+              if (newTorrent) {
+                db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
+                  .run(newTorrent.hash, newTorrent.save_path, release.id);
+                console.log(`[Radarr] Detected new torrent: ${newTorrent.name} hash=${newTorrent.hash}`);
+                return;
+              }
+            } catch {
+              // retry
+            }
+            if (attempt < 10) {
+              setTimeout(() => detectTorrent(attempt + 1), 3000);
+            } else {
+              console.log(`[Radarr] Could not detect new torrent for ${request.title} after 30s`);
+            }
+          };
+          setTimeout(() => detectTorrent(0), 3000);
+        } catch (grabErr: any) {
+          if (grabErr?.response?.status === 409) {
+            console.log(`[Radarr] Release already grabbed for ${request.title}`);
+          } else if (grabErr?.response?.status === 404) {
+            console.error(`[Radarr] Release expired from cache for ${request.title}, needs re-search`);
+            return res.status(500).json({
+              error: "Release expired from Radarr cache",
+              details: "The release was found when searching but expired before grab. Please search again and approve quickly.",
+            });
+          } else {
+            console.error(`[Radarr] Failed to grab release for ${request.title}:`, grabErr);
+            return res.status(500).json({ error: "Failed to grab release from Radarr", details: String(grabErr) });
+          }
+        }
+      }
+
+      const updateStmt = db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+      updateStmt.run("DOWNLOADING", id);
+
+      res.json({ success: true, message: "Release approved and grabbing" });
+    } catch (error) {
+      console.error("Error approving release:", error);
+      res.status(500).json({ error: "Failed to approve release" });
+    }
+  });
+
+  return router;
+}
