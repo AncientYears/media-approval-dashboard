@@ -17,7 +17,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         "SELECT mr.id, mr.title, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM media_requests mr " +
         "JOIN approval_history ah ON ah.request_id = mr.id " +
         "JOIN release_candidates rc ON rc.id = ah.release_id " +
-        "WHERE mr.status IN ('DOWNLOADING', 'SEEDING')"
+        "WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL') AND rc.torrent_hash != ''"
       ).all() as any[];
 
       if (active.length === 0) return;

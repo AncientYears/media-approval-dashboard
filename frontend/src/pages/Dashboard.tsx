@@ -2,6 +2,11 @@
 import { useNavigate } from "react-router-dom";
 import { fetchRequests, searchAgain } from "../api";
 
+function formatSize(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb} MB`;
+}
+
 const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "SEEDING", "COMPLETED", "REJECTED", "DISMISSED"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
 const SORT_OPTIONS = [
@@ -82,7 +87,6 @@ export default function Dashboard() {
   return (
     <div className="container">
       <div className="dashboard-header">
-        <h2>Media Dashboard</h2>
         <span className="request-count">{requests.length} total</span>
       </div>
 
@@ -151,6 +155,12 @@ export default function Dashboard() {
             {managedList.map((req: any) => (
               <div key={req.id} className="request-card managed-card">
                 <h3>{req.title} — {req.type}</h3>
+                {req.approved_release && (
+                  <p className="request-meta managed-stats">
+                    <span className="rtag">{req.approved_release.radarr_quality}</span>
+                    <span className="rtag">{formatSize(req.approved_release.size_mb || 0)}</span>
+                  </p>
+                )}
                 <div className="request-actions">
                   <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>Manage</button>
                 </div>

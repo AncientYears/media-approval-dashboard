@@ -67,6 +67,21 @@ export class QBittorrentService {
     if (!this.sid) await this.login();
   }
 
+  private async post(url: string, data: string): Promise<void> {
+    await this.ensureAuth();
+    try {
+      await this.client.post(url, data, { headers: this.getHeaders() });
+    } catch (error: any) {
+      if (error?.response?.status === 403) {
+        this.sid = null;
+        await this.login();
+        await this.client.post(url, data, { headers: this.getHeaders() });
+      } else {
+        throw error;
+      }
+    }
+  }
+
   async getTorrents(filter?: string): Promise<TorrentInfo[]> {
     await this.ensureAuth();
     try {
@@ -108,30 +123,15 @@ export class QBittorrentService {
   }
 
   async pauseTorrent(hash: string): Promise<void> {
-    await this.ensureAuth();
-    await this.client.post(
-      "/api/v2/torrents/pause",
-      `hashes=${hash}`,
-      { headers: this.getHeaders() }
-    );
+    await this.post("/api/v2/torrents/pause", `hashes=${hash}`);
   }
 
   async resumeTorrent(hash: string): Promise<void> {
-    await this.ensureAuth();
-    await this.client.post(
-      "/api/v2/torrents/resume",
-      `hashes=${hash}`,
-      { headers: this.getHeaders() }
-    );
+    await this.post("/api/v2/torrents/resume", `hashes=${hash}`);
   }
 
   async deleteTorrent(hash: string, deleteFiles: boolean = false): Promise<void> {
-    await this.ensureAuth();
-    await this.client.post(
-      "/api/v2/torrents/delete",
-      `hashes=${hash}&deleteFiles=${deleteFiles}`,
-      { headers: this.getHeaders() }
-    );
+    await this.post("/api/v2/torrents/delete", `hashes=${hash}&deleteFiles=${deleteFiles}`);
   }
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {

@@ -11,7 +11,7 @@ function App() {
         <nav className="navbar">
           <div className="nav-container">
             <div className="nav-brand">
-              <h1>📋 Media Approval Dashboard</h1>
+              <Link to="/"><h1>Media Dashboard</h1></Link>
             </div>
             <ul className="nav-links">
               <li>

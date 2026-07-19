@@ -180,7 +180,6 @@ export default function RequestDetail() {
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [scoreProfile, setScoreProfile] = useState<ScoreProfile>("balanced");
   const [torrentStatus, setTorrentStatus] = useState<any>(null);
-  const [pathCopied, setPathCopied] = useState(false);
   const [approvedRelease, setApprovedRelease] = useState<any>(null);
   const [moveResult, setMoveResult] = useState<any>(null);
   const [moving, setMoving] = useState(false);
@@ -241,8 +240,6 @@ export default function RequestDetail() {
   const handleCopyPath = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      setPathCopied(true);
-      setTimeout(() => setPathCopied(false), 2000);
     } catch {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -250,8 +247,6 @@ export default function RequestDetail() {
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-      setPathCopied(true);
-      setTimeout(() => setPathCopied(false), 2000);
     }
   };
 
@@ -369,52 +364,44 @@ export default function RequestDetail() {
                 <span>↑ {(torrentStatus.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
                 <span>Ratio: {torrentStatus.ratio}</span>
                 <span>Seeds: {torrentStatus.num_seeds}/{torrentStatus.num_leechs + torrentStatus.num_seeds}</span>
-              </div>
-              {torrentStatus.progress === 100 && (
-                <div className="torrent-actions">
-                  <div className="torrent-paths">
-                    <div className="torrent-path-row">
-                      <span className="path-label">Source:</span>
-                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
-                        {torrentStatus.content_path}
-                      </span>
-                    </div>
-                    {torrentStatus.dest_path && (
-                      <div className="torrent-path-row">
-                        <span className="path-label">Library:</span>
-                        <span className={`torrent-path ${torrentStatus.in_library ? "path-exists" : ""}`} title="Click to copy" onClick={() => handleCopyPath(torrentStatus.dest_path)}>
-                          {torrentStatus.dest_path}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="torrent-action-row">
-                    {torrentStatus.in_library ? (
-                      <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
-                        {showRemoveConfirm ? "Confirm Remove?" : "In Library"}
-                      </button>
-                    ) : moveResult?.source ? (
-                      <div className="move-result">
-                        <span>Hardlinked:</span>
-                        <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.source)}>{pathCopied ? "Copied!" : moveResult.source}</span>
-                        <span>→</span>
-                        <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.destination)}>{moveResult.destination}</span>
-                      </div>
-                    ) : moveResult?.error ? (
-                      <span className="move-error">{moveResult.error}</span>
-                    ) : (
-                      <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
-                        {moving ? "Moving..." : "Move to Library"}
-                      </button>
-                    )}
+                {torrentStatus.progress === 100 && (
+                  <>
                     {torrentStatus.state === "stalledUP" || torrentStatus.state === "uploading" || torrentStatus.state === "forcedUP" || torrentStatus.state === "queuedUP" ? (
                       <button className="btn btn-secondary btn-tiny" onClick={handlePause}>Pause</button>
                     ) : (
                       <button className="btn btn-secondary btn-tiny" onClick={handleResume}>Resume</button>
                     )}
                     <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
+                  </>
+                )}
+              </div>
+              {torrentStatus.progress === 100 && (
+                <>
+                  <div className="torrent-paths">
+                    <div className="torrent-path-row">
+                      <span className="path-label">Source:</span>
+                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
+                        {torrentStatus.content_path}
+                      </span>
+                      {torrentStatus.in_library ? (
+                        <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
+                          {showRemoveConfirm ? "Remove?" : "In Library"}
+                        </button>
+                      ) : moveResult?.source ? (
+                        <div className="move-result">
+                          <span>Hardlinked →</span>
+                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.destination)}>{moveResult.destination}</span>
+                        </div>
+                      ) : moveResult?.error ? (
+                        <span className="move-error">{moveResult.error}</span>
+                      ) : (
+                        <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
+                          {moving ? "Moving..." : "Move to Library"}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
+                </>
               )}
             </>
           ) : (

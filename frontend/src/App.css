@@ -65,6 +65,10 @@ body {
   color: var(--text);
 }
 
+.nav-brand a {
+  text-decoration: none;
+}
+
 .nav-links {
   display: flex;
   list-style: none;
@@ -1149,6 +1153,15 @@ body {
   gap: 6px;
 }
 
+.torrent-path-row .torrent-path {
+  flex: 1;
+}
+
+.torrent-path-row .btn,
+.torrent-path-row .move-result {
+  flex-shrink: 0;
+}
+
 .path-label {
   font-size: 10px;
   text-transform: uppercase;
@@ -1211,6 +1224,12 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.managed-stats {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 @media (max-width: 768px) {
