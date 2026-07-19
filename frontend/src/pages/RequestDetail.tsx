@@ -201,9 +201,10 @@ export default function RequestDetail() {
     }
   };
 
+  const hasTorrent = approvedRelease?.torrent_hash;
+
   const loadTorrentStatus = async () => {
-    if (!request) return;
-    if (request.status !== "DOWNLOADING" && request.status !== "SEEDING") {
+    if (!request || !hasTorrent) {
       setTorrentStatus(null);
       return;
     }
@@ -216,14 +217,14 @@ export default function RequestDetail() {
   };
 
   useEffect(() => { loadData(); }, [id]);
-  useEffect(() => { loadTorrentStatus(); }, [id, request?.status]);
+  useEffect(() => { loadTorrentStatus(); }, [id, hasTorrent]);
 
-  // Poll torrent status while downloading/seeding
+  // Poll torrent status while we have an active torrent
   useEffect(() => {
-    if (!request || (request.status !== "DOWNLOADING" && request.status !== "SEEDING")) return;
+    if (!hasTorrent) return;
     const interval = setInterval(loadTorrentStatus, 3000);
     return () => clearInterval(interval);
-  }, [id, request?.status]);
+  }, [id, hasTorrent]);
 
   const handleApprove = async (releaseId: number) => {
     await approveRelease(Number(id), releaseId);
@@ -315,8 +316,8 @@ export default function RequestDetail() {
         <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
-          <span className={`status-badge status-badge-sm ${(request.status === "DOWNLOADING" || request.status === "SEEDING") && torrentStatus?.found ? `qb-${torrentStatus.state}` : request.status.toLowerCase()}`}>
-            {(request.status === "DOWNLOADING" || request.status === "SEEDING") && torrentStatus?.found
+          <span className={`status-badge status-badge-sm ${hasTorrent && torrentStatus?.found ? `qb-${torrentStatus.state}` : request.status.toLowerCase()}`}>
+            {hasTorrent && torrentStatus?.found
               ? torrentStatus.state
               : request.status.replace(/_/g, " ")}
           </span>
@@ -324,7 +325,7 @@ export default function RequestDetail() {
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Search</button>
       </div>
 
-      {(request.status === "DOWNLOADING" || request.status === "SEEDING") && (
+      {hasTorrent && (
         <div className="torrent-panel">
           {approvedRelease && (
             <div className="approved-release-info">
@@ -380,15 +381,9 @@ export default function RequestDetail() {
         </div>
       )}
 
-      {request.status === "COMPLETED" && (
+      {request.status === "DISMISSED" && !hasTorrent && (
         <div className="torrent-panel">
-          <div className="torrent-meta"><span>Completed — files are in your library</span></div>
-        </div>
-      )}
-
-      {request.status === "REJECTED" && (
-        <div className="torrent-panel">
-          <div className="torrent-meta"><span>Rejected</span></div>
+          <div className="torrent-meta"><span>Dismissed</span></div>
         </div>
       )}
 

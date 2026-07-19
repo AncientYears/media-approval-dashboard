@@ -270,7 +270,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         return res.status(404).json({ error: "Request not found" });
       }
 
-      db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
+      db.prepare("DELETE FROM release_candidates WHERE request_id = ? AND id NOT IN (SELECT release_id FROM approval_history WHERE request_id = ?)").run(id, id);
       db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
 
       const radarrId = request.radarr_id;
