@@ -192,6 +192,17 @@ body {
   background: #b91c1c;
 }
 
+.btn-library-ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+  font-weight: 600;
+  border: 1px solid var(--success);
+}
+
+.btn-library-ok:hover {
+  background: rgba(16, 185, 129, 0.25);
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1028,9 +1039,15 @@ body {
 
 .torrent-actions {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-items: center;
   margin-top: 8px;
+}
+
+.torrent-action-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
   flex-wrap: wrap;
 }
 
@@ -1182,6 +1199,18 @@ body {
 
 .request-card .approved-versions strong {
   color: var(--primary);
+}
+
+.managed-card {
+  padding: 10px 14px;
+}
+
+.managed-card h3 {
+  font-size: 13px;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 768px) {

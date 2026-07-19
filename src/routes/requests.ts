@@ -335,7 +335,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         }
       }
 
-      db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       const method = fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied";
       console.log(`[MoveToLibrary] ${method} ${contentPath} → ${destPath}`);
 
@@ -509,6 +508,32 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     } catch (error) {
       console.error("Error approving release:", error);
       res.status(500).json({ error: "Failed to approve release" });
+    }
+  });
+
+  // POST /api/requests/:id/torrent/pause - Pause torrent
+  router.post("/:id/torrent/pause", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").get(id) as any;
+      if (!release?.torrent_hash) return res.status(400).json({ error: "No torrent" });
+      await qbittorrent.pauseTorrent(release.torrent_hash);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/torrent/resume - Resume torrent
+  router.post("/:id/torrent/resume", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").get(id) as any;
+      if (!release?.torrent_hash) return res.status(400).json({ error: "No torrent" });
+      await qbittorrent.resumeTorrent(release.torrent_hash);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 

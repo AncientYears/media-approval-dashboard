@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatus, moveToLibrary, dismissRequest, removeFromLibrary } from "../api";
+import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatus, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -184,6 +184,7 @@ export default function RequestDetail() {
   const [approvedRelease, setApprovedRelease] = useState<any>(null);
   const [moveResult, setMoveResult] = useState<any>(null);
   const [moving, setMoving] = useState(false);
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
 
   const loadData = async () => {
     try {
@@ -274,13 +275,28 @@ export default function RequestDetail() {
   };
 
   const handleRemoveFromLibrary = async () => {
-    if (!confirm("Remove file from library? Torrent will continue seeding.")) return;
+    if (!showRemoveConfirm) {
+      setShowRemoveConfirm(true);
+      return;
+    }
     try {
       await removeFromLibrary(Number(id));
+      setShowRemoveConfirm(false);
       loadTorrentStatus();
     } catch (err: any) {
       alert(err?.response?.data?.error || err.message);
+      setShowRemoveConfirm(false);
     }
+  };
+
+  const handlePause = async () => {
+    await pauseTorrent(Number(id));
+    loadTorrentStatus();
+  };
+
+  const handleResume = async () => {
+    await resumeTorrent(Number(id));
+    loadTorrentStatus();
   };
 
   if (loading) return <div className="container"><p>Loading...</p></div>;
@@ -372,26 +388,32 @@ export default function RequestDetail() {
                       </div>
                     )}
                   </div>
-                  {torrentStatus.in_library ? (
-                    <div className="torrent-library-actions">
-                      <span className="badge-in-library">In Library</span>
-                      <button className="btn btn-secondary btn-tiny" onClick={handleRemoveFromLibrary}>Remove from Library</button>
-                    </div>
-                  ) : moveResult?.source ? (
-                    <div className="move-result">
-                      <span>Hardlinked:</span>
-                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.source)}>{pathCopied ? "Copied!" : moveResult.source}</span>
-                      <span>→</span>
-                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.destination)}>{moveResult.destination}</span>
-                    </div>
-                  ) : moveResult?.error ? (
-                    <span className="move-error">{moveResult.error}</span>
-                  ) : (
-                    <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
-                      {moving ? "Moving..." : "Move to Library"}
-                    </button>
-                  )}
-                  <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
+                  <div className="torrent-action-row">
+                    {torrentStatus.in_library ? (
+                      <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
+                        {showRemoveConfirm ? "Confirm Remove?" : "In Library"}
+                      </button>
+                    ) : moveResult?.source ? (
+                      <div className="move-result">
+                        <span>Hardlinked:</span>
+                        <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.source)}>{pathCopied ? "Copied!" : moveResult.source}</span>
+                        <span>→</span>
+                        <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.destination)}>{moveResult.destination}</span>
+                      </div>
+                    ) : moveResult?.error ? (
+                      <span className="move-error">{moveResult.error}</span>
+                    ) : (
+                      <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
+                        {moving ? "Moving..." : "Move to Library"}
+                      </button>
+                    )}
+                    {torrentStatus.state === "stalledUP" || torrentStatus.state === "uploading" || torrentStatus.state === "forcedUP" || torrentStatus.state === "queuedUP" ? (
+                      <button className="btn btn-secondary btn-tiny" onClick={handlePause}>Pause</button>
+                    ) : (
+                      <button className="btn btn-secondary btn-tiny" onClick={handleResume}>Resume</button>
+                    )}
+                    <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
+                  </div>
                 </div>
               )}
             </>

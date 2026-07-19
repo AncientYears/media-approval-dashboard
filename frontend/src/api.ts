@@ -52,6 +52,16 @@ export async function removeFromLibrary(requestId: number) {
   return response.data;
 }
 
+export async function pauseTorrent(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/torrent/pause`);
+  return response.data;
+}
+
+export async function resumeTorrent(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/torrent/resume`);
+  return response.data;
+}
+
 export async function testConnections() {
   const response = await api.post("/test-connections");
   return response.data;

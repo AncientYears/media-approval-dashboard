@@ -1,11 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, searchAgain, fetchTorrentStatus } from "../api";
-
-function formatSize(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
-}
+import { fetchRequests, searchAgain } from "../api";
 
 const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "SEEDING", "COMPLETED", "REJECTED", "DISMISSED"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
@@ -28,24 +23,6 @@ const STATUS_ORDER: Record<string, number> = {
   DISMISSED: 7,
 };
 
-const QB_STATE_MAP: Record<string, string> = {
-  uploading: "Seeding",
-  stalledUP: "Seeding",
-  forcedUP: "Seeding",
-  queuedUP: "Seeding",
-  pausedUP: "Paused",
-  downloading: "Downloading",
-  forcedDL: "Downloading",
-  stalledDL: "Stalled",
-  queuedDL: "Queued",
-  pausedDL: "Paused",
-  checking: "Checking",
-  errored: "Error",
-  moving: "Moving",
-  missingFiles: "Missing",
-  unknown: "Unknown",
-};
-
 export default function Dashboard() {
   const navigate = useNavigate();
   const [requests, setRequests] = useState<any[]>([]);
@@ -54,7 +31,6 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("status_asc");
-  const [torrentStates, setTorrentStates] = useState<Record<number, any>>({});
 
   const loadRequests = useCallback(async () => {
     try {
@@ -62,16 +38,6 @@ export default function Dashboard() {
       const data = await fetchRequests();
       setRequests(data);
       setError(null);
-
-      const approved = data.filter((r: any) => r.approved_release?.torrent_hash);
-      const states: Record<number, any> = {};
-      await Promise.all(approved.map(async (r: any) => {
-        try {
-          const ts = await fetchTorrentStatus(r.id);
-          states[r.id] = ts;
-        } catch { /* ignore */ }
-      }));
-      setTorrentStates(states);
     } catch (err) {
       setError("Failed to load requests");
       console.error(err);
@@ -147,48 +113,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {managedList.length > 0 && (
+      {requestsList.length > 0 && (
         <div className="dashboard-section">
-          <h3>Managed Media</h3>
-          <div className="requests-grid">
-            {managedList.map((req: any) => {
-              const ts = torrentStates[req.id];
-              const qbState = ts?.found ? ts.state : null;
-              const qbLabel = qbState ? (QB_STATE_MAP[qbState] || qbState) : null;
-
-              return (
-                <div key={req.id} className="request-card managed-card">
-                  <div className="request-header">
-                    <h3>{req.title}</h3>
-                    <div className="request-badges">
-                      {qbLabel && (
-                        <span className={`status-badge status-badge-sm qb-${qbState}`}>{qbLabel}</span>
-                      )}
-                    </div>
-                  </div>
-                  <p className="request-meta">
-                    {req.type} &middot; {req.approved_release?.radarr_quality} &middot; {formatSize(req.approved_release?.size_mb || 0)}
-                  </p>
-                  <p className="request-meta approved-versions">
-                    <strong>1</strong> approved version
-                  </p>
-                  <div className="request-actions">
-                    <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>Manage</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      <div className="dashboard-section">
-        <h3>Requests</h3>
-        {requestsList.length === 0 && !loading ? (
-          <div className="empty-state">
-            <p>No pending requests</p>
-          </div>
-        ) : (
+          <h3>Requests</h3>
           <div className="requests-grid">
             {requestsList.map((req: any) => (
               <div key={req.id} className="request-card">
@@ -214,8 +141,30 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {managedList.length > 0 && (
+        <div className="dashboard-section">
+          <h3>Managed Media</h3>
+          <div className="requests-grid">
+            {managedList.map((req: any) => (
+              <div key={req.id} className="request-card managed-card">
+                <h3>{req.title} — {req.type}</h3>
+                <div className="request-actions">
+                  <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>Manage</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {requestsList.length === 0 && managedList.length === 0 && (
+        <div className="empty-state">
+          <p>No requests yet</p>
+        </div>
+      )}
     </div>
   );
 }
