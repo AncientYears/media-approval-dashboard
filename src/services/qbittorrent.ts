@@ -124,11 +124,11 @@ export class QBittorrentService {
   }
 
   async pauseTorrent(hash: string): Promise<void> {
-    await this.post("/api/v2/torrents/pause", `hashes=${hash}`);
+    await this.post("/api/v2/torrents/stop", `hashes=${hash}`);
   }
 
   async resumeTorrent(hash: string): Promise<void> {
-    await this.post("/api/v2/torrents/resume", `hashes=${hash}`);
+    await this.post("/api/v2/torrents/start", `hashes=${hash}`);
   }
 
   async deleteTorrent(hash: string, deleteFiles: boolean = false): Promise<void> {
