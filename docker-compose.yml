@@ -3,6 +3,8 @@
     build: .
     container_name: media-approval
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
     ports:
       - "3000:3000"
     env_file:
