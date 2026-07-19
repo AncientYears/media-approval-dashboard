@@ -11,8 +11,5 @@
       - .env
     volumes:
       - ./data:/app/data
-      # Mount media folders — adjust paths to match your server
-      # Downloads folder (where qBittorrent saves torrents)
-      - /media/Torrents/Seed:/Torrents/Seed
-      # Media library folder (where Radarr stores movies)
-      - /media/Filmy:/media/Filmy
+      - /media:/media
+    entrypoint: ["/bin/sh", "-c", "ln -sfn /media/Torrents/Seed /Torrents/Seed && exec node dist/server.js"]
