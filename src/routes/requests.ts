@@ -205,9 +205,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         return res.status(404).json({ error: "Torrent not found in qBittorrent" });
       }
 
-      const contentPath = torrent.content_path;
+      let contentPath = torrent.content_path;
       if (!fs.existsSync(contentPath)) {
-        return res.status(404).json({ error: `Content path not found: ${contentPath}` });
+        if (contentPath.startsWith("/Torrents/")) {
+          contentPath = "/media" + contentPath;
+        }
+      }
+      if (!fs.existsSync(contentPath)) {
+        return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
 
       if (!request.radarr_id) {

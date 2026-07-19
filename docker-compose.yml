@@ -12,4 +12,3 @@
     volumes:
       - ./data:/app/data
       - /media:/media
-    entrypoint: ["/bin/sh", "-c", "ln -sfn /media/Torrents/Seed /Torrents/Seed && exec node dist/server.js"]
