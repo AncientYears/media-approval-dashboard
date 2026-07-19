@@ -316,10 +316,8 @@ export default function RequestDetail() {
         <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
-          <span className={`status-badge status-badge-sm ${hasTorrent && torrentStatus?.found ? `qb-${torrentStatus.state}` : request.status.toLowerCase()}`}>
-            {hasTorrent && torrentStatus?.found
-              ? torrentStatus.state
-              : request.status.replace(/_/g, " ")}
+          <span className={`status-badge status-badge-sm ${request.status.toLowerCase()}`}>
+            {request.status.replace(/_/g, " ")}
           </span>
         </div>
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Search</button>
@@ -329,7 +327,7 @@ export default function RequestDetail() {
         <div className="torrent-panel">
           {approvedRelease && (
             <div className="approved-release-info">
-              <span className="approved-label">Installing</span>
+              <span className="approved-label">Installed</span>
               <span className="approved-title" title={approvedRelease.title}>
                 {approvedRelease.info_url
                   ? <a href={approvedRelease.info_url} target="_blank" rel="noopener noreferrer">{approvedRelease.title}</a>
@@ -337,6 +335,11 @@ export default function RequestDetail() {
               </span>
               <span className="rtag">{approvedRelease.radarr_quality}</span>
               <span className="rtag">{formatSize(approvedRelease.size_mb)}</span>
+              {torrentStatus?.found && (
+                <span className={`status-badge status-badge-sm qb-${torrentStatus.state}`}>
+                  {torrentStatus.state}
+                </span>
+              )}
             </div>
           )}
           {torrentStatus?.found ? (
@@ -353,10 +356,25 @@ export default function RequestDetail() {
               </div>
               {torrentStatus.progress === 100 && (
                 <div className="torrent-actions">
-                  <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
-                    {torrentStatus.content_path}
-                  </span>
-                  {moveResult?.source ? (
+                  <div className="torrent-paths">
+                    <div className="torrent-path-row">
+                      <span className="path-label">Source:</span>
+                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
+                        {torrentStatus.content_path}
+                      </span>
+                    </div>
+                    {torrentStatus.dest_path && (
+                      <div className="torrent-path-row">
+                        <span className="path-label">Library:</span>
+                        <span className={`torrent-path ${torrentStatus.in_library ? "path-exists" : ""}`} title="Click to copy" onClick={() => handleCopyPath(torrentStatus.dest_path)}>
+                          {torrentStatus.dest_path}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {torrentStatus.in_library ? (
+                    <span className="badge-in-library">In Library</span>
+                  ) : moveResult?.source ? (
                     <div className="move-result">
                       <span>Hardlinked:</span>
                       <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.source)}>{pathCopied ? "Copied!" : moveResult.source}</span>
@@ -365,8 +383,7 @@ export default function RequestDetail() {
                     </div>
                   ) : moveResult?.error ? (
                     <span className="move-error">{moveResult.error}</span>
-                  ) : null}
-                  {!moveResult?.source && (
+                  ) : (
                     <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
                       {moving ? "Moving..." : "Move to Library"}
                     </button>

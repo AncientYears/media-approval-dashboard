@@ -58,10 +58,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       `);
       const rows = stmt.all();
       
-      const parsedRows = rows.map((row: any) => ({
-        ...row,
-        requested_by: JSON.parse(row.requested_by || "[]"),
-      }));
+      const parsedRows = rows.map((row: any) => {
+        const approvedRow = db.prepare(
+          "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.radarr_quality, rc.size_mb " +
+          "FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? LIMIT 1"
+        ).get(row.id) as any;
+        return {
+          ...row,
+          requested_by: JSON.parse(row.requested_by || "[]"),
+          approved_release: approvedRow || null,
+        };
+      });
       
       res.json(parsedRows);
     } catch (error) {
@@ -121,6 +128,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
   router.get("/:id/torrent-status", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       const release = db.prepare(
         "SELECT rc.torrent_hash, rc.save_path, rc.title FROM release_candidates rc " +
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
@@ -135,6 +143,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         return res.json({ found: false, hash: release.torrent_hash });
       }
 
+      let contentPath = torrent.content_path;
+      if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) {
+        contentPath = "/media" + contentPath;
+      }
+
+      let destPath = "";
+      let inLibrary = false;
+      if (request?.radarr_id) {
+        try {
+          const movie = await radarr.getMovie(request.radarr_id);
+          const movieFolder = movie.path || movie.folderPath;
+          if (movieFolder) {
+            destPath = path.join(movieFolder, path.basename(contentPath));
+            inLibrary = fs.existsSync(destPath);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       res.json({
         found: true,
         hash: torrent.hash,
@@ -145,7 +173,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         upspeed: torrent.upspeed,
         ratio: Math.round(torrent.ratio * 100) / 100,
         save_path: torrent.save_path,
-        content_path: torrent.content_path,
+        content_path: contentPath,
+        dest_path: destPath,
+        in_library: inLibrary,
         size: torrent.size,
         num_seeds: torrent.num_seeds,
         num_leechs: torrent.num_leechs,

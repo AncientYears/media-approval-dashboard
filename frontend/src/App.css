@@ -1021,6 +1021,7 @@ body {
   gap: 8px;
   align-items: center;
   margin-top: 8px;
+  flex-wrap: wrap;
 }
 
 .torrent-path {
@@ -1089,6 +1090,58 @@ body {
 .move-error {
   color: var(--error);
   font-size: 12px;
+}
+
+.request-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.approved-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approved-meta span {
+  color: var(--primary);
+}
+
+.torrent-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.torrent-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.path-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  min-width: 48px;
+}
+
+.torrent-path.path-exists {
+  color: var(--success);
+}
+
+.badge-in-library {
+  font-size: 11px;
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.15);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-weight: 600;
 }
 
 @media (max-width: 768px) {

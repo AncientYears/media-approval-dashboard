@@ -1,8 +1,8 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, searchAgain } from "../api";
+import { fetchRequests, searchAgain, fetchTorrentStatus } from "../api";
 
-const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "APPROVED", "DOWNLOADING", "SEEDING", "COMPLETED", "REJECTED", "DISMISSED"];
+const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "SEEDING", "COMPLETED", "REJECTED", "DISMISSED"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
 const SORT_OPTIONS = [
   { value: "created_at_desc", label: "Newest first" },
@@ -16,12 +16,29 @@ const STATUS_ORDER: Record<string, number> = {
   AWAITING_APPROVAL: 0,
   SEARCHING: 1,
   NEW: 2,
-  APPROVED: 3,
-  DOWNLOADING: 4,
-  SEEDING: 5,
-  COMPLETED: 6,
-  REJECTED: 7,
-  DISMISSED: 8,
+  DOWNLOADING: 3,
+  SEEDING: 4,
+  COMPLETED: 5,
+  REJECTED: 6,
+  DISMISSED: 7,
+};
+
+const QB_STATE_MAP: Record<string, string> = {
+  uploading: "Seeding",
+  stalledUP: "Seeding",
+  forcedUP: "Seeding",
+  queuedUP: "Seeding",
+  pausedUP: "Paused",
+  downloading: "Downloading",
+  forcedDL: "Downloading",
+  stalledDL: "Stalled",
+  queuedDL: "Queued",
+  pausedDL: "Paused",
+  checking: "Checking",
+  errored: "Error",
+  moving: "Moving",
+  missingFiles: "Missing",
+  unknown: "Unknown",
 };
 
 export default function Dashboard() {
@@ -32,6 +49,7 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("status_asc");
+  const [torrentStates, setTorrentStates] = useState<Record<number, any>>({});
 
   const loadRequests = useCallback(async () => {
     try {
@@ -39,6 +57,16 @@ export default function Dashboard() {
       const data = await fetchRequests();
       setRequests(data);
       setError(null);
+
+      const approved = data.filter((r: any) => r.approved_release?.torrent_hash);
+      const states: Record<number, any> = {};
+      await Promise.all(approved.map(async (r: any) => {
+        try {
+          const ts = await fetchTorrentStatus(r.id);
+          states[r.id] = ts;
+        } catch { /* ignore */ }
+      }));
+      setTorrentStates(states);
     } catch (err) {
       setError("Failed to load requests");
       console.error(err);
@@ -84,7 +112,7 @@ export default function Dashboard() {
   return (
     <div className="container">
       <div className="dashboard-header">
-        <h2>Pending Approvals</h2>
+        <h2>Media Dashboard</h2>
         <span className="request-count">{filtered.length} of {requests.length}</span>
       </div>
 
@@ -121,29 +149,50 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="requests-grid">
-          {filtered.map((req: any) => (
-            <div key={req.id} className="request-card">
-              <div className="request-header">
-                <h3>{req.title}</h3>
-                <span className={`status-badge ${req.status.toLowerCase()}`}>
-                  {req.status.replace(/_/g, " ")}
-                </span>
+          {filtered.map((req: any) => {
+            const ts = torrentStates[req.id];
+            const hasTorrent = !!req.approved_release?.torrent_hash;
+            const qbState = ts?.found ? ts.state : null;
+            const qbLabel = qbState ? (QB_STATE_MAP[qbState] || qbState) : null;
+
+            return (
+              <div key={req.id} className="request-card">
+                <div className="request-header">
+                  <h3>{req.title}</h3>
+                  <div className="request-badges">
+                    {hasTorrent && qbLabel && (
+                      <span className={`status-badge status-badge-sm qb-${qbState}`}>
+                        {qbLabel}
+                      </span>
+                    )}
+                    <span className={`status-badge ${req.status.toLowerCase()}`}>
+                      {req.status.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                </div>
+                <p className="request-meta">
+                  Type: <strong>{req.type}</strong> • Requested: {new Date(req.created_at).toLocaleDateString()}
+                </p>
+                {hasTorrent && req.approved_release && (
+                  <p className="request-meta approved-meta">
+                    Approved: <span title={req.approved_release.title}>{req.approved_release.title?.substring(0, 50)}{req.approved_release.title?.length > 50 ? "..." : ""}</span>
+                  </p>
+                )}
+                {req.requested_by && Array.isArray(req.requested_by) && req.requested_by.length > 0 && (
+                  <p className="request-meta">Requested by: {req.requested_by.join(", ")}</p>
+                )}
+                <div className="request-actions">
+                  <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>{hasTorrent ? "Manage" : "View Releases"}</button>
+                  {!hasTorrent && (
+                    <button className="btn btn-secondary" onClick={async () => {
+                      await searchAgain(req.id, {});
+                      loadRequests();
+                    }}>Search Again</button>
+                  )}
+                </div>
               </div>
-              <p className="request-meta">
-                Type: <strong>{req.type}</strong> • Requested: {new Date(req.created_at).toLocaleDateString()}
-              </p>
-              {req.requested_by && Array.isArray(req.requested_by) && req.requested_by.length > 0 && (
-                <p className="request-meta">Requested by: {req.requested_by.join(", ")}</p>
-              )}
-              <div className="request-actions">
-                <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>View Releases</button>
-                <button className="btn btn-secondary" onClick={async () => {
-                  await searchAgain(req.id, {});
-                  loadRequests();
-                }}>Search Again</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
