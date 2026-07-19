@@ -7,7 +7,7 @@ function formatSize(mb: number): string {
   return `${mb} MB`;
 }
 
-const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "SEEDING", "COMPLETED", "REJECTED", "DISMISSED"];
+const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "REJECTED", "DISMISSED"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
 const SORT_OPTIONS = [
   { value: "created_at_desc", label: "Newest first" },
@@ -22,8 +22,6 @@ const STATUS_ORDER: Record<string, number> = {
   SEARCHING: 1,
   NEW: 2,
   DOWNLOADING: 3,
-  SEEDING: 4,
-  COMPLETED: 5,
   REJECTED: 6,
   DISMISSED: 7,
 };
@@ -86,10 +84,6 @@ export default function Dashboard() {
 
   return (
     <div className="container">
-      <div className="dashboard-header">
-        <span className="request-count">{requests.length} total</span>
-      </div>
-
       <div className="filter-bar">
         <div className="filter-group">
           <label>Status</label>
@@ -119,7 +113,7 @@ export default function Dashboard() {
 
       {requestsList.length > 0 && (
         <div className="dashboard-section">
-          <h3>Requests</h3>
+          <h3>Requests — {requestsList.length}</h3>
           <div className="requests-grid">
             {requestsList.map((req: any) => (
               <div key={req.id} className="request-card">
@@ -150,17 +144,15 @@ export default function Dashboard() {
 
       {managedList.length > 0 && (
         <div className="dashboard-section">
-          <h3>Managed Media</h3>
+          <h3>Managed Media — {managedList.length}</h3>
           <div className="requests-grid">
             {managedList.map((req: any) => (
               <div key={req.id} className="request-card managed-card">
                 <h3>{req.title} — {req.type}</h3>
-                {req.approved_release && (
-                  <p className="request-meta managed-stats">
-                    <span className="rtag">{req.approved_release.radarr_quality}</span>
-                    <span className="rtag">{formatSize(req.approved_release.size_mb || 0)}</span>
-                  </p>
-                )}
+                <p className="request-meta managed-stats">
+                  <span className="rtag">{req.release_count} release{req.release_count !== 1 ? "s" : ""}</span>
+                  <span className="rtag">{formatSize(req.total_size_mb)}</span>
+                </p>
                 <div className="request-actions">
                   <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>Manage</button>
                 </div>

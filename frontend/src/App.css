@@ -1168,7 +1168,7 @@ body {
   letter-spacing: 0.5px;
   color: var(--text-secondary);
   font-weight: 600;
-  min-width: 48px;
+  min-width: 52px;
 }
 
 .torrent-path.path-exists {

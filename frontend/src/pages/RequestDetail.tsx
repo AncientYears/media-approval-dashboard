@@ -277,6 +277,7 @@ export default function RequestDetail() {
     try {
       await removeFromLibrary(Number(id));
       setShowRemoveConfirm(false);
+      setMoveResult(null);
       loadTorrentStatus();
     } catch (err: any) {
       alert(err?.response?.data?.error || err.message);
@@ -371,7 +372,6 @@ export default function RequestDetail() {
                     ) : (
                       <button className="btn btn-secondary btn-tiny" onClick={handleResume}>Resume</button>
                     )}
-                    <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
                   </>
                 )}
               </div>
@@ -383,15 +383,24 @@ export default function RequestDetail() {
                       <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
                         {torrentStatus.content_path}
                       </span>
+                      <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
+                    </div>
+                    <div className="torrent-path-row">
+                      <span className="path-label">Library:</span>
                       {torrentStatus.in_library ? (
-                        <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
-                          {showRemoveConfirm ? "Remove?" : "In Library"}
-                        </button>
+                        <>
+                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.library_path)}>
+                            {torrentStatus.library_path}
+                          </span>
+                          <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
+                            {showRemoveConfirm ? "Remove?" : "In Library"}
+                          </button>
+                        </>
                       ) : moveResult?.source ? (
-                        <div className="move-result">
+                        <span className="move-result">
                           <span>Hardlinked →</span>
                           <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.destination)}>{moveResult.destination}</span>
-                        </div>
+                        </span>
                       ) : moveResult?.error ? (
                         <span className="move-error">{moveResult.error}</span>
                       ) : (

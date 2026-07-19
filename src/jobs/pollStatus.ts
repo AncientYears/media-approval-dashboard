@@ -1,9 +1,8 @@
 import { Database } from "better-sqlite3";
 import { QBittorrentService } from "../services/qbittorrent";
 
-const SEEDING_STATES = ["uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP"];
 const DOWNLOADING_STATES = ["downloading", "forcedDL", "queuedDL", "pausedDL"];
-const COMPLETED_STATES = ["missingFiles", "error"];
+const SEEDING_STATES = ["uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP"];
 
 export function createStatusPoller(db: Database, qbittorrent: QBittorrentService, intervalSeconds: number) {
   let running = false;
@@ -53,12 +52,8 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         const prevState = req.status;
         let newState = prevState;
 
-        if (SEEDING_STATES.includes(torrent.state)) {
-          newState = "SEEDING";
-        } else if (DOWNLOADING_STATES.includes(torrent.state)) {
+        if (prevState === "AWAITING_APPROVAL" && torrent) {
           newState = "DOWNLOADING";
-        } else if (COMPLETED_STATES.includes(torrent.state)) {
-          newState = "SEEDING";
         }
 
         if (newState !== prevState) {

@@ -63,10 +63,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.radarr_quality, rc.size_mb " +
           "FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? LIMIT 1"
         ).get(row.id) as any;
+
+        const releaseStats = db.prepare(
+          "SELECT COUNT(*) as count, COALESCE(SUM(size_mb), 0) as total_size_mb FROM release_candidates WHERE request_id = ?"
+        ).get(row.id) as any;
+
         return {
           ...row,
           requested_by: JSON.parse(row.requested_by || "[]"),
           approved_release: approvedRow || null,
+          release_count: releaseStats?.count || 0,
+          total_size_mb: releaseStats?.total_size_mb || 0,
         };
       });
       
