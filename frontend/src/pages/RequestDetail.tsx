@@ -362,6 +362,10 @@ export default function RequestDetail() {
 
         if (!hasTorrentAr) return null;
 
+        // Don't render card if torrent was deleted from qBittorrent (stale hash)
+        const tsEntry = torrentStatuses.find((s: any) => s.release_id === ar.id);
+        if (tsEntry && !tsEntry.found) return null;
+
         return (
           <div key={ar.id} className="torrent-panel">
             <div className="approved-release-info">

@@ -270,7 +270,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
 
         const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
         if (!torrent) {
-          results.push({ release_id: release.release_id, title: release.title, found: false, hash: release.torrent_hash });
+          // Stale hash — torrent was deleted from qBittorrent but hash wasn't cleared
+          db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(release.release_id);
+          results.push({ release_id: release.release_id, title: release.title, found: false });
           continue;
         }
 
