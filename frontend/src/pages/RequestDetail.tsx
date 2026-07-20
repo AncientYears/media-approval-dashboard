@@ -223,10 +223,7 @@ export default function RequestDetail() {
   // Poll torrent status while we have an active torrent
   useEffect(() => {
     if (!hasTorrent) return;
-    const interval = setInterval(() => {
-      loadTorrentStatus();
-      loadData();
-    }, 5000);
+    const interval = setInterval(loadTorrentStatus, 3000);
     return () => clearInterval(interval);
   }, [id, hasTorrent]);
 
@@ -407,11 +404,9 @@ export default function RequestDetail() {
                           <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.library_path)}>
                             {torrentStatus.library_path}
                           </span>
-                          {torrentStatus.movie_file_count > 0 ? null : (
-                            <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
-                              {showRemoveConfirm ? "Remove?" : "In Library"}
-                            </button>
-                          )}
+                          <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
+                            {showRemoveConfirm ? "Remove?" : "In Library"}
+                          </button>
                         </>
                       ) : moveResult?.source ? (
                         <span className="move-result">
@@ -420,8 +415,6 @@ export default function RequestDetail() {
                         </span>
                       ) : moveResult?.error ? (
                         <span className="move-error">{moveResult.error}</span>
-                      ) : torrentStatus.movie_file_count > 0 ? (
-                        <span className="rtag" style={{ opacity: 0.6 }}>Managed by Radarr</span>
                       ) : (
                         <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
                           {moving ? "Moving..." : "Move to Library"}
