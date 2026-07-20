@@ -57,13 +57,15 @@ export async function removeFromLibrary(requestId: number) {
   return response.data;
 }
 
-export async function pauseTorrent(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/torrent/pause`);
+export async function pauseTorrent(requestId: number, releaseId?: number) {
+  const params = releaseId ? `?releaseId=${releaseId}` : "";
+  const response = await api.post(`/requests/${requestId}/torrent/pause${params}`);
   return response.data;
 }
 
-export async function resumeTorrent(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/torrent/resume`);
+export async function resumeTorrent(requestId: number, releaseId?: number) {
+  const params = releaseId ? `?releaseId=${releaseId}` : "";
+  const response = await api.post(`/requests/${requestId}/torrent/resume${params}`);
   return response.data;
 }
 

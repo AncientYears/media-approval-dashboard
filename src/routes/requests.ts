@@ -656,13 +656,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
-  // POST /api/requests/:id/torrent/pause - Pause torrent
+  // POST /api/requests/:id/torrent/pause?releaseId=X - Pause torrent
   router.post("/:id/torrent/pause", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").get(id) as any;
-      if (!release?.torrent_hash) return res.status(400).json({ error: "No torrent" });
-      await qbittorrent.pauseTorrent(release.torrent_hash);
+      const releaseId = req.query.releaseId as string | undefined;
+      let hash: string | undefined;
+      if (releaseId) {
+        const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc WHERE rc.id = ?").get(releaseId) as any;
+        hash = release?.torrent_hash;
+      } else {
+        const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").get(id) as any;
+        hash = release?.torrent_hash;
+      }
+      if (!hash) return res.status(400).json({ error: "No torrent" });
+      await qbittorrent.pauseTorrent(hash);
       res.json({ success: true });
     } catch (error: any) {
       console.error("[Pause] Error:", error.message || error);
@@ -670,13 +678,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
-  // POST /api/requests/:id/torrent/resume - Resume torrent
+  // POST /api/requests/:id/torrent/resume?releaseId=X - Resume torrent
   router.post("/:id/torrent/resume", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").get(id) as any;
-      if (!release?.torrent_hash) return res.status(400).json({ error: "No torrent" });
-      await qbittorrent.resumeTorrent(release.torrent_hash);
+      const releaseId = req.query.releaseId as string | undefined;
+      let hash: string | undefined;
+      if (releaseId) {
+        const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc WHERE rc.id = ?").get(releaseId) as any;
+        hash = release?.torrent_hash;
+      } else {
+        const release = db.prepare("SELECT rc.torrent_hash FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").get(id) as any;
+        hash = release?.torrent_hash;
+      }
+      if (!hash) return res.status(400).json({ error: "No torrent" });
+      await qbittorrent.resumeTorrent(hash);
       res.json({ success: true });
     } catch (error: any) {
       console.error("[Resume] Error:", error.message || error);

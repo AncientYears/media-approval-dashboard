@@ -303,13 +303,13 @@ export default function RequestDetail() {
     }
   };
 
-  const handlePause = async () => {
-    await pauseTorrent(Number(id));
+  const handlePause = async (releaseId: number) => {
+    await pauseTorrent(Number(id), releaseId);
     loadTorrentStatuses();
   };
 
-  const handleResume = async () => {
-    await resumeTorrent(Number(id));
+  const handleResume = async (releaseId: number) => {
+    await resumeTorrent(Number(id), releaseId);
     loadTorrentStatuses();
   };
 
@@ -399,9 +399,9 @@ export default function RequestDetail() {
                   {ts.progress === 100 && (
                     <>
                       {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" || ts.state === "queuedUP" ? (
-                        <button className="btn btn-secondary btn-tiny" onClick={handlePause}>Pause</button>
+                        <button className="btn btn-secondary btn-tiny" onClick={() => handlePause(ar.id)}>Pause</button>
                       ) : (
-                        <button className="btn btn-secondary btn-tiny" onClick={handleResume}>Resume</button>
+                        <button className="btn btn-secondary btn-tiny" onClick={() => handleResume(ar.id)}>Resume</button>
                       )}
                     </>
                   )}
@@ -459,9 +459,6 @@ export default function RequestDetail() {
         <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
-          <span className={`status-badge status-badge-sm ${request.status.toLowerCase()}`}>
-            {request.status.replace(/_/g, " ")}
-          </span>
         </div>
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Search</button>
       </div>
