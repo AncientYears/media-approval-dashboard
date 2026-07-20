@@ -7,7 +7,7 @@ function formatSize(mb: number): string {
   return `${mb} MB`;
 }
 
-const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "REJECTED", "DISMISSED"];
+const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "SEEDING", "REJECTED", "DISMISSED"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
 const SORT_OPTIONS = [
   { value: "created_at_desc", label: "Newest first" },
@@ -22,6 +22,7 @@ const STATUS_ORDER: Record<string, number> = {
   SEARCHING: 1,
   NEW: 2,
   DOWNLOADING: 3,
+  SEEDING: 4,
   REJECTED: 6,
   DISMISSED: 7,
 };

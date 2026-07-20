@@ -157,16 +157,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
 
       let destPath = "";
       let inLibrary = false;
-      let movieFileCount = 0;
       if (request?.radarr_id) {
         try {
           const movie = await radarr.getMovie(request.radarr_id);
           const movieFolder = movie.path || movie.folderPath;
           if (movieFolder) {
-            destPath = path.join(movieFolder, path.basename(contentPath));
-            inLibrary = fs.existsSync(destPath);
+            destPath = movieFolder;
+            inLibrary = fs.existsSync(movieFolder) && fs.readdirSync(movieFolder).some((f: string) => !f.startsWith("."));
           }
-          movieFileCount = movie.movieFile?.id ? 1 : 0;
         } catch {
           // ignore
         }
@@ -190,7 +188,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         size: torrent.size,
         num_seeds: torrent.num_seeds,
         num_leechs: torrent.num_leechs,
-        movie_file_count: movieFileCount,
       });
     } catch (error) {
       console.error("Error fetching torrent status:", error);

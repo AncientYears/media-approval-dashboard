@@ -188,7 +188,6 @@ export default function RequestDetail() {
 
   const loadData = async () => {
     try {
-      setLoading(true);
       const data = await fetchReleases(Number(id));
       setRequest(data);
       setReleases(data.releases || []);
@@ -197,8 +196,6 @@ export default function RequestDetail() {
     } catch (err) {
       setError("Failed to load releases");
       console.error(err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -232,6 +229,18 @@ export default function RequestDetail() {
     try {
       await approveRelease(Number(id), releaseId);
       loadData();
+      // Poll until the torrent hash appears (async detection takes up to 30s)
+      let attempts = 0;
+      const pollHash = setInterval(async () => {
+        attempts++;
+        const data = await fetchReleases(Number(id));
+        if (data.approved_release?.torrent_hash || attempts >= 10) {
+          clearInterval(pollHash);
+          setRequest(data);
+          setReleases(data.releases || []);
+          setApprovedRelease(data.approved_release || null);
+        }
+      }, 3000);
     } finally {
       setApprovingId(null);
     }
