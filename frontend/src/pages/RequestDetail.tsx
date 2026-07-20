@@ -186,8 +186,9 @@ export default function RequestDetail() {
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [approvingId, setApprovingId] = useState<number | null>(null);
 
-  const loadData = async () => {
+  const loadData = async (initial = false) => {
     try {
+      if (initial) setLoading(true);
       const data = await fetchReleases(Number(id));
       setRequest(data);
       setReleases(data.releases || []);
@@ -196,6 +197,8 @@ export default function RequestDetail() {
     } catch (err) {
       setError("Failed to load releases");
       console.error(err);
+    } finally {
+      if (initial) setLoading(false);
     }
   };
 
@@ -214,7 +217,7 @@ export default function RequestDetail() {
     }
   };
 
-  useEffect(() => { loadData(); }, [id]);
+  useEffect(() => { loadData(true); }, [id]);
   useEffect(() => { loadTorrentStatus(); }, [id, hasTorrent]);
 
   // Poll torrent status while we have an active torrent
