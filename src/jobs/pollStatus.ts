@@ -17,7 +17,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         "SELECT DISTINCT mr.id, mr.title, mr.status FROM media_requests mr " +
         "JOIN approval_history ah ON ah.request_id = mr.id " +
         "JOIN release_candidates rc ON rc.id = ah.release_id " +
-        "WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL') AND rc.torrent_hash != ''"
+        "WHERE mr.status IN ('DOWNLOADING', 'AWAITING_APPROVAL') AND rc.torrent_hash != ''"
       ).all() as any[];
 
       if (requests.length === 0) return;
@@ -73,8 +73,8 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
 
         if (anyDownloading) {
           newState = "DOWNLOADING";
-        } else if (allSeeding && prevState === "DOWNLOADING") {
-          newState = "SEEDING";
+        } else if (allSeeding) {
+          newState = "AWAITING_APPROVAL";
         }
 
         if (newState !== prevState) {
