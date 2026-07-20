@@ -171,12 +171,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
               const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
               if (videoFile) {
                 destPath = path.join(movieFolder, videoFile);
+                const stat = fs.statSync(destPath);
+                inLibrary = Math.abs(torrent.size - stat.size) < 1024;
               } else if (files.length > 0) {
                 destPath = path.join(movieFolder, files[0]);
+                const stat = fs.statSync(destPath);
+                inLibrary = Math.abs(torrent.size - stat.size) < 1024;
               } else {
                 destPath = movieFolder;
               }
-              inLibrary = files.length > 0;
             } else {
               destPath = movieFolder;
             }
@@ -218,9 +221,35 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
 
       const releases = db.prepare(
-        "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id FROM release_candidates rc " +
+        "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id, rc.size_mb FROM release_candidates rc " +
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
       ).all(id) as any[];
+
+      // Fetch movie info ONCE for all releases
+      let movieFolderPath = "";
+      let libraryVideoSize = 0;
+      let libraryVideoName = "";
+      if (request?.radarr_id) {
+        try {
+          const movie = await radarr.getMovie(request.radarr_id);
+          movieFolderPath = movie.path || movie.folderPath || "";
+          if (movieFolderPath && fs.existsSync(movieFolderPath)) {
+            const files = fs.readdirSync(movieFolderPath).filter((f: string) => !f.startsWith("."));
+            const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (videoFile) {
+              libraryVideoName = videoFile;
+              const stat = fs.statSync(path.join(movieFolderPath, videoFile));
+              libraryVideoSize = stat.size;
+            } else if (files.length > 0) {
+              libraryVideoName = files[0];
+              const stat = fs.statSync(path.join(movieFolderPath, files[0]));
+              libraryVideoSize = stat.size;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
 
       const results: any[] = [];
 
@@ -241,32 +270,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           contentPath = "/media" + contentPath;
         }
 
-        let destPath = "";
-        let inLibrary = false;
-        if (request?.radarr_id) {
-          try {
-            const movie = await radarr.getMovie(request.radarr_id);
-            const movieFolder = movie.path || movie.folderPath;
-            if (movieFolder) {
-              if (fs.existsSync(movieFolder)) {
-                const files = fs.readdirSync(movieFolder).filter((f: string) => !f.startsWith("."));
-                const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-                if (videoFile) {
-                  destPath = path.join(movieFolder, videoFile);
-                } else if (files.length > 0) {
-                  destPath = path.join(movieFolder, files[0]);
-                } else {
-                  destPath = movieFolder;
-                }
-                inLibrary = files.length > 0;
-              } else {
-                destPath = movieFolder;
-              }
-            }
-          } catch {
-            // ignore
-          }
-        }
+        const destPath = movieFolderPath ? path.join(movieFolderPath, libraryVideoName || "") : "";
+        // Compare torrent size (bytes) with library file size to determine if THIS torrent's file is the one Radarr has
+        const torrentSizeBytes = torrent.size;
+        const inLibrary = libraryVideoSize > 0 && Math.abs(torrentSizeBytes - libraryVideoSize) < 1024;
 
         results.push({
           release_id: release.release_id,

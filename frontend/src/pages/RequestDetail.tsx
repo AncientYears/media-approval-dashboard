@@ -387,7 +387,7 @@ export default function RequestDetail() {
                 <div className="torrent-meta">
                   <span>{ts.progress}%</span>
                   {ts.state === "downloading" && <span>↓ {(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>}
-                  {ts.eta > 0 && ts.eta < 8640000 && (
+                  {ts.state === "downloading" && ts.eta > 0 && ts.eta < 8640000 && (
                     <span>ETA: {ts.eta >= 3600
                       ? `${Math.floor(ts.eta / 3600)}h ${Math.floor((ts.eta % 3600) / 60)}m`
                       : `${Math.floor(ts.eta / 60)}m ${ts.eta % 60}s`
