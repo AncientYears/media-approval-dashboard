@@ -59,10 +59,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       const rows = stmt.all();
       
       const parsedRows = rows.map((row: any) => {
-        const approvedRow = db.prepare(
+        const approvedRows = db.prepare(
           "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.radarr_quality, rc.size_mb " +
-          "FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? LIMIT 1"
-        ).get(row.id) as any;
+          "FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+        ).all(row.id) as any[];
+        const hasTorrent = approvedRows.some((r: any) => r.torrent_hash);
 
         const releaseStats = db.prepare(
           "SELECT COUNT(*) as count, COALESCE(SUM(size_mb), 0) as total_size_mb FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
@@ -71,7 +72,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         return {
           ...row,
           requested_by: JSON.parse(row.requested_by || "[]"),
-          approved_release: approvedRow || null,
+          approved_release: approvedRows[0] || null,
+          has_torrent: hasTorrent,
           release_count: releaseStats?.count || 0,
           total_size_mb: releaseStats?.total_size_mb || 0,
         };
@@ -97,21 +99,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
 
       request.requested_by = JSON.parse(request.requested_by || "[]");
 
-      // Get approved release (if any)
-      const approvedRow = db.prepare(
+      // Get all approved releases
+      const approvedRows = db.prepare(
         "SELECT rc.* FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? ORDER BY ah.approved_at DESC LIMIT 1"
-      ).get(id) as any;
-      const approved_release = approvedRow ? parseReleases([approvedRow])[0] : null;
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? ORDER BY ah.approved_at DESC"
+      ).all(id) as any[];
+      const approved_releases = approvedRows.length > 0 ? parseReleases(approvedRows) : [];
+      const approvedIds = new Set(approved_releases.map((r: any) => r.id));
 
-      // Get all releases, excluding the approved one
+      // Get all releases, excluding approved ones
       const releaseStmt = db.prepare("SELECT * FROM release_candidates WHERE request_id = ? ORDER BY radarr_rank ASC");
       const allReleases = parseReleases(releaseStmt.all(id));
-      const releases = approved_release
-        ? allReleases.filter((r: any) => r.id !== approved_release.id)
-        : allReleases;
+      const releases = allReleases.filter((r: any) => !approvedIds.has(r.id));
 
-      res.json({ ...request, releases, approved_release });
+      res.json({ ...request, releases, approved_releases });
     } catch (error) {
       console.error("Error fetching request:", error);
       res.status(500).json({ error: "Failed to fetch request" });
@@ -132,14 +133,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
   });
 
   // GET /api/requests/:id/torrent-status - Get live torrent status from qBittorrent
+  // Optional query: ?hash=xxx to get status for a specific approved release's torrent
   router.get("/:id/torrent-status", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+
       const release = db.prepare(
-        "SELECT rc.torrent_hash, rc.save_path, rc.title FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
-      ).get(id) as any;
+        "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?" +
+        (req.query.release_id ? " AND rc.id = ?" : "")
+      ).get(...(req.query.release_id ? [id, req.query.release_id] : [id])) as any;
 
       if (!release || !release.torrent_hash) {
         return res.json({ found: false });
@@ -162,8 +166,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           const movie = await radarr.getMovie(request.radarr_id);
           const movieFolder = movie.path || movie.folderPath;
           if (movieFolder) {
-            destPath = movieFolder;
-            inLibrary = fs.existsSync(movieFolder) && fs.readdirSync(movieFolder).some((f: string) => !f.startsWith("."));
+            if (fs.existsSync(movieFolder)) {
+              const files = fs.readdirSync(movieFolder).filter((f: string) => !f.startsWith("."));
+              const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+              if (videoFile) {
+                destPath = path.join(movieFolder, videoFile);
+              } else if (files.length > 0) {
+                destPath = path.join(movieFolder, files[0]);
+              } else {
+                destPath = movieFolder;
+              }
+              inLibrary = files.length > 0;
+            } else {
+              destPath = movieFolder;
+            }
           }
         } catch {
           // ignore
@@ -192,6 +208,93 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     } catch (error) {
       console.error("Error fetching torrent status:", error);
       res.status(500).json({ error: "Failed to fetch torrent status" });
+    }
+  });
+
+  // GET /api/requests/:id/torrent-statuses - Get live torrent status for ALL approved releases
+  router.get("/:id/torrent-statuses", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+
+      const releases = db.prepare(
+        "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).all(id) as any[];
+
+      const results: any[] = [];
+
+      for (const release of releases) {
+        if (!release.torrent_hash) {
+          results.push({ release_id: release.release_id, title: release.title, found: false });
+          continue;
+        }
+
+        const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+        if (!torrent) {
+          results.push({ release_id: release.release_id, title: release.title, found: false, hash: release.torrent_hash });
+          continue;
+        }
+
+        let contentPath = torrent.content_path;
+        if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) {
+          contentPath = "/media" + contentPath;
+        }
+
+        let destPath = "";
+        let inLibrary = false;
+        if (request?.radarr_id) {
+          try {
+            const movie = await radarr.getMovie(request.radarr_id);
+            const movieFolder = movie.path || movie.folderPath;
+            if (movieFolder) {
+              if (fs.existsSync(movieFolder)) {
+                const files = fs.readdirSync(movieFolder).filter((f: string) => !f.startsWith("."));
+                const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+                if (videoFile) {
+                  destPath = path.join(movieFolder, videoFile);
+                } else if (files.length > 0) {
+                  destPath = path.join(movieFolder, files[0]);
+                } else {
+                  destPath = movieFolder;
+                }
+                inLibrary = files.length > 0;
+              } else {
+                destPath = movieFolder;
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        results.push({
+          release_id: release.release_id,
+          title: release.title,
+          found: true,
+          hash: torrent.hash,
+          name: torrent.name,
+          state: torrent.state,
+          progress: Math.round(torrent.progress * 100),
+          dlspeed: torrent.dlspeed,
+          upspeed: torrent.upspeed,
+          ratio: Math.round(torrent.ratio * 100) / 100,
+          eta: torrent.eta,
+          save_path: torrent.save_path,
+          content_path: contentPath,
+          dest_path: destPath,
+          library_path: destPath,
+          in_library: inLibrary,
+          size: torrent.size,
+          num_seeds: torrent.num_seeds,
+          num_leechs: torrent.num_leechs,
+        });
+      }
+
+      res.json(results);
+    } catch (error) {
+      console.error("Error fetching torrent statuses:", error);
+      res.status(500).json({ error: "Failed to fetch torrent statuses" });
     }
   });
 

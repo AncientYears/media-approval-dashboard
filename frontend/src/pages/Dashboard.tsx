@@ -57,7 +57,7 @@ export default function Dashboard() {
   }, [loadRequests]);
 
   const requestsList = requests
-    .filter((r: any) => !r.approved_release?.torrent_hash)
+    .filter((r: any) => !r.has_torrent)
     .filter((r: any) => statusFilter === "ALL" || r.status === statusFilter)
     .filter((r: any) => typeFilter === "ALL" || r.type === typeFilter)
     .sort((a: any, b: any) => {
@@ -72,7 +72,7 @@ export default function Dashboard() {
     });
 
   const managedList = requests
-    .filter((r: any) => !!r.approved_release?.torrent_hash)
+    .filter((r: any) => r.has_torrent)
     .sort((a: any, b: any) => a.title.localeCompare(b.title));
 
   if (loading && requests.length === 0) {

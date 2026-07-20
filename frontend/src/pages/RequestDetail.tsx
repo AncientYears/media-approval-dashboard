@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatus, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent } from "../api";
+import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -179,11 +179,11 @@ export default function RequestDetail() {
   const [filterLanguage, setFilterLanguage] = useState("ALL");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [scoreProfile, setScoreProfile] = useState<ScoreProfile>("balanced");
-  const [torrentStatus, setTorrentStatus] = useState<any>(null);
-  const [approvedRelease, setApprovedRelease] = useState<any>(null);
-  const [moveResult, setMoveResult] = useState<any>(null);
-  const [moving, setMoving] = useState(false);
-  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [torrentStatuses, setTorrentStatuses] = useState<any[]>([]);
+  const [approvedReleases, setApprovedReleases] = useState<any[]>([]);
+  const [moveResults, setMoveResults] = useState<Record<number, any>>({});
+  const [moving, setMoving] = useState<number | null>(null);
+  const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
 
   const loadData = async (initial = false) => {
@@ -192,7 +192,7 @@ export default function RequestDetail() {
       const data = await fetchReleases(Number(id));
       setRequest(data);
       setReleases(data.releases || []);
-      setApprovedRelease(data.approved_release || null);
+      setApprovedReleases(data.approved_releases || []);
       setError(null);
     } catch (err) {
       setError("Failed to load releases");
@@ -202,46 +202,46 @@ export default function RequestDetail() {
     }
   };
 
-  const hasTorrent = approvedRelease?.torrent_hash;
+  const hasAnyTorrent = approvedReleases.some((r: any) => r.torrent_hash);
 
-  const loadTorrentStatus = async () => {
-    if (!request || !hasTorrent) {
-      setTorrentStatus(null);
+  const loadTorrentStatuses = async () => {
+    if (!request || !hasAnyTorrent) {
+      setTorrentStatuses([]);
       return;
     }
     try {
-      const status = await fetchTorrentStatus(Number(id));
-      setTorrentStatus(status);
+      const statuses = await fetchTorrentStatuses(Number(id));
+      setTorrentStatuses(Array.isArray(statuses) ? statuses : []);
     } catch {
-      setTorrentStatus(null);
+      setTorrentStatuses([]);
     }
   };
 
   useEffect(() => { loadData(true); }, [id]);
-  useEffect(() => { loadTorrentStatus(); }, [id, hasTorrent]);
+  useEffect(() => { loadTorrentStatuses(); }, [id, hasAnyTorrent]);
 
-  // Poll torrent status while we have an active torrent
+  // Poll torrent status while we have active torrents
   useEffect(() => {
-    if (!hasTorrent) return;
-    const interval = setInterval(loadTorrentStatus, 3000);
+    if (!hasAnyTorrent) return;
+    const interval = setInterval(loadTorrentStatuses, 3000);
     return () => clearInterval(interval);
-  }, [id, hasTorrent]);
+  }, [id, hasAnyTorrent]);
 
   const handleApprove = async (releaseId: number) => {
     setApprovingId(releaseId);
     try {
       await approveRelease(Number(id), releaseId);
       loadData();
-      // Poll until the torrent hash appears (async detection takes up to 30s)
       let attempts = 0;
       const pollHash = setInterval(async () => {
         attempts++;
         const data = await fetchReleases(Number(id));
-        if (data.approved_release?.torrent_hash || attempts >= 10) {
+        const hasHash = (data.approved_releases || []).some((r: any) => r.torrent_hash);
+        if (hasHash || attempts >= 10) {
           clearInterval(pollHash);
           setRequest(data);
           setReleases(data.releases || []);
-          setApprovedRelease(data.approved_release || null);
+          setApprovedReleases(data.approved_releases || []);
         }
       }, 3000);
     } finally {
@@ -268,49 +268,49 @@ export default function RequestDetail() {
     }
   };
 
-  const handleMoveToLibrary = async () => {
-    setMoving(true);
+  const handleMoveToLibrary = async (releaseId: number) => {
+    setMoving(releaseId);
     try {
       const result = await moveToLibrary(Number(id));
-      setMoveResult(result);
+      setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
       if (!result.alreadyExists) loadData();
     } catch (err: any) {
-      setMoveResult({ error: err?.response?.data?.error || err.message });
+      setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
     } finally {
-      setMoving(false);
+      setMoving(null);
     }
   };
 
-  const handleDismiss = async () => {
+  const handleDismiss = async (releaseId?: number) => {
     if (!confirm("Delete torrent and all files? This cannot be undone.")) return;
     await dismissRequest(Number(id));
     navigate("/");
   };
 
-  const handleRemoveFromLibrary = async () => {
-    if (!showRemoveConfirm) {
-      setShowRemoveConfirm(true);
+  const handleRemoveFromLibrary = async (releaseId: number) => {
+    if (removeConfirmId !== releaseId) {
+      setRemoveConfirmId(releaseId);
       return;
     }
     try {
       await removeFromLibrary(Number(id));
-      setShowRemoveConfirm(false);
-      setMoveResult(null);
-      loadTorrentStatus();
+      setRemoveConfirmId(null);
+      setMoveResults((prev) => ({ ...prev, [releaseId]: null }));
+      loadTorrentStatuses();
     } catch (err: any) {
       alert(err?.response?.data?.error || err.message);
-      setShowRemoveConfirm(false);
+      setRemoveConfirmId(null);
     }
   };
 
   const handlePause = async () => {
     await pauseTorrent(Number(id));
-    loadTorrentStatus();
+    loadTorrentStatuses();
   };
 
   const handleResume = async () => {
     await resumeTorrent(Number(id));
-    loadTorrentStatus();
+    loadTorrentStatuses();
   };
 
   if (loading) return <div className="container"><p>Loading...</p></div>;
@@ -353,97 +353,103 @@ export default function RequestDetail() {
 
   return (
     <div className="container">
-      {hasTorrent && (
-        <div className="torrent-panel">
-          {approvedRelease && (
+      {approvedReleases.length > 0 && approvedReleases.map((ar: any) => {
+        const ts = torrentStatuses.find((s: any) => s.release_id === ar.id);
+        const mr = moveResults[ar.id];
+        const isMoving = moving === ar.id;
+        const isRemoveConfirm = removeConfirmId === ar.id;
+        const hasTorrentAr = !!ar.torrent_hash;
+
+        if (!hasTorrentAr) return null;
+
+        return (
+          <div key={ar.id} className="torrent-panel">
             <div className="approved-release-info">
               <span className="approved-label">Installed</span>
-              <span className="approved-title" title={approvedRelease.title}>
-                {approvedRelease.info_url
-                  ? <a href={approvedRelease.info_url} target="_blank" rel="noopener noreferrer">{approvedRelease.title}</a>
-                  : approvedRelease.title}
+              <span className="approved-title" title={ar.title}>
+                {ar.info_url
+                  ? <a href={ar.info_url} target="_blank" rel="noopener noreferrer">{ar.title}</a>
+                  : ar.title}
               </span>
-              <span className="rtag">{approvedRelease.radarr_quality}</span>
-              <span className="rtag">{formatSize(approvedRelease.size_mb)}</span>
-              {torrentStatus?.found && (
-                <span className={`status-badge status-badge-sm qb-${torrentStatus.state}`}>
-                  {torrentStatus.state}
+              <span className="rtag">{ar.radarr_quality}</span>
+              <span className="rtag">{formatSize(ar.size_mb)}</span>
+              {ts?.found && (
+                <span className={`status-badge status-badge-sm qb-${ts.state}`}>
+                  {ts.state}
                 </span>
               )}
             </div>
-          )}
-          {torrentStatus?.found ? (
-            <>
-              <div className="torrent-progress-bar">
-                <div className="torrent-progress-fill" style={{ width: `${torrentStatus.progress}%` }} />
-              </div>
-              <div className="torrent-meta">
-                <span>{torrentStatus.progress}%</span>
-                {torrentStatus.state === "downloading" && <span>↓ {(torrentStatus.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>}
-                {torrentStatus.eta > 0 && torrentStatus.eta < 8640000 && (
-                  <span>ETA: {torrentStatus.eta >= 3600
-                    ? `${Math.floor(torrentStatus.eta / 3600)}h ${Math.floor((torrentStatus.eta % 3600) / 60)}m`
-                    : `${Math.floor(torrentStatus.eta / 60)}m ${torrentStatus.eta % 60}s`
-                  }</span>
-                )}
-                <span>↑ {(torrentStatus.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
-                <span>Ratio: {torrentStatus.ratio}</span>
-                <span>Seeds: {torrentStatus.num_seeds}/{torrentStatus.num_leechs + torrentStatus.num_seeds}</span>
-                {torrentStatus.progress === 100 && (
-                  <>
-                    {torrentStatus.state === "stalledUP" || torrentStatus.state === "uploading" || torrentStatus.state === "forcedUP" || torrentStatus.state === "queuedUP" ? (
-                      <button className="btn btn-secondary btn-tiny" onClick={handlePause}>Pause</button>
-                    ) : (
-                      <button className="btn btn-secondary btn-tiny" onClick={handleResume}>Resume</button>
-                    )}
-                  </>
-                )}
-              </div>
-              {torrentStatus.progress === 100 && (
-                <>
+            {ts?.found ? (
+              <>
+                <div className="torrent-progress-bar">
+                  <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
+                </div>
+                <div className="torrent-meta">
+                  <span>{ts.progress}%</span>
+                  {ts.state === "downloading" && <span>↓ {(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>}
+                  {ts.eta > 0 && ts.eta < 8640000 && (
+                    <span>ETA: {ts.eta >= 3600
+                      ? `${Math.floor(ts.eta / 3600)}h ${Math.floor((ts.eta % 3600) / 60)}m`
+                      : `${Math.floor(ts.eta / 60)}m ${ts.eta % 60}s`
+                    }</span>
+                  )}
+                  <span>↑ {(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
+                  <span>Ratio: {ts.ratio}</span>
+                  <span>Seeds: {ts.num_seeds}/{ts.num_leechs + ts.num_seeds}</span>
+                  {ts.progress === 100 && (
+                    <>
+                      {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" || ts.state === "queuedUP" ? (
+                        <button className="btn btn-secondary btn-tiny" onClick={handlePause}>Pause</button>
+                      ) : (
+                        <button className="btn btn-secondary btn-tiny" onClick={handleResume}>Resume</button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {ts.progress === 100 && (
                   <div className="torrent-paths">
                     <div className="torrent-path-row">
                       <span className="path-label">Source:</span>
-                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.content_path)}>
-                        {torrentStatus.content_path}
+                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.content_path)}>
+                        {ts.content_path}
                       </span>
-                      <button className="btn btn-danger btn-tiny" onClick={handleDismiss}>Delete</button>
+                      <button className="btn btn-danger btn-tiny" onClick={() => handleDismiss(ar.id)}>Delete</button>
                     </div>
                     <div className="torrent-path-row">
                       <span className="path-label">Library:</span>
-                      {torrentStatus.in_library ? (
+                      {ts.in_library ? (
                         <>
-                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.library_path)}>
-                            {torrentStatus.library_path}
+                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.library_path)}>
+                            {ts.library_path}
                           </span>
-                          <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
-                            {showRemoveConfirm ? "Remove?" : "In Library"}
+                          <button className={`btn btn-tiny ${isRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={() => handleRemoveFromLibrary(ar.id)}>
+                            {isRemoveConfirm ? "Remove?" : "In Library"}
                           </button>
                         </>
-                      ) : moveResult?.source ? (
+                      ) : mr?.source ? (
                         <span className="move-result">
                           <span>Hardlinked →</span>
-                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(moveResult.destination)}>{moveResult.destination}</span>
+                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(mr.destination)}>{mr.destination}</span>
                         </span>
-                      ) : moveResult?.error ? (
-                        <span className="move-error">{moveResult.error}</span>
+                      ) : mr?.error ? (
+                        <span className="move-error">{mr.error}</span>
                       ) : (
-                        <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
-                          {moving ? "Moving..." : "Move to Library"}
+                        <button className="btn btn-primary btn-tiny" onClick={() => handleMoveToLibrary(ar.id)} disabled={isMoving}>
+                          {isMoving ? "Moving..." : "Move to Library"}
                         </button>
                       )}
                     </div>
                   </div>
-                </>
-              )}
-            </>
-          ) : (
-            <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
-          )}
-        </div>
-      )}
+                )}
+              </>
+            ) : (
+              <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
+            )}
+          </div>
+        );
+      })}
 
-      {request.status === "DISMISSED" && !hasTorrent && (
+      {request.status === "DISMISSED" && !hasAnyTorrent && (
         <div className="torrent-panel">
           <div className="torrent-meta"><span>Dismissed</span></div>
         </div>
