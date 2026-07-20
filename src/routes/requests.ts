@@ -66,7 +66,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         const hasTorrent = approvedRows.some((r: any) => r.torrent_hash);
 
         const releaseStats = db.prepare(
-          "SELECT COUNT(*) as count, COALESCE(SUM(size_mb), 0) as total_size_mb FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+          "SELECT COUNT(*) as count, COALESCE(SUM(size_mb), 0) as total_size_mb FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? AND rc.torrent_hash != ''"
         ).get(row.id) as any;
 
         return {
