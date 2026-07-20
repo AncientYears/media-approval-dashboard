@@ -18,6 +18,7 @@ export interface TorrentInfo {
   completed: number;
   category: string;
   tags: string;
+  eta: number;
 }
 
 export class QBittorrentService {

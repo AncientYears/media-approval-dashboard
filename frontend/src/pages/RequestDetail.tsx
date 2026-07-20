@@ -184,6 +184,7 @@ export default function RequestDetail() {
   const [moveResult, setMoveResult] = useState<any>(null);
   const [moving, setMoving] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [approvingId, setApprovingId] = useState<number | null>(null);
 
   const loadData = async () => {
     try {
@@ -222,13 +223,21 @@ export default function RequestDetail() {
   // Poll torrent status while we have an active torrent
   useEffect(() => {
     if (!hasTorrent) return;
-    const interval = setInterval(loadTorrentStatus, 3000);
+    const interval = setInterval(() => {
+      loadTorrentStatus();
+      loadData();
+    }, 5000);
     return () => clearInterval(interval);
   }, [id, hasTorrent]);
 
   const handleApprove = async (releaseId: number) => {
-    await approveRelease(Number(id), releaseId);
-    loadData();
+    setApprovingId(releaseId);
+    try {
+      await approveRelease(Number(id), releaseId);
+      loadData();
+    } finally {
+      setApprovingId(null);
+    }
   };
 
   const handleSearchAgain = async () => {
@@ -362,6 +371,12 @@ export default function RequestDetail() {
               <div className="torrent-meta">
                 <span>{torrentStatus.progress}%</span>
                 {torrentStatus.state === "downloading" && <span>↓ {(torrentStatus.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>}
+                {torrentStatus.eta > 0 && torrentStatus.eta < 8640000 && (
+                  <span>ETA: {torrentStatus.eta >= 3600
+                    ? `${Math.floor(torrentStatus.eta / 3600)}h ${Math.floor((torrentStatus.eta % 3600) / 60)}m`
+                    : `${Math.floor(torrentStatus.eta / 60)}m ${torrentStatus.eta % 60}s`
+                  }</span>
+                )}
                 <span>↑ {(torrentStatus.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
                 <span>Ratio: {torrentStatus.ratio}</span>
                 <span>Seeds: {torrentStatus.num_seeds}/{torrentStatus.num_leechs + torrentStatus.num_seeds}</span>
@@ -392,9 +407,11 @@ export default function RequestDetail() {
                           <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(torrentStatus.library_path)}>
                             {torrentStatus.library_path}
                           </span>
-                          <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
-                            {showRemoveConfirm ? "Remove?" : "In Library"}
-                          </button>
+                          {torrentStatus.movie_file_count > 0 ? null : (
+                            <button className={`btn btn-tiny ${showRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={handleRemoveFromLibrary}>
+                              {showRemoveConfirm ? "Remove?" : "In Library"}
+                            </button>
+                          )}
                         </>
                       ) : moveResult?.source ? (
                         <span className="move-result">
@@ -403,6 +420,8 @@ export default function RequestDetail() {
                         </span>
                       ) : moveResult?.error ? (
                         <span className="move-error">{moveResult.error}</span>
+                      ) : torrentStatus.movie_file_count > 0 ? (
+                        <span className="rtag" style={{ opacity: 0.6 }}>Managed by Radarr</span>
                       ) : (
                         <button className="btn btn-primary btn-tiny" onClick={handleMoveToLibrary} disabled={moving}>
                           {moving ? "Moving..." : "Move to Library"}
@@ -514,7 +533,9 @@ export default function RequestDetail() {
                       <td className="td-cf">{r.radarr_custom_formats?.length || 0}</td>
                       <td className="td-score">{computeProfileScore(r, scoreProfile)}/{scoreProfile === "compact" ? "17" : "20"}</td>
                       <td className="td-act" onClick={(e) => e.stopPropagation()}>
-                        <button className="btn btn-primary btn-tiny" onClick={() => handleApprove(r.id)}>Approve</button>
+                        <button className="btn btn-primary btn-tiny" onClick={() => handleApprove(r.id)} disabled={approvingId !== null}>
+                          {approvingId === r.id ? "Approving..." : "Approve"}
+                        </button>
                       </td>
                     </tr>
                     {isExpanded && (
@@ -557,7 +578,9 @@ export default function RequestDetail() {
                       <span className="score-num">{computeProfileScore(r, scoreProfile)}</span>
                       <span className="score-of">/{scoreProfile === "compact" ? "17" : "20"}</span>
                     </div>
-                    <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); handleApprove(r.id); }}>Approve</button>
+                    <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); handleApprove(r.id); }} disabled={approvingId !== null}>
+                      {approvingId === r.id ? "Approving..." : "Approve"}
+                    </button>
                   </div>
                 </div>
                 {isExpanded && <Breakdown r={r} profile={scoreProfile} />}
