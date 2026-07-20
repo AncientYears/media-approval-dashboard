@@ -12,60 +12,75 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
     running = true;
 
     try {
-      const active = db.prepare(
-        "SELECT mr.id, mr.title, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM media_requests mr " +
+      // Get unique requests with torrents
+      const requests = db.prepare(
+        "SELECT DISTINCT mr.id, mr.title, mr.status FROM media_requests mr " +
         "JOIN approval_history ah ON ah.request_id = mr.id " +
         "JOIN release_candidates rc ON rc.id = ah.release_id " +
         "WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL') AND rc.torrent_hash != ''"
       ).all() as any[];
 
-      if (active.length === 0) return;
+      if (requests.length === 0) return;
 
       const torrents = await qbittorrent.getTorrents();
 
-      for (const req of active) {
-        let torrent = null;
+      // Get all approved release hashes per request
+      const releaseHashes = db.prepare(
+        "SELECT ah.request_id, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM approval_history ah " +
+        "JOIN release_candidates rc ON rc.id = ah.release_id WHERE rc.torrent_hash != ''"
+      ).all() as any[];
 
-        // Try hash first
-        if (req.torrent_hash) {
-          torrent = torrents.find((t) => t.hash === req.torrent_hash);
-        }
+      for (const req of requests) {
+        const hashes = releaseHashes.filter((r: any) => r.request_id === req.id);
+        if (hashes.length === 0) continue;
 
-        // Fallback: match by title if no hash or hash not found
-        if (!torrent && req.release_title) {
-          const normalized = req.release_title.toLowerCase().replace(/[.\-_\[\]]/g, " ");
-          torrent = torrents.find((t) => {
-            const tn = t.name.toLowerCase().replace(/[.\-_\[\]]/g, " ");
-            return tn.includes(normalized) || normalized.includes(tn);
-          });
+        // Find the "worst" state among all torrents for this request
+        // If any is still downloading → DOWNLOADING. Only if ALL are seeding → SEEDING.
+        let anyFound = false;
+        let anyDownloading = false;
+        let allSeeding = true;
 
-          if (torrent) {
-            // Store the found hash for next time
-            db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
-              .run(torrent.hash, torrent.save_path, req.release_id);
-            console.log(`[Status] Found torrent by title match for ${req.title}: hash=${torrent.hash}`);
+        for (const h of hashes) {
+          const torrent = torrents.find((t) => t.hash === h.torrent_hash);
+          if (!torrent) continue;
+          anyFound = true;
+
+          // Store found hash if we matched by title earlier
+          if (!h.torrent_hash && h.release_title) {
+            const normalized = h.release_title.toLowerCase().replace(/[.\-_\[\]]/g, " ");
+            const matched = torrents.find((t) => {
+              const tn = t.name.toLowerCase().replace(/[.\-_\[\]]/g, " ");
+              return tn.includes(normalized) || normalized.includes(tn);
+            });
+            if (matched) {
+              db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
+                .run(matched.hash, matched.save_path, h.release_id);
+            }
+          }
+
+          if (DOWNLOADING_STATES.includes(torrent.state)) {
+            anyDownloading = true;
+            allSeeding = false;
+          } else if (!SEEDING_STATES.includes(torrent.state)) {
+            allSeeding = false;
           }
         }
 
-        if (!torrent) continue;
+        if (!anyFound) continue;
 
         const prevState = req.status;
         let newState = prevState;
 
-        if (SEEDING_STATES.includes(torrent.state)) {
-          if (prevState === "DOWNLOADING") {
-            newState = "SEEDING";
-          }
-        } else if (DOWNLOADING_STATES.includes(torrent.state)) {
-          if (prevState !== "DOWNLOADING") {
-            newState = "DOWNLOADING";
-          }
+        if (anyDownloading) {
+          newState = "DOWNLOADING";
+        } else if (allSeeding && prevState === "DOWNLOADING") {
+          newState = "SEEDING";
         }
 
         if (newState !== prevState) {
           db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .run(newState, req.id);
-          console.log(`[Status] ${req.title}: ${prevState} → ${newState} (qBittorrent: ${torrent.state})`);
+          console.log(`[Status] ${req.title}: ${prevState} → ${newState}`);
         }
       }
     } catch (err) {

@@ -165,20 +165,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         try {
           const movie = await radarr.getMovie(request.radarr_id);
           const movieFolder = movie.path || movie.folderPath;
+          const radarrSize = movie.movieFile?.size || 0;
           if (movieFolder) {
             if (fs.existsSync(movieFolder)) {
               const files = fs.readdirSync(movieFolder).filter((f: string) => !f.startsWith("."));
               const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
               if (videoFile) {
                 destPath = path.join(movieFolder, videoFile);
-                const stat = fs.statSync(destPath);
-                inLibrary = Math.abs(torrent.size - stat.size) < 1024;
               } else if (files.length > 0) {
                 destPath = path.join(movieFolder, files[0]);
-                const stat = fs.statSync(destPath);
-                inLibrary = Math.abs(torrent.size - stat.size) < 1024;
               } else {
                 destPath = movieFolder;
+              }
+              // Compare actual content file size on disk vs Radarr's imported file size
+              if (radarrSize > 0 && fs.existsSync(contentPath)) {
+                const st = fs.statSync(contentPath);
+                let actualSize = 0;
+                if (st.isFile()) {
+                  actualSize = st.size;
+                } else if (st.isDirectory()) {
+                  const vf = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+                  if (vf.length > 0) actualSize = fs.statSync(path.join(contentPath, vf[0])).size;
+                }
+                inLibrary = actualSize > 0 && Math.abs(actualSize - radarrSize) < radarrSize * 0.01;
               }
             } else {
               destPath = movieFolder;
@@ -227,23 +236,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
 
       // Fetch movie info ONCE for all releases
       let movieFolderPath = "";
-      let libraryVideoSize = 0;
       let libraryVideoName = "";
+      let radarrFileSize = 0;
       if (request?.radarr_id) {
         try {
           const movie = await radarr.getMovie(request.radarr_id);
           movieFolderPath = movie.path || movie.folderPath || "";
+          // Get the actual file size from Radarr's movieFile
+          if (movie.movieFile?.size) {
+            radarrFileSize = movie.movieFile.size;
+          }
           if (movieFolderPath && fs.existsSync(movieFolderPath)) {
             const files = fs.readdirSync(movieFolderPath).filter((f: string) => !f.startsWith("."));
             const videoFile = files.find((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
             if (videoFile) {
               libraryVideoName = videoFile;
-              const stat = fs.statSync(path.join(movieFolderPath, videoFile));
-              libraryVideoSize = stat.size;
             } else if (files.length > 0) {
               libraryVideoName = files[0];
-              const stat = fs.statSync(path.join(movieFolderPath, files[0]));
-              libraryVideoSize = stat.size;
             }
           }
         } catch {
@@ -271,9 +280,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         }
 
         const destPath = movieFolderPath ? path.join(movieFolderPath, libraryVideoName || "") : "";
-        // Compare torrent size (bytes) with library file size to determine if THIS torrent's file is the one Radarr has
-        const torrentSizeBytes = torrent.size;
-        const inLibrary = libraryVideoSize > 0 && Math.abs(torrentSizeBytes - libraryVideoSize) < 1024;
+        // Check if THIS torrent's actual file size matches what Radarr has in library
+        let inLibrary = false;
+        if (radarrFileSize > 0) {
+          // Get actual file size of the torrent's content on disk
+          let actualSize = 0;
+          if (fs.existsSync(contentPath)) {
+            const st = fs.statSync(contentPath);
+            if (st.isFile()) {
+              actualSize = st.size;
+            } else if (st.isDirectory()) {
+              // content_path is a directory, check for the main file
+              const files = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+              if (files.length > 0) {
+                actualSize = fs.statSync(path.join(contentPath, files[0])).size;
+              }
+            }
+          }
+          // Match if sizes are within 1% (accounts for metadata differences)
+          inLibrary = actualSize > 0 && Math.abs(actualSize - radarrFileSize) < radarrFileSize * 0.01;
+        }
 
         results.push({
           release_id: release.release_id,
