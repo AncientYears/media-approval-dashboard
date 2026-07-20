@@ -344,17 +344,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
-  // POST /api/requests/:id/dismiss - Dismiss + delete torrents + delete files
+  // POST /api/requests/:id/dismiss?releaseId=X - Delete one torrent + files + clear hash
   router.post("/:id/dismiss", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const releases = db.prepare(
-        "SELECT rc.id, rc.torrent_hash FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
-      ).all(id) as any[];
+      const releaseId = req.query.releaseId as string | undefined;
 
-      for (const release of releases) {
-        if (release.torrent_hash) {
+      if (releaseId) {
+        // Delete a single approved release's torrent
+        const release = db.prepare(
+          "SELECT rc.id, rc.torrent_hash FROM release_candidates rc WHERE rc.id = ?"
+        ).get(releaseId) as any;
+
+        if (release?.torrent_hash) {
           try {
             await qbittorrent.deleteTorrent(release.torrent_hash, true);
             console.log(`[Dismiss] Deleted torrent ${release.torrent_hash} with files`);
@@ -362,12 +364,34 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
             console.error(`[Dismiss] Failed to delete torrent:`, err.message);
           }
         }
-        db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(release.id);
+        db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(releaseId);
+
+        // If no more approved releases with torrents, set DISMISSED
+        const remaining = db.prepare(
+          "SELECT rc.torrent_hash FROM release_candidates rc " +
+          "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? AND rc.torrent_hash != ''"
+        ).get(id) as any;
+        if (!remaining) {
+          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+        }
+      } else {
+        // Legacy: dismiss entire request, delete all torrents
+        const releases = db.prepare(
+          "SELECT rc.id, rc.torrent_hash FROM release_candidates rc " +
+          "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+        ).all(id) as any[];
+        for (const release of releases) {
+          if (release.torrent_hash) {
+            try {
+              await qbittorrent.deleteTorrent(release.torrent_hash, true);
+            } catch {}
+          }
+          db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(release.id);
+        }
+        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }
 
-      const updateStmt = db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-      updateStmt.run(id);
-      res.json({ success: true, message: "Request dismissed and torrents deleted" });
+      res.json({ success: true });
     } catch (error) {
       console.error("Error dismissing request:", error);
       res.status(500).json({ error: "Failed to dismiss request" });

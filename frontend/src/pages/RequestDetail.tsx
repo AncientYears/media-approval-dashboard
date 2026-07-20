@@ -281,10 +281,10 @@ export default function RequestDetail() {
     }
   };
 
-  const handleDismiss = async () => {
+  const handleDismiss = async (releaseId?: number) => {
     if (!confirm("Delete torrent and all files? This cannot be undone.")) return;
-    await dismissRequest(Number(id));
-    navigate("/");
+    await dismissRequest(Number(id), releaseId);
+    loadData();
   };
 
   const handleRemoveFromLibrary = async (releaseId: number) => {
@@ -413,7 +413,7 @@ export default function RequestDetail() {
                       <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.content_path)}>
                         {ts.content_path}
                       </span>
-                      <button className="btn btn-danger btn-tiny" onClick={() => handleDismiss()}>Delete</button>
+                      <button className="btn btn-danger btn-tiny" onClick={() => handleDismiss(ar.id)}>Delete</button>
                     </div>
                     <div className="torrent-path-row">
                       <span className="path-label">Library:</span>

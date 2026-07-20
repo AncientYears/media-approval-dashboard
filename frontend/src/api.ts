@@ -47,8 +47,9 @@ export async function moveToLibrary(requestId: number) {
   return response.data;
 }
 
-export async function dismissRequest(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/dismiss`);
+export async function dismissRequest(requestId: number, releaseId?: number) {
+  const params = releaseId ? `?releaseId=${releaseId}` : "";
+  const response = await api.post(`/requests/${requestId}/dismiss${params}`);
   return response.data;
 }
 
