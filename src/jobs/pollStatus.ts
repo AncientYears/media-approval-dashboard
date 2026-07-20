@@ -12,12 +12,11 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
     running = true;
 
     try {
-      // Get unique requests with torrents
+      // Get unique requests that have approved releases
       const requests = db.prepare(
         "SELECT DISTINCT mr.id, mr.title, mr.status FROM media_requests mr " +
         "JOIN approval_history ah ON ah.request_id = mr.id " +
-        "JOIN release_candidates rc ON rc.id = ah.release_id " +
-        "WHERE mr.status IN ('DOWNLOADING', 'AWAITING_APPROVAL') AND rc.torrent_hash != ''"
+        "WHERE mr.status IN ('DOWNLOADING', 'AWAITING_APPROVAL')"
       ).all() as any[];
 
       if (requests.length === 0) return;
@@ -27,36 +26,41 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
       // Get all approved release hashes per request
       const releaseHashes = db.prepare(
         "SELECT ah.request_id, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM approval_history ah " +
-        "JOIN release_candidates rc ON rc.id = ah.release_id WHERE rc.torrent_hash != ''"
+        "JOIN release_candidates rc ON rc.id = ah.release_id"
       ).all() as any[];
 
       for (const req of requests) {
         const hashes = releaseHashes.filter((r: any) => r.request_id === req.id);
         if (hashes.length === 0) continue;
 
-        // Find the "worst" state among all torrents for this request
-        // If any is still downloading → DOWNLOADING. Only if ALL are seeding → SEEDING.
         let anyFound = false;
         let anyDownloading = false;
         let allSeeding = true;
 
         for (const h of hashes) {
-          const torrent = torrents.find((t) => t.hash === h.torrent_hash);
-          if (!torrent) continue;
-          anyFound = true;
+          let torrent = null;
 
-          // Store found hash if we matched by title earlier
-          if (!h.torrent_hash && h.release_title) {
+          if (h.torrent_hash) {
+            torrent = torrents.find((t) => t.hash === h.torrent_hash);
+          }
+
+          // Fallback: match by title
+          if (!torrent && h.release_title) {
             const normalized = h.release_title.toLowerCase().replace(/[.\-_\[\]]/g, " ");
-            const matched = torrents.find((t) => {
+            torrent = torrents.find((t) => {
               const tn = t.name.toLowerCase().replace(/[.\-_\[\]]/g, " ");
               return tn.includes(normalized) || normalized.includes(tn);
             });
-            if (matched) {
+
+            if (torrent) {
               db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
-                .run(matched.hash, matched.save_path, h.release_id);
+                .run(torrent.hash, torrent.save_path, h.release_id);
+              console.log(`[Status] Found torrent by title match for ${req.title}: hash=${torrent.hash}`);
             }
           }
+
+          if (!torrent) continue;
+          anyFound = true;
 
           if (DOWNLOADING_STATES.includes(torrent.state)) {
             anyDownloading = true;
