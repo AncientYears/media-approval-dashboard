@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, searchAgain, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests } from "../api";
+import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -228,10 +228,6 @@ export default function Dashboard() {
                 )}
                 <div className="request-actions">
                   <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>View Releases</button>
-                  <button className="btn btn-secondary" onClick={async () => {
-                    await searchAgain(req.id, {});
-                    loadData();
-                  }}>Refresh</button>
                   <button className="btn btn-danger btn-tiny" onClick={() => setConfirmDelete({ id: req.id, title: req.title })}>Delete</button>
                 </div>
               </div>

@@ -13,6 +13,7 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
 
       if (releases.length === 0) {
         console.log(`[Radarr] No releases found for ${title}`);
+        awaitingStmt.run(requestId);
         return;
       }
 

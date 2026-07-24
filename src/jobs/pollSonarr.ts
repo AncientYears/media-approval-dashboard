@@ -13,6 +13,7 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
 
       if (releases.length === 0) {
         console.log(`[Sonarr] No releases found for ${title}`);
+        awaitingStmt.run(requestId);
         return;
       }
 

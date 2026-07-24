@@ -1156,7 +1156,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }
 
-      send("progress", { step: "searching", message: "Querying indexers..." });
+      const service = request.type === "series" ? "Sonarr" : "Radarr";
+      send("progress", { step: "searching", message: `Querying ${service} for releases...` });
 
       let releases: RadarrSearchResult[] = [];
 
@@ -1170,7 +1171,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return;
       }
 
-      send("progress", { step: "found", message: `Found ${releases.length} release(s), indexing...`, total: releases.length });
+      send("progress", { step: "found", message: `Found ${releases.length} release(s), scoring...`, total: releases.length });
 
       const insertStmt = db.prepare(`
         INSERT INTO release_candidates
