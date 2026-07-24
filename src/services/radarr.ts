@@ -7,6 +7,7 @@ export class RadarrService {
   constructor(baseURL: string, apiKey: string) {
     this.client = axios.create({
       baseURL,
+      timeout: 45000,
       headers: {
         "X-Api-Key": apiKey,
         "Content-Type": "application/json",

@@ -1195,9 +1195,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       try {
         if (request.type === "series" && request.sonarr_id != null && request.season != null) {
-          releases = await searchTimeout(sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined), 30000);
+          releases = await searchTimeout(sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined), 60000);
         } else if (request.radarr_id) {
-          releases = await searchTimeout(radarr.searchReleases(request.radarr_id, searchTerm || undefined), 30000);
+          releases = await searchTimeout(radarr.searchReleases(request.radarr_id, searchTerm || undefined), 60000);
         } else {
           send("error", { error: "No Radarr or Sonarr ID associated with this request" });
           res.end();
