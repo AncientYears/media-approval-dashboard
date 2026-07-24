@@ -131,15 +131,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           skipped.push({ title: movie.title, radarr_id: movie.id, reason: "title exists in DB" });
           continue;
         }
-        const status = movie.hasFile ? "DOWNLOADING" : "NEW";
+        const status = movie.hasFile ? "SEEDING" : "NEW";
         const result = db.prepare(
           "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, ?, '[]')"
         ).run(movie.title, movie.id, status);
         const requestId = result.lastInsertRowid as number;
         console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id}, status=${status})`);
 
-        // If DOWNLOADING, try to detect torrent hash from qBittorrent
-        if (status === "DOWNLOADING") {
+        // If SEEDING (hasFile=true), try to detect torrent hash from qBittorrent
+        if (status === "SEEDING") {
           try {
             const torrents = await qbittorrent.getTorrents();
             const normTitle = movie.title.toLowerCase().replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();

@@ -53,6 +53,61 @@ const qbittorrent = new QBittorrentService(
 const statusPollInterval = parseInt(process.env.POLL_INTERVAL_STATUS || "30", 10);
 const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 
+// Startup fixup: fix stale DOWNLOADING movies that Radarr already has
+(async () => {
+  try {
+    const staleMovies = db.prepare(
+      "SELECT id, title, radarr_id FROM media_requests WHERE type = 'movie' AND status = 'DOWNLOADING' AND radarr_id IS NOT NULL"
+    ).all() as any[];
+    if (staleMovies.length === 0) return;
+
+    const radarrMovies = await radarr.getAllMovies();
+    const radarrMap = new Map(radarrMovies.map((m: any) => [m.id, m]));
+    let fixed = 0;
+
+    for (const m of staleMovies) {
+      const rm = radarrMap.get(m.radarr_id);
+      if (rm?.hasFile) {
+        db.prepare("UPDATE media_requests SET status = 'SEEDING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(m.id);
+        console.log(`[Startup] Fixed stale DOWNLOADING → SEEDING: ${m.title} (Radarr hasFile=true)`);
+        fixed++;
+      }
+    }
+    if (fixed > 0) console.log(`[Startup] Fixed ${fixed} stale DOWNLOADING movies`);
+
+    // Clean up stale release_candidates where hash doesn't match title
+    const withHashes = db.prepare(
+      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title " +
+      "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
+      "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
+    ).all() as any[];
+
+    if (withHashes.length > 0) {
+      const torrents = await qbittorrent.getTorrents();
+      const staleRcs: number[] = [];
+      for (const rc of withHashes) {
+        const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
+        if (t) {
+          const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+          const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+          if (tn !== req && !tn.startsWith(req + " ") && !tn.startsWith(req + ".")) {
+            staleRcs.push(rc.rc_id);
+            console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} is actually "${t.name}"`);
+          }
+        }
+      }
+      if (staleRcs.length > 0) {
+        const delH = db.prepare("DELETE FROM approval_history WHERE release_id = ?");
+        const delR = db.prepare("DELETE FROM release_candidates WHERE id = ?");
+        for (const id of staleRcs) { delH.run(id); delR.run(id); }
+        console.log(`[Startup] Removed ${staleRcs.length} stale release_candidates`);
+      }
+    }
+  } catch (err) {
+    console.error("[Startup] Fixup error:", err);
+  }
+})();
+
 // Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
