@@ -77,7 +77,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           has_torrent: hasTorrent,
           release_count: releaseStats?.count || 0,
           total_size_mb: releaseStats?.total_size_mb || 0,
-          candidate_count: db.prepare("SELECT COUNT(*) as c FROM release_candidates WHERE request_id = ?").get(row.id)?.c || 0,
+          candidate_count: (db.prepare("SELECT COUNT(*) as c FROM release_candidates WHERE request_id = ?").get(row.id) as any)?.c || 0,
         };
       });
       
