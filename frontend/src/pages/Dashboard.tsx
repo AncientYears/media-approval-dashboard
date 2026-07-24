@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, searchAgain, cleanupStaleRequests } from "../api";
+import { fetchRequests, searchAgain, cleanupStaleRequests, dismissRequest } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -135,6 +135,11 @@ export default function Dashboard() {
                     await searchAgain(req.id, {});
                     loadRequests();
                   }}>Refresh</button>
+                  <button className="btn btn-danger btn-tiny" onClick={async () => {
+                    if (!confirm(`Dismiss "${req.title}"?`)) return;
+                    await dismissRequest(req.id);
+                    loadRequests();
+                  }}>Dismiss</button>
                 </div>
               </div>
             ))}

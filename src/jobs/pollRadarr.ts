@@ -89,6 +89,17 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
       }
 
+      // Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
+      const empty = db.prepare(
+        "SELECT mr.id, mr.title FROM media_requests mr " +
+        "WHERE mr.status = 'AWAITING_APPROVAL' " +
+        "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
+      ).all() as any[];
+      for (const req of empty) {
+        console.log(`[Radarr] Auto-dismissing empty request ${req.title} (AWAITING_APPROVAL but no releases)`);
+        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
+      }
+
       const existingStmt = db.prepare(`SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'`);
       const insertStmt = db.prepare(`
         INSERT INTO media_requests (title, type, radarr_id, status, requested_by)

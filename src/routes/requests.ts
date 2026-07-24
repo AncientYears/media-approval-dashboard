@@ -117,6 +117,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         dismissed++;
       }
 
+      // 3) Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
+      const empty = db.prepare(
+        "SELECT mr.id FROM media_requests mr " +
+        "WHERE mr.status = 'AWAITING_APPROVAL' " +
+        "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
+      ).all() as any[];
+      for (const r of empty) {
+        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
+        dismissed++;
+      }
+
       res.json({ success: true, dismissed });
     } catch (error) {
       console.error("Error cleaning up requests:", error);
