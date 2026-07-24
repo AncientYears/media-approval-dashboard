@@ -137,11 +137,8 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
         UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'SEARCHING'
       `);
 
-      const stuckStmt = db.prepare(`
-        SELECT mr.id, mr.sonarr_id, mr.season, mr.title FROM media_requests mr
-        LEFT JOIN release_candidates rc ON rc.request_id = mr.id
-        WHERE mr.sonarr_id IS NOT NULL AND mr.type = 'series' AND mr.status = 'SEARCHING' AND rc.id IS NULL
-      `);
+      // Phase 1: Synchronous DB work — create/update all request rows
+      const searchesToRun: Array<{ requestId: number; seriesId: number; seasonNumber: number; title: string }> = [];
 
       for (const season of wantedSeasons) {
         const existing = existingStmt.get(season.seriesId, season.seasonNumber) as any;
@@ -150,19 +147,15 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
           : `${season.title} S${String(season.seasonNumber).padStart(2, "0")}`;
 
         if (existing) {
-          // If request was dismissed/rejected but series is back in wanted list, re-activate it
           if (existing.status === "DISMISSED" || existing.status === "REJECTED") {
             console.log(`[Sonarr] Re-activating ${requestTitle} (was ${existing.status}, back in wanted list)`);
             db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
-            await searchForRequest(existing.id, season.seriesId, season.seasonNumber, requestTitle, insertReleaseStmt, awaitingStmt, searchStmt);
-            continue;
-          }
-
-          if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
+            searchesToRun.push({ requestId: existing.id, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
+          } else if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
             if (!hasReleases || existing.status === "SEARCHING" || existing.status === "NEW") {
               console.log(`[Sonarr] Retrying search for ${requestTitle} (status=${existing.status}, releases=${!!hasReleases})`);
-              await searchForRequest(existing.id, season.seriesId, season.seasonNumber, requestTitle, insertReleaseStmt, awaitingStmt, searchStmt);
+              searchesToRun.push({ requestId: existing.id, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
             }
           }
           continue;
@@ -170,20 +163,17 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
 
         const result = insertStmt.run(requestTitle, season.seriesId, season.seasonNumber);
         const requestId = result.lastInsertRowid as number;
-
         console.log(`[Sonarr] New request: ${requestTitle} (sonarr_id=${season.seriesId}, season=${season.seasonNumber})`);
-
-        await searchForRequest(requestId, season.seriesId, season.seasonNumber, requestTitle, insertReleaseStmt, awaitingStmt, searchStmt);
+        searchesToRun.push({ requestId, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
       }
 
-      // Also retry any stuck SEARCHING requests with no releases
-      const stuck = stuckStmt.all() as any[];
-      for (const req of stuck) {
-        const stillWanted = wantedSeasons.find((w) => w.seriesId === req.sonarr_id && w.seasonNumber === req.season);
-        if (stillWanted) continue;
-
-        console.log(`[Sonarr] Retrying stuck request: ${req.title}`);
-        await searchForRequest(req.id, req.sonarr_id, req.season, req.title, insertReleaseStmt, awaitingStmt, searchStmt);
+      // Phase 2: Parallel API calls — search all requests simultaneously
+      if (searchesToRun.length > 0) {
+        console.log(`[Sonarr] Searching ${searchesToRun.length} requests in parallel...`);
+        await Promise.all(
+          searchesToRun.map((s) => searchForRequest(s.requestId, s.seriesId, s.seasonNumber, s.title, insertReleaseStmt, awaitingStmt, searchStmt))
+        );
+        console.log(`[Sonarr] All searches complete`);
       }
     } catch (err) {
       console.error("[Sonarr] Poll error:", err);

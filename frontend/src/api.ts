@@ -68,6 +68,11 @@ export async function reactivateAllRequests() {
   return response.data;
 }
 
+export async function deleteDismissedRequests() {
+  const response = await api.post("/requests/delete-dismissed");
+  return response.data;
+}
+
 export async function removeFromLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/remove-from-library`);
   return response.data;

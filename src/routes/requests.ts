@@ -168,6 +168,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/delete-dismissed - Permanently delete all DISMISSED requests from DB
+  router.post("/delete-dismissed", (req: Request, res: Response) => {
+    try {
+      const result = db.prepare(
+        "DELETE FROM media_requests WHERE status = 'DISMISSED'"
+      ).run();
+      console.log(`[Delete] Permanently deleted ${result.changes} dismissed requests`);
+      res.json({ success: true, deleted: result.changes });
+    } catch (error) {
+      console.error("Error deleting dismissed requests:", error);
+      res.status(500).json({ error: "Failed to delete dismissed requests" });
+    }
+  });
+
   // POST /api/requests/:id/reactivate - Re-activate a single DISMISSED request
   router.post("/:id/reactivate", (req: Request, res: Response) => {
     try {

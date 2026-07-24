@@ -66,7 +66,6 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
       console.log(`[Radarr] Found ${wanted.length} wanted movies`);
 
       // Auto-dismiss requests whose radarr_id is no longer in wanted list
-      // (user deleted the request from Jellyseerr)
       const staleRequests = db.prepare(
         "SELECT id, title, radarr_id FROM media_requests " +
         "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
@@ -137,30 +136,22 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'SEARCHING'
       `);
 
-      const stuckStmt = db.prepare(`
-        SELECT mr.id, mr.radarr_id, mr.title FROM media_requests mr
-        LEFT JOIN release_candidates rc ON rc.request_id = mr.id
-        WHERE mr.radarr_id IS NOT NULL AND mr.status = 'SEARCHING' AND rc.id IS NULL
-      `);
+      // Phase 1: Synchronous DB work — create/update all request rows
+      const searchesToRun: Array<{ requestId: number; movieId: number; title: string }> = [];
 
       for (const movie of wanted) {
         const existing = existingStmt.get(movie.id) as any;
 
         if (existing) {
-          // If request was dismissed/rejected but movie is back in wanted list, re-activate it
           if (existing.status === "DISMISSED" || existing.status === "REJECTED") {
             console.log(`[Radarr] Re-activating ${movie.title} (was ${existing.status}, back in wanted list)`);
             db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
-            await searchForRequest(existing.id, movie.id, movie.title, insertReleaseStmt, awaitingStmt, searchStmt);
-            continue;
-          }
-
-          if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
-            // Check if it has any releases at all
+            searchesToRun.push({ requestId: existing.id, movieId: movie.id, title: movie.title });
+          } else if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
             if (!hasReleases || existing.status === "SEARCHING" || existing.status === "NEW") {
               console.log(`[Radarr] Retrying search for ${movie.title} (status=${existing.status}, releases=${!!hasReleases})`);
-              await searchForRequest(existing.id, movie.id, movie.title, insertReleaseStmt, awaitingStmt, searchStmt);
+              searchesToRun.push({ requestId: existing.id, movieId: movie.id, title: movie.title });
             }
           }
           continue;
@@ -168,20 +159,17 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
 
         const result = insertStmt.run(movie.title, movie.id);
         const requestId = result.lastInsertRowid as number;
-
         console.log(`[Radarr] New request: ${movie.title} (radarr_id=${movie.id})`);
-
-        await searchForRequest(requestId, movie.id, movie.title, insertReleaseStmt, awaitingStmt, searchStmt);
+        searchesToRun.push({ requestId, movieId: movie.id, title: movie.title });
       }
 
-      // Also retry any stuck SEARCHING requests with no releases (in case Radarr list changed)
-      const stuck = stuckStmt.all() as any[];
-      for (const req of stuck) {
-        const stillWanted = wanted.find((m: any) => m.id === req.radarr_id);
-        if (stillWanted) continue; // Already handled above
-
-        console.log(`[Radarr] Retrying stuck request: ${req.title}`);
-        await searchForRequest(req.id, req.radarr_id, req.title, insertReleaseStmt, awaitingStmt, searchStmt);
+      // Phase 2: Parallel API calls — search all requests simultaneously
+      if (searchesToRun.length > 0) {
+        console.log(`[Radarr] Searching ${searchesToRun.length} requests in parallel...`);
+        await Promise.all(
+          searchesToRun.map((s) => searchForRequest(s.requestId, s.movieId, s.title, insertReleaseStmt, awaitingStmt, searchStmt))
+        );
+        console.log(`[Radarr] All searches complete`);
       }
     } catch (err) {
       console.error("[Radarr] Poll error:", err);
@@ -190,7 +178,6 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
     }
   }
 
-  // Run immediately, then on interval
   poll();
   const timer = setInterval(poll, intervalSeconds * 1000);
 
