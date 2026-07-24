@@ -113,9 +113,9 @@ export function initializeDatabase(dbPath: string): DBInstance {
 
     // Migration: remove overly-strict UNIQUE(title, type, season)
     // The poller uses sonarr_id/radarr_id for dedup, not this constraint
-    // Only run if the old UNIQUE constraint still exists
+    // Only run if the old UNIQUE constraint still exists (origin='u' = user-defined, not 'pk' = primary key)
     const indexes = db.prepare("PRAGMA index_list(media_requests)").all() as any[];
-    const hasUniqueConstraint = indexes.some((idx: any) => idx.unique === 1);
+    const hasUniqueConstraint = indexes.some((idx: any) => idx.unique === 1 && idx.origin === "u");
     if (hasUniqueConstraint) {
       try {
         db.exec(`
@@ -130,7 +130,8 @@ export function initializeDatabase(dbPath: string): DBInstance {
             requested_by TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            episode_count INTEGER
           );
           INSERT INTO media_requests_new SELECT * FROM media_requests;
           DROP TABLE media_requests;

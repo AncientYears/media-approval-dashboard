@@ -1326,6 +1326,12 @@ body {
   text-overflow: ellipsis;
 }
 
+.type-suffix {
+  color: var(--text-secondary);
+  font-weight: 400;
+  font-size: 12px;
+}
+
 .managed-seasons {
   display: flex;
   flex-wrap: wrap;

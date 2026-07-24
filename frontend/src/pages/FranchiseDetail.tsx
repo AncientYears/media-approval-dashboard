@@ -33,8 +33,8 @@ export default function FranchiseDetail() {
   if (selectedSeason) {
     return (
       <div className="container">
-        <button className="btn btn-secondary btn-tiny" onClick={() => setSelectedSeason(null)} style={{ marginBottom: 12 }}>
-          &larr; {franchise.title}
+        <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")} style={{ marginBottom: 12 }}>
+          &larr; Dashboard
         </button>
 
         <h2>Season {selectedSeason.season}</h2>
@@ -76,7 +76,7 @@ export default function FranchiseDetail() {
         &larr; Dashboard
       </button>
 
-      <h2>{franchise.title}</h2>
+      <h2>{franchise.title} <span className="type-suffix">- Series</span></h2>
       <p className="request-meta">
         {franchise.total_releases} EP · {formatSize(franchise.total_size_mb)}
       </p>

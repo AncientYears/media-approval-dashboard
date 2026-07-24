@@ -94,6 +94,48 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     res.json({ success: true, dismissed: 0 });
   });
 
+  // POST /api/requests/import-missing - Import movies/series from Radarr/Sonarr that have no request in DB
+  router.post("/import-missing", async (req: Request, res: Response) => {
+    try {
+      const imported: Array<{ title: string; id: number }> = [];
+
+      // Import movies from Radarr
+      const radarrMovies = await radarr.getAllMovies();
+      const existingRadarrIds = db.prepare("SELECT radarr_id FROM media_requests WHERE radarr_id IS NOT NULL")
+        .all().map((r: any) => r.radarr_id);
+
+      for (const movie of radarrMovies) {
+        if (existingRadarrIds.includes(movie.id)) continue;
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'NEW', '[]')"
+        ).run(movie.title, movie.id);
+        console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id})`);
+        imported.push({ title: movie.title, id: result.lastInsertRowid as number });
+      }
+
+      // Import series seasons from Sonarr
+      const sonarrSeries = await sonarr.getWantedMissing();
+      const existingSonarrSeasons = db.prepare("SELECT sonarr_id, season FROM media_requests WHERE sonarr_id IS NOT NULL")
+        .all().map((r: any) => `${r.sonarr_id}-${r.season}`);
+
+      for (const s of sonarrSeries) {
+        const key = `${s.seriesId}-${s.seasonNumber}`;
+        if (existingSonarrSeasons.includes(key)) continue;
+        const title = s.seasonNumber === 0 ? `${s.title} - Specials` : `${s.title} S${String(s.seasonNumber).padStart(2, "0")}`;
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by, episode_count) VALUES (?, 'series', ?, ?, 'NEW', '[]', ?)"
+        ).run(title, s.seriesId, s.seasonNumber, s.episodeCount || null);
+        console.log(`[Import] Created series request: ${title} (sonarr_id=${s.seriesId})`);
+        imported.push({ title, id: result.lastInsertRowid as number });
+      }
+
+      res.json({ success: true, imported: imported.length, items: imported });
+    } catch (error) {
+      console.error("Error importing missing requests:", error);
+      res.status(500).json({ error: "Failed to import missing requests" });
+    }
+  });
+
   // GET /api/requests/managed - Grouped managed media (series by franchise, movies individual)
   router.get("/managed", (req: Request, res: Response) => {
     try {
@@ -830,23 +872,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // Remove the approval_history for this release
         db.prepare("DELETE FROM approval_history WHERE release_id = ? AND request_id = ?").run(releaseId, id);
 
-        // If no more approved releases with torrents, delete the whole request
+        // If no more approved releases with torrents, set status back to NEW (don't auto-delete)
         const remaining = db.prepare(
           "SELECT rc.torrent_hash FROM release_candidates rc " +
           "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? AND rc.torrent_hash != ''"
         ).get(id) as any;
         if (!remaining) {
-          // Unmonitor from Radarr/Sonarr before deleting
-          const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
-          if (request?.radarr_id) {
-            try { await radarr.unmonitorMovie(request.radarr_id); } catch {}
-          }
-          if (request?.sonarr_id && request.season != null) {
-            try { await sonarr.unmonitorSeason(request.sonarr_id, request.season); } catch {}
-          }
-          db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
-          db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
-          console.log(`[Dismiss] Deleted request #${id}: ${request?.title}`);
+          db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+          console.log(`[Dismiss] Removed release from request #${id}, no active torrents left — set to NEW`);
         }
       } else {
         // Delete entire request: delete all torrents, unmonitor, then remove from DB
@@ -859,7 +892,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const release of releases) {
           if (release.torrent_hash) {
             try {
-              await qbittorrent.deleteTorrent(release.torrent_hash, true);
+              await qbittorrent.deleteTorrent(release.torrent_hash, false);
             } catch {}
           }
         }

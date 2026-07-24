@@ -47,6 +47,11 @@ export async function cleanupStaleRequests() {
   return response.data;
 }
 
+export async function importMissingRequests() {
+  const response = await api.post("/requests/import-missing");
+  return response.data;
+}
+
 export async function fetchTorrentStatus(requestId: number) {
   const response = await api.get(`/requests/${requestId}/torrent-status`);
   return response.data;

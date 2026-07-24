@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, searchAgain, cleanupStaleRequests, dismissRequest, detectTorrents } from "../api";
+import { fetchRequests, fetchManaged, searchAgain, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -116,6 +116,11 @@ export default function Dashboard() {
             alert(msg);
             loadData();
           }}>Detect Torrents</button>
+          <button className="btn btn-secondary btn-tiny" onClick={async () => {
+            const result = await importMissingRequests();
+            alert(`Imported ${result.imported} missing request(s).`);
+            loadData();
+          }}>Import Missing</button>
         </div>
       </div>
 
@@ -169,7 +174,7 @@ export default function Dashboard() {
             {managed.map((item: any) => (
               item.type === "series" ? (
                 <div key={item.sonarr_id} className="request-card managed-card">
-                  <h3 className="managed-title">{item.title}</h3>
+                  <h3 className="managed-title">{item.title} <span className="type-suffix">- Series</span></h3>
                   <div className="managed-seasons">
                     {item.seasons.map((s: any) => {
                       const covered = s.covered_episodes?.length || 0;
@@ -187,14 +192,14 @@ export default function Dashboard() {
                   </div>
                   <div className="managed-footer">
                     <span className="rtag">{item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
-                    <button className="btn btn-secondary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
                   </div>
                 </div>
               ) : (
                 <div key={item.request_id} className="request-card managed-card">
-                  <h3 className="managed-title">{item.title}</h3>
+                  <h3 className="managed-title">{item.title} <span className="type-suffix">- Movie</span></h3>
                   <div className="managed-footer">
-                    <span className="rtag">Movie · {item.release_count} version{item.release_count !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
+                    <span className="rtag">{item.release_count} version{item.release_count !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
                   </div>
                 </div>
