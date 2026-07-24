@@ -163,10 +163,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   // POST /api/requests/detect-torrents - Scan qBittorrent for orphaned requests and link them
   router.post("/detect-torrents", async (req: Request, res: Response) => {
     try {
-      // Find requests with no torrent hash that could be orphaned
+      // Find requests with no active torrent hash — includes DOWNLOADING items whose entries were wiped
       const orphans = db.prepare(
         "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "WHERE mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'DOWNLOADING') " +
         "AND NOT EXISTS (" +
         "  SELECT 1 FROM release_candidates rc " +
         "  JOIN approval_history ah ON ah.release_id = rc.id " +
