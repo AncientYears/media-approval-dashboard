@@ -56,7 +56,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const stmt = db.prepare(`
         SELECT * FROM media_requests 
         ORDER BY created_at DESC 
-        LIMIT 100
       `);
       const rows = stmt.all();
       
