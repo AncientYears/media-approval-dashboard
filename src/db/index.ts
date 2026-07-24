@@ -166,6 +166,18 @@ export function initializeDatabase(dbPath: string): DBInstance {
       }
     }
 
+    // Migration: add episode_count to media_requests
+    const mrCols = db.prepare("PRAGMA table_info(media_requests)").all() as any[];
+    const mrColNames = mrCols.map((c: any) => c.name);
+    if (!mrColNames.includes("episode_count")) {
+      db.exec(`ALTER TABLE media_requests ADD COLUMN episode_count INTEGER`);
+    }
+
+    // Migration: add parsed_episodes to release_candidates
+    if (!colNames.includes("parsed_episodes")) {
+      db.exec(`ALTER TABLE release_candidates ADD COLUMN parsed_episodes TEXT DEFAULT ''`);
+    }
+
   return {
     db,
     close: () => db.close(),

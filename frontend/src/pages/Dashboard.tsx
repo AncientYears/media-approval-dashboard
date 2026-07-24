@@ -169,31 +169,32 @@ export default function Dashboard() {
             {managed.map((item: any) => (
               item.type === "series" ? (
                 <div key={item.sonarr_id} className="request-card managed-card">
-                  <div className="request-header">
-                    <h3>{item.title}</h3>
-                    <span className="rtag">{item.total_releases} release{item.total_releases !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
-                  </div>
+                  <h3 className="managed-title">{item.title}</h3>
                   <div className="managed-seasons">
-                    {item.seasons.map((s: any) => (
-                      <div key={s.season} className="managed-season" onClick={() => navigate(`/requests/${s.request_id}`)}>
-                        <span className="season-label">S{String(s.season).padStart(2, "0")}</span>
-                        <span className={`season-status ${s.release_count > 0 ? "has-content" : "empty"}`}>
-                          {s.release_count > 0 ? `${s.release_count}r` : "pending"}
-                        </span>
-                      </div>
-                    ))}
+                    {item.seasons.map((s: any) => {
+                      const covered = s.covered_episodes?.length || 0;
+                      const total = s.episode_count;
+                      const label = total ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "pending";
+                      return (
+                        <div key={s.season} className="managed-season" onClick={() => navigate(`/requests/${s.request_id}`)}>
+                          <span className="season-label">S{String(s.season).padStart(2, "0")}</span>
+                          <span className={`season-status ${covered > 0 ? "has-content" : "empty"}`}>
+                            {label}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="request-actions">
+                  <div className="managed-footer">
+                    <span className="rtag">{item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
                     <button className="btn btn-secondary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
                   </div>
                 </div>
               ) : (
                 <div key={item.request_id} className="request-card managed-card">
-                  <div className="request-header">
-                    <h3>{item.title}</h3>
+                  <h3 className="managed-title">{item.title}</h3>
+                  <div className="managed-footer">
                     <span className="rtag">Movie · {item.release_count} version{item.release_count !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
-                  </div>
-                  <div className="request-actions">
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
                   </div>
                 </div>

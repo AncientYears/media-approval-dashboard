@@ -5,6 +5,7 @@ import { SonarrService } from "../services/sonarr";
 import { QBittorrentService } from "../services/qbittorrent";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
+import { parseTorrentName, formatEpisodes } from "../utils/torrentParser";
 import fs from "fs";
 import path from "path";
 
@@ -136,14 +137,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           type: "series",
           sonarr_id: sonarrId,
           first_request_id: firstRequestId,
-          seasons: seasons.map((s: any) => ({
-            season: s.season,
-            request_id: s.id,
-            status: s.status,
-            total_size_mb: s.total_size_mb,
-            release_count: s.release_count,
-            title: s.title,
-          })).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0)),
+          seasons: seasons.map((s: any) => {
+            // Get covered episodes from parsed_episodes on approved releases
+            const coveredRows = db.prepare(`
+              SELECT rc.parsed_episodes FROM release_candidates rc
+              JOIN approval_history ah ON ah.release_id = rc.id
+              WHERE ah.request_id = ? AND rc.torrent_hash != '' AND rc.parsed_episodes != ''
+            `).all(s.id) as any[];
+            const coveredEps = new Set<number>();
+            for (const cr of coveredRows) {
+              // parsed_episodes is like "S02E12" or "S02E01E02" or "S02E01-E12"
+              const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
+              if (epMatches) {
+                for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+              }
+              // Handle range format like "S02E01-12"
+              const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+              if (rangeMatch) {
+                for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+              }
+            }
+            return {
+              season: s.season,
+              request_id: s.id,
+              status: s.status,
+              total_size_mb: s.total_size_mb,
+              release_count: s.release_count,
+              title: s.title,
+              episode_count: s.episode_count,
+              covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+            };
+          }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0)),
           total_size_mb: seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0),
           total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
         });
@@ -206,6 +230,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ORDER BY rc.app_score DESC, rc.size_mb DESC
         `).all(s.id) as any[];
 
+        // Get covered episodes from parsed_episodes
+        const coveredEps = new Set<number>();
+        for (const r of releases) {
+          if (r.parsed_episodes) {
+            const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
+            if (epMatches) {
+              for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+            }
+            const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+            if (rangeMatch) {
+              for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+            }
+          }
+        }
+
         return {
           season: s.season,
           request_id: s.id,
@@ -213,6 +252,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           total_size_mb: s.total_size_mb,
           release_count: s.release_count,
           title: s.title,
+          episode_count: s.episode_count,
+          covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
           releases: releases.map((r: any) => ({
             id: r.id,
             title: r.title,
@@ -222,6 +263,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             release_group: r.release_group,
             torrent_hash: r.torrent_hash,
             app_score: r.app_score,
+            parsed_episodes: r.parsed_episodes || '',
           })),
         };
       });
@@ -332,7 +374,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const matchedTorrentHashes = new Set<string>();
-      const matches: Array<{ request_id: number; request_title: string; torrent_name: string; torrent_hash: string }> = [];
+      const matches: Array<{ request_id: number; request_title: string; torrent_name: string; torrent_hash: string; episodes: string }> = [];
       let detected = 0;
 
       for (const orphan of orphans) {
@@ -370,10 +412,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (match) {
           matchedTorrentHashes.add(match.hash);
           const sizeMb = Math.round((match.size || 0) / (1024 * 1024));
+          const parsed = parseTorrentName(match.name);
+          const episodeStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
+
+          // Dedup: check if this torrent hash already exists for this request
+          const existingHash = db.prepare(
+            "SELECT 1 FROM release_candidates WHERE torrent_hash = ? AND request_id = ?"
+          ).get(match.hash, orphan.id);
+          if (existingHash) {
+            console.log(`[Detect] Skipping duplicate torrent hash for ${orphan.title}: ${match.hash}`);
+            continue;
+          }
+
           const rcResult = db.prepare(
-            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, torrent_hash, save_path) " +
-            "VALUES (?, ?, ?, 'manual', ?, 'Unknown', ?, ?)"
-          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, orphan.title, sizeMb, match.hash, match.save_path);
+            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, torrent_hash, save_path, parsed_episodes) " +
+            "VALUES (?, ?, ?, 'manual', ?, 'Unknown', ?, ?, ?)"
+          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, match.name, sizeMb, match.hash, match.save_path, episodeStr);
 
           db.prepare(
             "INSERT INTO approval_history (request_id, release_id) VALUES (?, ?)"
@@ -384,8 +438,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ).run(orphan.id);
 
           detected++;
-          matches.push({ request_id: orphan.id, request_title: orphan.title, torrent_name: match.name, torrent_hash: match.hash });
-          console.log(`[Detect] Linked torrent for ${orphan.title} → ${match.name}`);
+          matches.push({ request_id: orphan.id, request_title: orphan.title, torrent_name: match.name, torrent_hash: match.hash,           episodes: episodeStr || '' });
+          console.log(`[Detect] Linked torrent for ${orphan.title} → ${match.name}${episodeStr ? ` (${episodeStr})` : ''}`);
         }
       }
 

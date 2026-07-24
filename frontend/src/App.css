@@ -1318,9 +1318,9 @@ body {
   padding: 10px 14px;
 }
 
-.managed-card h3 {
+.managed-title {
   font-size: 13px;
-  margin: 0;
+  margin: 0 0 8px 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1330,7 +1330,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 6px;
+  margin-bottom: 8px;
 }
 
 .managed-season {
@@ -1358,6 +1358,12 @@ body {
 
 .season-status.empty {
   color: var(--text-secondary);
+}
+
+.managed-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .franchise-season {
@@ -1397,6 +1403,46 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.franchise-seasons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.franchise-season-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.franchise-season-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.fr-season-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fr-season-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fr-arrow {
+  font-size: 20px;
+  color: var(--text-secondary);
+  line-height: 1;
 }
 
 @media (max-width: 768px) {

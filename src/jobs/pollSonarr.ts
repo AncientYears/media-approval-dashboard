@@ -68,8 +68,8 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
         `SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ? AND type = 'series'`
       );
       const insertStmt = db.prepare(`
-        INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by)
-        VALUES (?, 'series', ?, ?, 'NEW', '[]')
+        INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by, episode_count)
+        VALUES (?, 'series', ?, ?, 'NEW', '[]', ?)
       `);
 
       const searchStmt = db.prepare(`
@@ -123,7 +123,7 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
           continue;
         }
 
-        const result = insertStmt.run(requestTitle, season.seriesId, season.seasonNumber);
+        const result = insertStmt.run(requestTitle, season.seriesId, season.seasonNumber, season.episodeCount || null);
         const requestId = result.lastInsertRowid as number;
         console.log(`[Sonarr] New request: ${requestTitle} (sonarr_id=${season.seriesId}, season=${season.seasonNumber})`);
         searchesToRun.push({ requestId, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
