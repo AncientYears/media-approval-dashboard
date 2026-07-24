@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, searchAgain, cleanupStaleRequests, dismissRequest, reactivateAllRequests, deleteDismissedRequests } from "../api";
+import { fetchRequests, searchAgain, cleanupStaleRequests, dismissRequest, reactivateAllRequests, deleteDismissedRequests, detectTorrents } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -120,6 +120,11 @@ export default function Dashboard() {
             await deleteDismissedRequests();
             loadRequests();
           }}>Delete Dismissed</button>
+          <button className="btn btn-secondary btn-tiny" onClick={async () => {
+            const result = await detectTorrents();
+            alert(`Detected ${result.detected} torrent(s) out of ${result.total} orphaned request(s)`);
+            loadRequests();
+          }}>Detect Torrents</button>
         </div>
       </div>
 

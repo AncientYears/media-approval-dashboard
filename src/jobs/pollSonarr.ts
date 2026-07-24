@@ -113,9 +113,9 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
           : `${season.title} S${String(season.seasonNumber).padStart(2, "0")}`;
 
         if (existing) {
-          if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
+          if (existing.status === "SEARCHING" || existing.status === "NEW") {
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
-            if (!hasReleases || existing.status === "SEARCHING" || existing.status === "NEW") {
+            if (!hasReleases) {
               console.log(`[Sonarr] Retrying search for ${requestTitle} (status=${existing.status}, releases=${!!hasReleases})`);
               searchesToRun.push({ requestId: existing.id, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
             }

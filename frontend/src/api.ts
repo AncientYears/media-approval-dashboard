@@ -78,6 +78,11 @@ export async function deleteRequest(requestId: number) {
   return response.data;
 }
 
+export async function detectTorrents() {
+  const response = await api.post("/requests/detect-torrents");
+  return response.data;
+}
+
 export async function removeFromLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/remove-from-library`);
   return response.data;

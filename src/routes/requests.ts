@@ -159,6 +159,62 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/detect-torrents - Scan qBittorrent for orphaned requests and link them
+  router.post("/detect-torrents", async (req: Request, res: Response) => {
+    try {
+      // Find orphaned requests: no radarr_id/sonarr_id, pending status
+      const orphans = db.prepare(
+        "SELECT id, title FROM media_requests " +
+        "WHERE (radarr_id IS NULL OR radarr_id = 0) AND (sonarr_id IS NULL OR sonarr_id = 0) " +
+        "AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
+      ).all() as any[];
+
+      if (orphans.length === 0) {
+        return res.json({ success: true, detected: 0, total: 0 });
+      }
+
+      let allTorrents: any[] = [];
+      try {
+        allTorrents = await qbittorrent.getTorrents();
+      } catch {
+        return res.json({ success: true, detected: 0, total: orphans.length, error: "qBittorrent unavailable" });
+      }
+
+      let detected = 0;
+      for (const orphan of orphans) {
+        const titleLower = orphan.title.toLowerCase();
+        const match = allTorrents.find((t: any) => {
+          const tLower = t.name.toLowerCase();
+          return tLower.includes(titleLower.slice(0, 15)) || titleLower.includes(tLower.slice(0, 15));
+        });
+
+        if (match) {
+          const sizeMb = Math.round((match.size || 0) / (1024 * 1024));
+          const rcResult = db.prepare(
+            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, torrent_hash, save_path) " +
+            "VALUES (?, ?, ?, 'manual', ?, 'Unknown', ?, ?)"
+          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, orphan.title, sizeMb, match.hash, match.save_path);
+
+          db.prepare(
+            "INSERT INTO approval_history (request_id, release_id) VALUES (?, ?)"
+          ).run(orphan.id, rcResult.lastInsertRowid);
+
+          db.prepare(
+            "UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+          ).run(orphan.id);
+
+          detected++;
+          console.log(`[Detect] Linked torrent for ${orphan.title}: ${match.hash.slice(0, 12)}...`);
+        }
+      }
+
+      res.json({ success: true, detected, total: orphans.length });
+    } catch (error) {
+      console.error("Error detecting torrents:", error);
+      res.status(500).json({ error: "Failed to detect torrents" });
+    }
+  });
+
   // POST /api/requests/:id/reactivate - Re-activate a single DISMISSED request
   router.post("/:id/reactivate", (req: Request, res: Response) => {
     try {
