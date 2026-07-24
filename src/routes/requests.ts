@@ -100,6 +100,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const imported: Array<{ title: string; id: number }> = [];
       const skipped: Array<{ title: string; radarr_id: number; reason: string }> = [];
 
+      // Diagnostic: log all Moana-related requests for debugging
+      const allMoana = db.prepare("SELECT id, title, radarr_id, sonarr_id, type, status FROM media_requests WHERE title LIKE '%oana%'").all() as any[];
+      if (allMoana.length > 0) {
+        for (const m of allMoana) {
+          console.log(`[Import] DEBUG Moana request: id=${m.id}, title="${m.title}", radarr_id=${m.radarr_id}, sonarr_id=${m.sonarr_id}, type=${m.type}, status=${m.status}`);
+        }
+      } else {
+        console.log(`[Import] DEBUG No Moana request found in DB at all`);
+      }
+
       // Import movies from Radarr
       const radarrMovies = await radarr.getAllMovies();
       const existingRadarrIds = new Set(

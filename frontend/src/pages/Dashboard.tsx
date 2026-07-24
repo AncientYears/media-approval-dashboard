@@ -24,6 +24,40 @@ const STATUS_ORDER: Record<string, number> = {
   DOWNLOADING: 3,
 };
 
+function Modal({ title, lines, onClose }: { title?: string; lines: string[]; onClose: () => void }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        {title && <h3 className="modal-title">{title}</h3>}
+        <div className="modal-body">
+          {lines.map((line, i) => (
+            <div key={i} className={line === "" ? "modal-spacer" : "modal-line"}>
+              {line || "\u00A0"}
+            </div>
+          ))}
+        </div>
+        <button className="btn btn-primary" onClick={onClose}>OK</button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-body">
+          <div className="modal-line">{message}</div>
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-danger" onClick={onConfirm}>Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [requests, setRequests] = useState<any[]>([]);
@@ -33,6 +67,8 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("status_asc");
+  const [modal, setModal] = useState<{ title?: string; lines: string[] } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -81,6 +117,19 @@ export default function Dashboard() {
 
   return (
     <div className="container">
+      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => setModal(null)} />}
+      {confirmDelete && (
+        <ConfirmModal
+          message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
+          onConfirm={async () => {
+            await dismissRequest(confirmDelete.id);
+            setConfirmDelete(null);
+            loadData();
+          }}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
       <div className="filter-bar">
         <div className="filter-group">
           <label>Status</label>
@@ -109,23 +158,44 @@ export default function Dashboard() {
         <div className="filter-group">
           <button className="btn btn-secondary btn-tiny" onClick={async () => {
             const result = await detectTorrents();
-            let msg = `Detected ${result.detected} torrent(s) out of ${result.total} pending request(s).`;
+            const lines = [
+              `Detected ${result.detected} torrent(s) out of ${result.total} pending request(s).`,
+              "",
+            ];
             if (result.matches && result.matches.length > 0) {
-              msg += "\n\n" + result.matches.map((m: any) => `"${m.request_title}" → ${m.torrent_name}`).join("\n");
+              for (const m of result.matches) {
+                lines.push(`"${m.request_title}" → ${m.torrent_name}`);
+              }
             }
-            alert(msg);
+            setModal({ title: "Detect Torrents", lines });
             loadData();
           }}>Detect Torrents</button>
           <button className="btn btn-secondary btn-tiny" onClick={async () => {
             const result = await importMissingRequests();
-            let msg = `Imported ${result.imported} new request(s).`;
+            const lines = [
+              `Imported ${result.imported} new request(s).`,
+            ];
             if (result.orphaned > 0) {
-              msg += `\nRemoved ${result.orphaned} orphaned request(s) (not in Radarr anymore).`;
+              lines.push(`Removed ${result.orphaned} orphaned request(s).`);
+            }
+            if (result.skipped > 0) {
+              lines.push(`Skipped ${result.skipped} (already in DB).`);
             }
             if (result.skippedItems && result.skippedItems.length > 0) {
-              msg += `\n\nSkipped ${result.skipped} (already in DB)`;
+              lines.push("");
+              lines.push("Skipped items:");
+              for (const s of result.skippedItems) {
+                lines.push(`  ${s.title} — ${s.reason}`);
+              }
             }
-            alert(msg);
+            if (result.removedOrphans && result.removedOrphans.length > 0) {
+              lines.push("");
+              lines.push("Removed orphans:");
+              for (const o of result.removedOrphans) {
+                lines.push(`  ${o}`);
+              }
+            }
+            setModal({ title: "Import Missing", lines });
             loadData();
           }}>Import Missing</button>
         </div>
@@ -162,11 +232,7 @@ export default function Dashboard() {
                     await searchAgain(req.id, {});
                     loadData();
                   }}>Refresh</button>
-                  <button className="btn btn-danger btn-tiny" onClick={async () => {
-                    if (!confirm(`Permanently delete "${req.title}"? This cannot be undone.`)) return;
-                    await dismissRequest(req.id);
-                    loadData();
-                  }}>Delete</button>
+                  <button className="btn btn-danger btn-tiny" onClick={() => setConfirmDelete({ id: req.id, title: req.title })}>Delete</button>
                 </div>
               </div>
             ))}
