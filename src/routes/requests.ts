@@ -130,10 +130,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // Build franchise cards for series
       for (const [sonarrId, seasons] of seriesGroups) {
         const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        const firstRequestId = seasons[0].id;
         managed.push({
           title: franchiseTitle,
           type: "series",
           sonarr_id: sonarrId,
+          first_request_id: firstRequestId,
           seasons: seasons.map((s: any) => ({
             season: s.season,
             request_id: s.id,
@@ -169,6 +171,71 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (error) {
       console.error("Error fetching managed media:", error);
       res.status(500).json({ error: "Failed to fetch managed media" });
+    }
+  });
+
+  // GET /api/requests/managed/:sonarrId - Franchise detail: all seasons + all releases
+  router.get("/managed/:sonarrId", (req: Request, res: Response) => {
+    try {
+      const sonarrId = Number(req.params.sonarrId);
+      const seasons = db.prepare(`
+        SELECT mr.*,
+          (SELECT COALESCE(SUM(rc.size_mb), 0) FROM release_candidates rc 
+           JOIN approval_history ah ON ah.release_id = rc.id 
+           WHERE ah.request_id = mr.id AND rc.torrent_hash != '') as total_size_mb,
+          (SELECT COUNT(*) FROM release_candidates rc2 
+           JOIN approval_history ah2 ON ah2.release_id = rc2.id 
+           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as release_count
+        FROM media_requests mr
+        WHERE mr.sonarr_id = ? AND mr.status IN ('DOWNLOADING', 'SEEDING')
+        ORDER BY mr.season
+      `).all(sonarrId) as any[];
+
+      if (seasons.length === 0) {
+        return res.status(404).json({ error: "Franchise not found" });
+      }
+
+      const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+
+      const seasonDetails = seasons.map((s: any) => {
+        const releases = db.prepare(`
+          SELECT rc.*, ah.approved_at, ah.approval_reason
+          FROM release_candidates rc
+          JOIN approval_history ah ON ah.release_id = rc.id
+          WHERE ah.request_id = ?
+          ORDER BY rc.app_score DESC, rc.size_mb DESC
+        `).all(s.id) as any[];
+
+        return {
+          season: s.season,
+          request_id: s.id,
+          status: s.status,
+          total_size_mb: s.total_size_mb,
+          release_count: s.release_count,
+          title: s.title,
+          releases: releases.map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            size_mb: r.size_mb,
+            quality: r.radarr_quality,
+            seeders: r.seeders,
+            release_group: r.release_group,
+            torrent_hash: r.torrent_hash,
+            app_score: r.app_score,
+          })),
+        };
+      });
+
+      res.json({
+        title: franchiseTitle,
+        sonarr_id: sonarrId,
+        seasons: seasonDetails,
+        total_size_mb: seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0),
+        total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
+      });
+    } catch (error) {
+      console.error("Error fetching franchise detail:", error);
+      res.status(500).json({ error: "Failed to fetch franchise detail" });
     }
   });
 

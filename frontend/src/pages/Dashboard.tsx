@@ -171,7 +171,7 @@ export default function Dashboard() {
                 <div key={item.sonarr_id} className="request-card managed-card">
                   <div className="request-header">
                     <h3>{item.title}</h3>
-                    <span className="rtag">{item.total_releases}r / {formatSize(item.total_size_mb)}</span>
+                    <span className="rtag">{item.total_releases} release{item.total_releases !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
                   </div>
                   <div className="managed-seasons">
                     {item.seasons.map((s: any) => (
@@ -183,12 +183,15 @@ export default function Dashboard() {
                       </div>
                     ))}
                   </div>
+                  <div className="request-actions">
+                    <button className="btn btn-secondary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
+                  </div>
                 </div>
               ) : (
                 <div key={item.request_id} className="request-card managed-card">
                   <div className="request-header">
                     <h3>{item.title}</h3>
-                    <span className="rtag">Movie · {item.release_count}r / {formatSize(item.total_size_mb)}</span>
+                    <span className="rtag">Movie · {item.release_count} version{item.release_count !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
                   </div>
                   <div className="request-actions">
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>

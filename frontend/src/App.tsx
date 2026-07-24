@@ -2,6 +2,7 @@
 import "./App.css";
 import Dashboard from "./pages/Dashboard";
 import RequestDetail from "./pages/RequestDetail";
+import FranchiseDetail from "./pages/FranchiseDetail";
 import Settings from "./pages/Settings";
 
 function App() {
@@ -28,6 +29,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/requests/:id" element={<RequestDetail />} />
+            <Route path="/managed/:sonarrId" element={<FranchiseDetail />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>

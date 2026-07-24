@@ -1360,6 +1360,45 @@ body {
   color: var(--text-secondary);
 }
 
+.franchise-season {
+  margin-bottom: 16px;
+}
+
+.franchise-season-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.franchise-season-header h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.franchise-releases {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.franchise-release {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.fr-release-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 768px) {
   .nav-container {
     flex-direction: column;
