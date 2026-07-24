@@ -305,9 +305,9 @@ export default function RequestDetail() {
   };
 
   const handleDismiss = async (releaseId?: number) => {
-    if (!confirm("Delete torrent and all files? This cannot be undone.")) return;
+    if (!confirm("Permanently delete? This cannot be undone.")) return;
     await dismissRequest(Number(id), releaseId);
-    loadData();
+    navigate("/");
   };
 
   const handleDelete = async () => {

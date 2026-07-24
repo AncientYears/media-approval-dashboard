@@ -93,6 +93,85 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     res.json({ success: true, dismissed: 0 });
   });
 
+  // GET /api/requests/managed - Grouped managed media (series by franchise, movies individual)
+  router.get("/managed", (req: Request, res: Response) => {
+    try {
+      // All requests with active torrents
+      const rows = db.prepare(`
+        SELECT mr.*, 
+          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2 
+           JOIN approval_history ah2 ON ah2.release_id = rc2.id 
+           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+          (SELECT COUNT(*) FROM release_candidates rc3 
+           JOIN approval_history ah3 ON ah3.release_id = rc3.id 
+           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+        FROM media_requests mr
+        WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
+        ORDER BY mr.title
+      `).all() as any[];
+
+      const managed: any[] = [];
+
+      // Group series by sonarr_id (franchise)
+      const seriesGroups = new Map<number, any[]>();
+      const movies: any[] = [];
+
+      for (const row of rows) {
+        if (row.type === "series" && row.sonarr_id) {
+          if (!seriesGroups.has(row.sonarr_id)) {
+            seriesGroups.set(row.sonarr_id, []);
+          }
+          seriesGroups.get(row.sonarr_id)!.push(row);
+        } else {
+          movies.push(row);
+        }
+      }
+
+      // Build franchise cards for series
+      for (const [sonarrId, seasons] of seriesGroups) {
+        const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        managed.push({
+          title: franchiseTitle,
+          type: "series",
+          sonarr_id: sonarrId,
+          seasons: seasons.map((s: any) => ({
+            season: s.season,
+            request_id: s.id,
+            status: s.status,
+            total_size_mb: s.total_size_mb,
+            release_count: s.release_count,
+            title: s.title,
+          })).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0)),
+          total_size_mb: seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0),
+          total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
+        });
+      }
+
+      // Add individual movies
+      for (const movie of movies) {
+        managed.push({
+          title: movie.title,
+          type: "movie",
+          request_id: movie.id,
+          status: movie.status,
+          total_size_mb: movie.total_size_mb,
+          release_count: movie.release_count,
+        });
+      }
+
+      // Sort: series first, then movies, alphabetical within each
+      managed.sort((a: any, b: any) => {
+        if (a.type !== b.type) return a.type === "series" ? -1 : 1;
+        return a.title.localeCompare(b.title);
+      });
+
+      res.json(managed);
+    } catch (error) {
+      console.error("Error fetching managed media:", error);
+      res.status(500).json({ error: "Failed to fetch managed media" });
+    }
+  });
+
   // POST /api/requests/reactivate-all - Re-activate all DISMISSED requests
   // Requests with approved releases go to DOWNLOADING + re-detect torrent hashes
   router.post("/reactivate-all", async (req: Request, res: Response) => {
@@ -606,7 +685,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/:id/dismiss?releaseId=X - Delete one torrent + files + clear hash
+  // POST /api/requests/:id/dismiss?releaseId=X - Permanently delete request (or single release)
   router.post("/:id/dismiss", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -626,18 +705,30 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             console.error(`[Dismiss] Failed to delete torrent:`, err.message);
           }
         }
-        db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(releaseId);
 
-        // If no more approved releases with torrents, set DISMISSED
+        // Remove the approval_history for this release
+        db.prepare("DELETE FROM approval_history WHERE release_id = ? AND request_id = ?").run(releaseId, id);
+
+        // If no more approved releases with torrents, delete the whole request
         const remaining = db.prepare(
           "SELECT rc.torrent_hash FROM release_candidates rc " +
           "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? AND rc.torrent_hash != ''"
         ).get(id) as any;
         if (!remaining) {
-          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+          // Unmonitor from Radarr/Sonarr before deleting
+          const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+          if (request?.radarr_id) {
+            try { await radarr.unmonitorMovie(request.radarr_id); } catch {}
+          }
+          if (request?.sonarr_id && request.season != null) {
+            try { await sonarr.unmonitorSeason(request.sonarr_id, request.season); } catch {}
+          }
+          db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
+          db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
+          console.log(`[Dismiss] Deleted request #${id}: ${request?.title}`);
         }
       } else {
-        // Dismiss entire request, delete all torrents, unmonitor from Radarr
+        // Delete entire request: delete all torrents, unmonitor, then remove from DB
         const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
 
         const releases = db.prepare(
@@ -650,39 +741,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               await qbittorrent.deleteTorrent(release.torrent_hash, true);
             } catch {}
           }
-          db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(release.id);
         }
 
-        // Unmonitor/delete from Radarr
+        // Unmonitor from Radarr
         if (request?.radarr_id) {
           try {
-            const movie = await radarr.getMovie(request.radarr_id);
-            if (movie.hasFile) {
-              await radarr.deleteMovie(request.radarr_id, true);
-              console.log(`[Dismiss] Deleted movie from Radarr: ${request.title} (had files)`);
-            } else {
-              await radarr.unmonitorMovie(request.radarr_id);
-              console.log(`[Dismiss] Unmonitored movie in Radarr: ${request.title}`);
-            }
+            await radarr.unmonitorMovie(request.radarr_id);
+            console.log(`[Dismiss] Unmonitored movie in Radarr: ${request.title}`);
           } catch (err: any) {
             console.error(`[Dismiss] Failed to update Radarr for ${request.title}:`, err.message);
           }
         }
 
-        // Unmonitor/delete from Sonarr
+        // Unmonitor from Sonarr
         if (request?.sonarr_id) {
           try {
-            const series = await sonarr.getSeries(request.sonarr_id);
             if (request.season != null) {
-              const seasonObj = series.seasons?.find((s: any) => s.seasonNumber === request.season);
-              const hasFile = (seasonObj?.statistics?.episodeFileCount || 0) > 0;
-              if (hasFile) {
-                await sonarr.deleteSeries(request.sonarr_id, true);
-                console.log(`[Dismiss] Deleted series from Sonarr: ${request.title} (had files)`);
-              } else {
-                await sonarr.unmonitorSeason(request.sonarr_id, request.season);
-                console.log(`[Dismiss] Unmonitored season ${request.season} in Sonarr: ${request.title}`);
-              }
+              await sonarr.unmonitorSeason(request.sonarr_id, request.season);
+              console.log(`[Dismiss] Unmonitored season ${request.season} in Sonarr: ${request.title}`);
             } else {
               await sonarr.deleteSeries(request.sonarr_id, true);
               console.log(`[Dismiss] Deleted series from Sonarr: ${request.title}`);
@@ -692,7 +768,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+        // Permanently delete from DB (CASCADE removes release_candidates, approval_history)
+        db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
+        console.log(`[Dismiss] Deleted request #${id}: ${request?.title}`);
       }
 
       res.json({ success: true });

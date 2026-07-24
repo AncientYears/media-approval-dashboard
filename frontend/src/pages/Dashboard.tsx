@@ -1,13 +1,13 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, searchAgain, cleanupStaleRequests, dismissRequest, reactivateAllRequests, deleteDismissedRequests, detectTorrents } from "../api";
+import { fetchRequests, fetchManaged, searchAgain, cleanupStaleRequests, dismissRequest, detectTorrents } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
 }
 
-const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "REJECTED"];
+const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
 const SORT_OPTIONS = [
   { value: "created_at_desc", label: "Newest first" },
@@ -22,23 +22,24 @@ const STATUS_ORDER: Record<string, number> = {
   SEARCHING: 1,
   NEW: 2,
   DOWNLOADING: 3,
-  REJECTED: 6,
 };
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [requests, setRequests] = useState<any[]>([]);
+  const [managed, setManaged] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("status_asc");
 
-  const loadRequests = useCallback(async () => {
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await fetchRequests();
-      setRequests(data);
+      const [reqData, managedData] = await Promise.all([fetchRequests(), fetchManaged()]);
+      setRequests(reqData);
+      setManaged(managedData);
       setError(null);
     } catch (err) {
       setError("Failed to load requests");
@@ -49,14 +50,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    loadRequests();
-    cleanupStaleRequests().then(() => loadRequests());
-    const interval = setInterval(loadRequests, 30000);
+    loadData();
+    cleanupStaleRequests().then(() => loadData());
+    const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
-  }, [loadRequests]);
+  }, [loadData]);
 
   const requestsList = requests
-    .filter((r: any) => !r.has_torrent && r.status !== "DISMISSED")
+    .filter((r: any) => !r.has_torrent)
     .filter((r: any) => statusFilter === "ALL" || r.status === statusFilter)
     .filter((r: any) => typeFilter === "ALL" || r.type === typeFilter)
     .sort((a: any, b: any) => {
@@ -69,10 +70,6 @@ export default function Dashboard() {
         default: return 0;
       }
     });
-
-  const managedList = requests
-    .filter((r: any) => r.has_torrent)
-    .sort((a: any, b: any) => a.title.localeCompare(b.title));
 
   if (loading && requests.length === 0) {
     return <div className="container"><p>Loading requests...</p></div>;
@@ -111,26 +108,62 @@ export default function Dashboard() {
         </div>
         <div className="filter-group">
           <button className="btn btn-secondary btn-tiny" onClick={async () => {
-            if (!confirm("Re-activate all dismissed requests?")) return;
-            await reactivateAllRequests();
-            loadRequests();
-          }}>Reactivate All</button>
-          <button className="btn btn-danger btn-tiny" onClick={async () => {
-            if (!confirm("Permanently delete ALL dismissed requests? This cannot be undone.")) return;
-            await deleteDismissedRequests();
-            loadRequests();
-          }}>Delete Dismissed</button>
-          <button className="btn btn-secondary btn-tiny" onClick={async () => {
             const result = await detectTorrents();
             let msg = `Detected ${result.detected} torrent(s) out of ${result.total} pending request(s).`;
             if (result.matches && result.matches.length > 0) {
               msg += "\n\n" + result.matches.map((m: any) => `"${m.request_title}" → ${m.torrent_name}`).join("\n");
             }
             alert(msg);
-            loadRequests();
+            loadData();
           }}>Detect Torrents</button>
         </div>
       </div>
+
+      {managed.length > 0 && (
+        <div className="dashboard-section">
+          <h3>Managed Media — {managed.length}</h3>
+          <div className="managed-grid">
+            {managed.map((item: any) => (
+              item.type === "series" ? (
+                <div key={item.sonarr_id} className="managed-card">
+                  <div className="managed-card-header">
+                    <h3>{item.title}</h3>
+                    <div className="managed-card-meta">
+                      <span className="rtag">{item.total_releases} release{item.total_releases !== 1 ? "s" : ""}</span>
+                      <span className="rtag">{formatSize(item.total_size_mb)}</span>
+                    </div>
+                  </div>
+                  <div className="managed-seasons">
+                    {item.seasons.map((s: any) => (
+                      <div key={s.season} className="managed-season" onClick={() => navigate(`/requests/${s.request_id}`)}>
+                        <span className="season-label">S{String(s.season).padStart(2, "0")}</span>
+                        <span className={`season-status ${s.release_count > 0 ? "has-content" : "empty"}`}>
+                          {s.release_count > 0 ? `${s.release_count} release${s.release_count !== 1 ? "s" : ""}` : "pending"}
+                        </span>
+                        {s.total_size_mb > 0 && <span className="season-size">{formatSize(s.total_size_mb)}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div key={item.request_id} className="managed-card">
+                  <div className="managed-card-header">
+                    <h3>{item.title}</h3>
+                    <div className="managed-card-meta">
+                      <span className="rtag">Movie</span>
+                      <span className="rtag">{item.release_count} release{item.release_count !== 1 ? "s" : ""}</span>
+                      <span className="rtag">{formatSize(item.total_size_mb)}</span>
+                    </div>
+                  </div>
+                  <div className="request-actions">
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
+                  </div>
+                </div>
+              )
+            ))}
+          </div>
+        </div>
+      )}
 
       {requestsList.length > 0 && (
         <div className="dashboard-section">
@@ -161,13 +194,13 @@ export default function Dashboard() {
                   <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>View Releases</button>
                   <button className="btn btn-secondary" onClick={async () => {
                     await searchAgain(req.id, {});
-                    loadRequests();
+                    loadData();
                   }}>Refresh</button>
                   <button className="btn btn-danger btn-tiny" onClick={async () => {
-                    if (!confirm(`Dismiss "${req.title}"?`)) return;
+                    if (!confirm(`Permanently delete "${req.title}"? This cannot be undone.`)) return;
                     await dismissRequest(req.id);
-                    loadRequests();
-                  }}>Dismiss</button>
+                    loadData();
+                  }}>Delete</button>
                 </div>
               </div>
             ))}
@@ -175,27 +208,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {managedList.length > 0 && (
-        <div className="dashboard-section">
-          <h3>Managed Media — {managedList.length}</h3>
-          <div className="requests-grid">
-            {managedList.map((req: any) => (
-              <div key={req.id} className="request-card managed-card">
-                <h3>{req.title} — {req.type}</h3>
-                <p className="request-meta managed-stats">
-                  <span className="rtag">{req.release_count} release{req.release_count !== 1 ? "s" : ""}</span>
-                  <span className="rtag">{formatSize(req.total_size_mb)}</span>
-                </p>
-                <div className="request-actions">
-                  <button className="btn btn-primary" onClick={() => navigate(`/requests/${req.id}`)}>Manage</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {requestsList.length === 0 && managedList.length === 0 && (
+      {requestsList.length === 0 && managed.length === 0 && (
         <div className="empty-state">
           <p>No requests yet</p>
         </div>

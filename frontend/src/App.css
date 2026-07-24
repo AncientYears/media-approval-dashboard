@@ -1314,22 +1314,75 @@ body {
   color: var(--primary);
 }
 
+.managed-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .managed-card {
-  padding: 10px 14px;
+  padding: 14px;
 }
 
-.managed-card h3 {
-  font-size: 13px;
-  margin-bottom: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.managed-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
 }
 
-.managed-stats {
+.managed-card-header h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.managed-card-meta {
   display: flex;
   gap: 6px;
-  margin-bottom: 8px;
+}
+
+.managed-seasons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.managed-season {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.managed-season:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.season-label {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 36px;
+}
+
+.season-status {
+  font-size: 12px;
+}
+
+.season-status.has-content {
+  color: #4ade80;
+}
+
+.season-status.empty {
+  color: var(--text-secondary);
+}
+
+.season-size {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: auto;
 }
 
 @media (max-width: 768px) {

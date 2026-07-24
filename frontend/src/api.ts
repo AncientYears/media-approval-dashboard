@@ -14,6 +14,11 @@ export async function fetchRequests() {
   return response.data;
 }
 
+export async function fetchManaged() {
+  const response = await api.get("/requests/managed");
+  return response.data;
+}
+
 export async function fetchReleases(requestId: number) {
   const response = await api.get(`/requests/${requestId}`);
   return response.data;
