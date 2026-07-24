@@ -175,25 +175,54 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       ).all() as any[];
 
       if (orphans.length === 0) {
-        return res.json({ success: true, detected: 0, total: 0 });
+        return res.json({ success: true, detected: 0, total: 0, matches: [] });
       }
 
       let allTorrents: any[] = [];
       try {
         allTorrents = await qbittorrent.getTorrents();
       } catch {
-        return res.json({ success: true, detected: 0, total: orphans.length, error: "qBittorrent unavailable" });
+        return res.json({ success: true, detected: 0, total: orphans.length, error: "qBittorrent unavailable", matches: [] });
       }
 
+      const matchedTorrentHashes = new Set<string>();
+      const matches: Array<{ request_id: number; request_title: string; torrent_name: string; torrent_hash: string }> = [];
       let detected = 0;
+
       for (const orphan of orphans) {
-        const titleLower = orphan.title.toLowerCase();
+        const titleWords = orphan.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w: string) => w.length > 1 && !["the", "and", "for"].includes(w));
+
         const match = allTorrents.find((t: any) => {
-          const tLower = t.name.toLowerCase();
-          return tLower.includes(titleLower.slice(0, 15)) || titleLower.includes(tLower.slice(0, 15));
+          if (matchedTorrentHashes.has(t.hash)) return false;
+          const tLower = t.name.toLowerCase().replace(/[^a-z0-9\s.]/g, " ").replace(/\s+/g, " ").trim();
+          // Require ALL significant title words to appear in the torrent name
+          const allWordsPresent = titleWords.every((w: string) => tLower.includes(w));
+          if (!allWordsPresent) return false;
+          // Extra check: short titles (1-2 words) must match at the start, followed by separator+non-digit or end
+          if (titleWords.length <= 2) {
+            const firstWord = titleWords[0];
+            if (!tLower.startsWith(firstWord)) return false;
+            const afterTitle = tLower.slice(firstWord.length);
+            // After the first word, expect separator then either:
+            // - second word (if 2-word title), year (4+ digits), quality marker, or end
+            // - NOT a single digit sequel indicator (2, 3, 4...) unless the title itself has that digit
+            if (titleWords.length === 2) {
+              if (!afterTitle.includes(titleWords[1])) return false;
+              const idx2 = afterTitle.indexOf(titleWords[1]);
+              const afterSecond = afterTitle.slice(idx2 + titleWords[1].length).trim();
+              // After both words, check next char isn't a sequel number
+              if (/^[.\-_\s]*\d{1,2}[.\-_\s]/.test(afterSecond) && !/^[.\-_\s]*(19|20)\d{2}/.test(afterSecond)) return false;
+            } else {
+              // Single word title: after matching, next should be separator then year/quality/end, NOT sequel digit
+              const nextChars = afterTitle.replace(/^[\s.\-_]+/, "");
+              if (/^\d{1,2}[\s.\-_]/.test(nextChars) && !/^(19|20)\d{2}/.test(nextChars)) return false;
+            }
+          }
+          return true;
         });
 
         if (match) {
+          matchedTorrentHashes.add(match.hash);
           const sizeMb = Math.round((match.size || 0) / (1024 * 1024));
           const rcResult = db.prepare(
             "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, torrent_hash, save_path) " +
@@ -209,11 +238,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ).run(orphan.id);
 
           detected++;
-          console.log(`[Detect] Linked torrent for ${orphan.title}: ${match.hash.slice(0, 12)}...`);
+          matches.push({ request_id: orphan.id, request_title: orphan.title, torrent_name: match.name, torrent_hash: match.hash });
+          console.log(`[Detect] Linked torrent for ${orphan.title} → ${match.name}`);
         }
       }
 
-      res.json({ success: true, detected, total: orphans.length });
+      res.json({ success: true, detected, total: orphans.length, matches });
     } catch (error) {
       console.error("Error detecting torrents:", error);
       res.status(500).json({ error: "Failed to detect torrents" });

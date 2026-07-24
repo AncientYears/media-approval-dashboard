@@ -122,7 +122,11 @@ export default function Dashboard() {
           }}>Delete Dismissed</button>
           <button className="btn btn-secondary btn-tiny" onClick={async () => {
             const result = await detectTorrents();
-            alert(`Detected ${result.detected} torrent(s) out of ${result.total} orphaned request(s)`);
+            let msg = `Detected ${result.detected} torrent(s) out of ${result.total} pending request(s).`;
+            if (result.matches && result.matches.length > 0) {
+              msg += "\n\n" + result.matches.map((m: any) => `"${m.request_title}" → ${m.torrent_name}`).join("\n");
+            }
+            alert(msg);
             loadRequests();
           }}>Detect Torrents</button>
         </div>
