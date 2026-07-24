@@ -1321,9 +1321,7 @@ body {
 .managed-title {
   font-size: 13px;
   margin: 0 0 8px 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .type-suffix {

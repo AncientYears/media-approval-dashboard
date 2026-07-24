@@ -67,7 +67,7 @@ export class RadarrService {
   async getAllMovies() {
     try {
       const response = await this.client.get("/api/v3/movie");
-      return response.data as Array<{ id: number; title: string; hasFile: boolean }>;
+      return response.data as Array<{ id: number; title: string; hasFile: boolean; monitored: boolean }>;
     } catch (error) {
       console.error("Radarr: Failed to fetch all movies", error);
       throw error;

@@ -101,15 +101,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Import movies from Radarr
       const radarrMovies = await radarr.getAllMovies();
-      const existingRadarrIds = db.prepare("SELECT radarr_id FROM media_requests WHERE radarr_id IS NOT NULL")
-        .all().map((r: any) => r.radarr_id);
+      const existingRadarrIds = new Set(
+        db.prepare("SELECT radarr_id FROM media_requests WHERE radarr_id IS NOT NULL")
+          .all().map((r: any) => r.radarr_id)
+      );
+      const existingTitles = new Set(
+        db.prepare("SELECT title FROM media_requests WHERE type = 'movie'")
+          .all().map((r: any) => r.title.toLowerCase())
+      );
 
       for (const movie of radarrMovies) {
-        if (existingRadarrIds.includes(movie.id)) continue;
+        if (existingRadarrIds.has(movie.id)) continue;
+        if (existingTitles.has(movie.title.toLowerCase())) continue;
+        const status = movie.hasFile ? "DOWNLOADING" : "NEW";
         const result = db.prepare(
-          "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'NEW', '[]')"
-        ).run(movie.title, movie.id);
-        console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id})`);
+          "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, ?, '[]')"
+        ).run(movie.title, movie.id, status);
+        console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id}, status=${status})`);
         imported.push({ title: movie.title, id: result.lastInsertRowid as number });
       }
 
