@@ -1513,3 +1513,111 @@ body {
     flex-direction: column;
   }
 }
+
+/* Database Viewer */
+.db-viewer {
+  padding: 1.5rem;
+}
+
+.db-loading, .db-error, .db-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.db-error {
+  color: var(--error);
+}
+
+.db-tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.db-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.15s;
+}
+
+.db-tab:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.db-tab.active {
+  background: var(--bg-secondary);
+  color: var(--primary);
+  border-color: var(--primary);
+  border-bottom-color: var(--bg-secondary);
+}
+
+.db-tab-count {
+  margin-left: 0.35rem;
+  background: var(--bg);
+  padding: 0.1rem 0.4rem;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.db-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.db-empty-table {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.db-table th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.db-table td {
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.75rem;
+}
+
+.db-table tr:hover td {
+  background: var(--bg-secondary);
+}
+
+.db-footer {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}

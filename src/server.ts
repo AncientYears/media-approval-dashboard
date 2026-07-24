@@ -65,6 +65,23 @@ app.get("/api/health", (req, res) => {
 // API Routes
 app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent));
 
+// DB viewer endpoint - returns all tables, their schema, and rows
+app.get("/api/db", (_req, res) => {
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[];
+    const result: Record<string, { columns: string[]; rows: any[] }> = {};
+    for (const { name } of tables) {
+      const info = db.prepare(`PRAGMA table_info("${name}")`).all() as any[];
+      const columns = info.map((c: any) => c.name);
+      const rows = db.prepare(`SELECT * FROM "${name}"`).all();
+      result[name] = { columns, rows };
+    }
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Test connections endpoint
 app.post("/api/test-connections", async (req, res) => {
   const [qbitResult, sonarrResult] = await Promise.all([
