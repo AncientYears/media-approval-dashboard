@@ -5,9 +5,11 @@ import RequestDetail from "./pages/RequestDetail";
 import FranchiseDetail from "./pages/FranchiseDetail";
 import Settings from "./pages/Settings";
 import DatabaseViewer from "./pages/DatabaseViewer";
+import { ToastProvider } from "./components/Toast";
 
 function App() {
   return (
+    <ToastProvider>
     <Router>
       <div className="app">
         <nav className="navbar">
@@ -40,6 +42,7 @@ function App() {
         </main>
       </div>
     </Router>
+    </ToastProvider>
   );
 }
 

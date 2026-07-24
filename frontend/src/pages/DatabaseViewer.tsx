@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { useToast } from "../components/Toast";
 
 interface TableData {
   columns: string[];
@@ -11,6 +12,8 @@ export default function DatabaseViewer() {
   const [activeTable, setActiveTable] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState<"json" | "csv" | null>(null);
+  const { toast } = useToast();
 
   useEffect(() => {
     api.get("/db")
@@ -24,6 +27,35 @@ export default function DatabaseViewer() {
   }, []);
 
   const tables = Object.keys(data);
+
+  async function copyJSON() {
+    if (!active || !activeTable) return;
+    const text = JSON.stringify({ [activeTable]: active }, null, 2);
+    await navigator.clipboard.writeText(text);
+    toast(`Copied ${activeTable} as JSON`, "success");
+    setCopied("json");
+    setTimeout(() => setCopied(null), 1500);
+  }
+
+  async function copyCSV() {
+    if (!active || !activeTable) return;
+    const header = active.columns.join(",");
+    const lines = active.rows.map((row) =>
+      active.columns.map((col) => {
+        const v = row[col];
+        if (v === null || v === undefined) return "";
+        const s = String(v);
+        return s.includes(",") || s.includes('"') || s.includes("\n")
+          ? `"${s.replace(/"/g, '""')}"`
+          : s;
+      }).join(",")
+    );
+    const text = header + "\n" + lines.join("\n");
+    await navigator.clipboard.writeText(text);
+    toast(`Copied ${activeTable} as CSV`, "success");
+    setCopied("csv");
+    setTimeout(() => setCopied(null), 1500);
+  }
 
   if (loading) return <div className="db-loading">Loading database...</div>;
   if (error) return <div className="db-error">Error: {error}</div>;
@@ -44,6 +76,14 @@ export default function DatabaseViewer() {
             <span className="db-tab-count">{data[t].rows.length}</span>
           </button>
         ))}
+      </div>
+      <div className="db-actions">
+        <button className="db-copy-btn" onClick={copyJSON} disabled={!active}>
+          {copied === "json" ? "Copied!" : "Copy JSON"}
+        </button>
+        <button className="db-copy-btn" onClick={copyCSV} disabled={!active}>
+          {copied === "csv" ? "Copied!" : "Copy CSV"}
+        </button>
       </div>
       <div className="db-table-wrap">
         {active && active.rows.length === 0 ? (

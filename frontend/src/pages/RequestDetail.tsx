@@ -1,6 +1,7 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
+import { useToast } from "../components/Toast";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -188,6 +189,7 @@ function Breakdown({ r, profile }: { r: any; profile: ScoreProfile }) {
 export default function RequestDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [request, setRequest] = useState<any>(null);
   const [releases, setReleases] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -254,6 +256,7 @@ export default function RequestDetail() {
     setApprovingId(releaseId);
     try {
       await approveRelease(Number(id), releaseId);
+      toast("Release approved, grabbing...", "success");
       loadData();
       let attempts = 0;
       const pollHash = setInterval(async () => {
@@ -275,6 +278,7 @@ export default function RequestDetail() {
   const handleSearchAgain = async () => {
     setRequest((prev: any) => prev ? { ...prev, status: "SEARCHING" } : prev);
     await searchAgain(Number(id), searchTerm ? { searchTerm } : {});
+    toast("Search complete", "info");
     loadData();
   };
 
@@ -307,12 +311,14 @@ export default function RequestDetail() {
   const handleDismiss = async (releaseId?: number) => {
     if (!confirm("Permanently delete? This cannot be undone.")) return;
     await dismissRequest(Number(id), releaseId);
+    toast("Release deleted", "success");
     navigate("/");
   };
 
   const handleDelete = async () => {
     if (!confirm("Permanently delete this request? This cannot be undone.")) return;
     await deleteRequest(Number(id));
+    toast("Request deleted", "success");
     navigate("/");
   };
 
@@ -326,8 +332,9 @@ export default function RequestDetail() {
       setRemoveConfirmId(null);
       setMoveResults((prev) => ({ ...prev, [releaseId]: null }));
       loadTorrentStatuses();
+      toast("Removed from library", "success");
     } catch (err: any) {
-      alert(err?.response?.data?.error || err.message);
+      toast(err?.response?.data?.error || err.message, "error");
       setRemoveConfirmId(null);
     }
   };

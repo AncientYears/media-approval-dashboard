@@ -1141,7 +1141,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       db.prepare("DELETE FROM release_candidates WHERE request_id = ? AND id NOT IN (SELECT release_id FROM approval_history WHERE request_id = ?)").run(id, id);
-      db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+      const prevStatus = request.status;
+      const preserveStatus = prevStatus === "DOWNLOADING" || prevStatus === "SEEDING";
+      if (!preserveStatus) {
+        db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+      }
 
       let releases: RadarrSearchResult[] = [];
 
@@ -1190,8 +1194,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0);
       }
 
-      const newStatus = releases.length > 0 ? "AWAITING_APPROVAL" : "SEARCHING";
-      db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
+      if (!preserveStatus) {
+        const newStatus = releases.length > 0 ? "AWAITING_APPROVAL" : "SEARCHING";
+        db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
+      }
 
       res.json({ success: true, releasesFound: releases.length });
     } catch (error) {
