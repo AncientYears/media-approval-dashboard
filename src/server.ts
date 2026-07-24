@@ -72,21 +72,22 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
     const staleMovies = db.prepare(
       "SELECT id, title, radarr_id FROM media_requests WHERE type = 'movie' AND status = 'DOWNLOADING' AND radarr_id IS NOT NULL"
     ).all() as any[];
-    if (staleMovies.length === 0) return;
 
-    const radarrMovies = await radarr.getAllMovies();
-    const radarrMap = new Map(radarrMovies.map((m: any) => [m.id, m]));
-    let fixed = 0;
+    if (staleMovies.length > 0) {
+      const radarrMovies = await radarr.getAllMovies();
+      const radarrMap = new Map(radarrMovies.map((m: any) => [m.id, m]));
+      let fixed = 0;
 
-    for (const m of staleMovies) {
-      const rm = radarrMap.get(m.radarr_id);
-      if (rm?.hasFile) {
-        db.prepare("UPDATE media_requests SET status = 'SEEDING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(m.id);
-        console.log(`[Startup] Fixed stale DOWNLOADING → SEEDING: ${m.title} (Radarr hasFile=true)`);
-        fixed++;
+      for (const m of staleMovies) {
+        const rm = radarrMap.get(m.radarr_id);
+        if (rm?.hasFile) {
+          db.prepare("UPDATE media_requests SET status = 'SEEDING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(m.id);
+          console.log(`[Startup] Fixed stale DOWNLOADING → SEEDING: ${m.title} (Radarr hasFile=true)`);
+          fixed++;
+        }
       }
+      if (fixed > 0) console.log(`[Startup] Fixed ${fixed} stale DOWNLOADING movies`);
     }
-    if (fixed > 0) console.log(`[Startup] Fixed ${fixed} stale DOWNLOADING movies`);
 
     // Clean up stale release_candidates where hash doesn't match title
     const withHashes = db.prepare(

@@ -124,6 +124,14 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
           }
           anyFound = true;
 
+          if (torrent.size > 0) {
+            const rcSize = db.prepare("SELECT size_mb FROM release_candidates WHERE id = ?").get(h.release_id) as any;
+            if (rcSize && (!rcSize.size_mb || rcSize.size_mb === 0)) {
+              const sizeMb = Math.round(torrent.size / (1024 * 1024));
+              db.prepare("UPDATE release_candidates SET size_mb = ? WHERE id = ?").run(sizeMb, h.release_id);
+            }
+          }
+
           if (DOWNLOADING_STATES.includes(torrent.state)) {
             anyDownloading = true;
             allSeeding = false;
