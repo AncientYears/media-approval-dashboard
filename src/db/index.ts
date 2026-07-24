@@ -113,9 +113,10 @@ export function initializeDatabase(dbPath: string): DBInstance {
 
     // Migration: remove overly-strict UNIQUE(title, type, season)
     // The poller uses sonarr_id/radarr_id for dedup, not this constraint
-    // Only run if media_requests_new doesn't already exist (migration was completed)
-    const newTableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='media_requests_new'").get();
-    if (!newTableExists) {
+    // Only run if the old UNIQUE constraint still exists
+    const indexes = db.prepare("PRAGMA index_list(media_requests)").all() as any[];
+    const hasUniqueConstraint = indexes.some((idx: any) => idx.unique === 1);
+    if (hasUniqueConstraint) {
       try {
         db.exec(`
           CREATE TABLE media_requests_new (
