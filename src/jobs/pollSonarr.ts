@@ -116,11 +116,20 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
           : `${season.title} S${String(season.seasonNumber).padStart(2, "0")}`;
 
         if (existing) {
-          if (existing.status === "SEARCHING" || existing.status === "NEW") {
-            const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
-            if (!hasReleases) {
-              console.log(`[Sonarr] Retrying search for ${requestTitle} (status=${existing.status}, releases=${!!hasReleases})`);
+          const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
+          if (!hasReleases) {
+            if (existing.status === "NEW") {
+              console.log(`[Sonarr] Searching for ${requestTitle} (status=NEW, releases=false)`);
               searchesToRun.push({ requestId: existing.id, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
+            } else if (existing.status === "SEARCHING") {
+              const age = Date.now() - new Date(existing.updated_at + "Z").getTime();
+              if (age > intervalSeconds * 2000) {
+                db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
+                console.log(`[Sonarr] ${requestTitle} stuck in SEARCHING (${Math.round(age/1000)}s) — moved to AWAITING_APPROVAL`);
+              } else {
+                db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
+                searchesToRun.push({ requestId: existing.id, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
+              }
             }
           }
           continue;

@@ -7,6 +7,7 @@ const SEEDING_STATES = ["uploading", "stalledUP", "forcedUP", "queuedUP", "pause
 function normalizeTitle(s: string): string {
   return s.toLowerCase()
     .replace(/[&]/g, "and")
+    .replace(/[:']/g, " ")
     .replace(/[.\-_\[\]()]/g, " ")
     .replace(/\s+/g, " ")
     .trim();

@@ -142,9 +142,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (status === "SEEDING") {
           try {
             const torrents = await qbittorrent.getTorrents();
-            const normTitle = movie.title.toLowerCase().replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+            const normTitle = movie.title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
             const match = torrents.find((t) => {
-              const tn = t.name.toLowerCase().replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+              const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
               return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
             });
             if (match) {

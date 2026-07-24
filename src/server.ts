@@ -88,8 +88,8 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       for (const rc of withHashes) {
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
         if (t) {
-          const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-          const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+          const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+          const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
           if (tn !== req && !tn.startsWith(req + " ") && !tn.startsWith(req + ".")) {
             staleRcs.push(rc.rc_id);
             console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} is actually "${t.name}"`);

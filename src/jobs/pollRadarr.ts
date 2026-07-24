@@ -111,12 +111,15 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         const existing = existingStmt.get(movie.id) as any;
 
         if (existing) {
-          if (existing.status === "SEARCHING" || existing.status === "NEW") {
+          if (existing.status === "NEW") {
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
             if (!hasReleases) {
-              console.log(`[Radarr] Retrying search for ${movie.title} (status=${existing.status}, releases=${!!hasReleases})`);
+              console.log(`[Radarr] Searching for ${movie.title} (status=NEW, releases=false)`);
               searchesToRun.push({ requestId: existing.id, movieId: movie.id, title: movie.title });
             }
+          } else if (existing.status === "SEARCHING") {
+            db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
+            console.log(`[Radarr] ${movie.title} stuck in SEARCHING — moved to AWAITING_APPROVAL`);
           }
           continue;
         }
