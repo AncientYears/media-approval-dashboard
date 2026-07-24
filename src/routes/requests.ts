@@ -77,6 +77,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           has_torrent: hasTorrent,
           release_count: releaseStats?.count || 0,
           total_size_mb: releaseStats?.total_size_mb || 0,
+          candidate_count: db.prepare("SELECT COUNT(*) as c FROM release_candidates WHERE request_id = ?").get(row.id)?.c || 0,
         };
       });
       
@@ -162,11 +163,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   // POST /api/requests/detect-torrents - Scan qBittorrent for orphaned requests and link them
   router.post("/detect-torrents", async (req: Request, res: Response) => {
     try {
-      // Find orphaned requests: no radarr_id/sonarr_id, pending status
+      // Find requests with no torrent hash that could be orphaned
       const orphans = db.prepare(
-        "SELECT id, title FROM media_requests " +
-        "WHERE (radarr_id IS NULL OR radarr_id = 0) AND (sonarr_id IS NULL OR sonarr_id = 0) " +
-        "AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
+        "SELECT mr.id, mr.title FROM media_requests mr " +
+        "WHERE mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "AND NOT EXISTS (" +
+        "  SELECT 1 FROM release_candidates rc " +
+        "  JOIN approval_history ah ON ah.release_id = rc.id " +
+        "  WHERE ah.request_id = mr.id AND rc.torrent_hash != ''" +
+        ")"
       ).all() as any[];
 
       if (orphans.length === 0) {

@@ -144,6 +144,11 @@ export default function Dashboard() {
                   Type: <strong>{req.type}</strong>
                   {req.type === "series" && req.season != null && <> · Season {req.season}</>}
                   {" · "}{new Date(req.created_at).toLocaleDateString()}
+                  {req.status === "AWAITING_APPROVAL" && (
+                    req.candidate_count > 0
+                      ? <> · <strong>{req.candidate_count}</strong> release{req.candidate_count !== 1 ? "s" : ""} found</>
+                      : <> · <em style={{opacity:0.6}}>no releases yet</em></>
+                  )}
                 </p>
                 {req.requested_by && Array.isArray(req.requested_by) && req.requested_by.length > 0 && (
                   <p className="request-meta">Requested by: {req.requested_by.join(", ")}</p>
