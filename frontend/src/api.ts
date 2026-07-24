@@ -124,3 +124,8 @@ export async function fetchSettings() {
   const response = await api.get("/settings");
   return response.data;
 }
+
+export async function setRequestStatus(requestId: number, status: string) {
+  const response = await api.post(`/requests/${requestId}/set-status`, { status });
+  return response.data;
+}

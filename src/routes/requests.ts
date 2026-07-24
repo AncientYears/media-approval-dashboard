@@ -1417,5 +1417,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/:id/set-status - Manually fix stuck request status
+  router.post("/:id/set-status", (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    const valid = ["NEW", "SEARCHING", "AWAITING_APPROVAL", "APPROVED", "DOWNLOADING", "SEEDING", "COMPLETED", "REJECTED", "DISMISSED"];
+    if (!valid.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be one of: ${valid.join(", ")}` });
+    }
+    const request = db.prepare("SELECT id FROM media_requests WHERE id = ?").get(id);
+    if (!request) return res.status(404).json({ error: "Request not found" });
+    db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
+    res.json({ success: true, status });
+  });
+
   return router;
 }

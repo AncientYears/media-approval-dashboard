@@ -209,6 +209,7 @@ export default function RequestDetail() {
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [searching, setSearching] = useState(false);
 
   const loadData = async (initial = false) => {
     try {
@@ -276,10 +277,17 @@ export default function RequestDetail() {
   };
 
   const handleSearchAgain = async () => {
+    setSearching(true);
     setRequest((prev: any) => prev ? { ...prev, status: "SEARCHING" } : prev);
-    await searchAgain(Number(id), searchTerm ? { searchTerm } : {});
-    toast("Search complete", "info");
-    loadData();
+    try {
+      await searchAgain(Number(id), searchTerm ? { searchTerm } : {});
+      toast("Search complete", "info");
+    } catch {
+      toast("Search failed", "error");
+    } finally {
+      setSearching(false);
+      loadData();
+    }
   };
 
   const handleCopyPath = async (text: string) => {
@@ -541,7 +549,9 @@ export default function RequestDetail() {
           onChange={(e) => setSearchTerm(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleSearchAgain(); }}
         />
-        <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Refresh</button>
+        <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain} disabled={searching}>
+          {searching ? <span className="spinner" /> : "Refresh"}
+        </button>
         {(!hasAnyTorrent && !approvedReleases.some((r: any) => r.torrent_hash)) && (
           <button className="btn btn-danger btn-tiny" onClick={handleDelete}>Delete</button>
         )}
