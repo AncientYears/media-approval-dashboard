@@ -291,6 +291,7 @@ export default function RequestDetail() {
       const decoder = new TextDecoder();
       let buffer = "";
       let searchDone = false;
+      let eventType = "";
 
       while (!searchDone) {
         const { done, value } = await reader.read();
@@ -299,10 +300,9 @@ export default function RequestDetail() {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
-        let eventType = "";
         for (const line of lines) {
           if (line.startsWith("event: ")) {
-            eventType = line.slice(7);
+            eventType = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
             if (eventType === "progress") {
@@ -316,6 +316,8 @@ export default function RequestDetail() {
               toast(data.error, "error");
               searchDone = true;
             }
+          } else if (line.trim() === "") {
+            eventType = "";
           }
         }
       }
