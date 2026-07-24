@@ -91,7 +91,7 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 
     // Clean up stale release_candidates where hash doesn't match title
     const withHashes = db.prepare(
-      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title " +
+      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, rc.size_mb " +
       "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
       "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
     ).all() as any[];
@@ -119,6 +119,7 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 
       // Backfill size_mb=0 from qBittorrent
       const zeroSizeRcs = withHashes.filter((rc: any) => {
+        if (rc.size_mb && rc.size_mb > 0) return false;
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
         return t && t.size > 0;
       });
