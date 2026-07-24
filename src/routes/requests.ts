@@ -86,6 +86,44 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
+  // POST /api/requests/cleanup - Dismiss requests no longer in Radarr's wanted list
+  router.post("/cleanup", async (req: Request, res: Response) => {
+    try {
+      const movies = await radarr.getWantedMovies();
+      const wantedIds = new Set(movies.filter((m: any) => !m.hasFile && m.monitored).map((m: any) => m.id));
+
+      // 1) Dismiss requests with a radarr_id no longer in wanted list
+      const stale = db.prepare(
+        "SELECT id, title, radarr_id FROM media_requests " +
+        "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
+      ).all() as any[];
+
+      let dismissed = 0;
+      for (const r of stale) {
+        if (!wantedIds.has(r.radarr_id)) {
+          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
+          dismissed++;
+        }
+      }
+
+      // 2) Also dismiss orphaned requests with no radarr_id AND no approved releases
+      const orphans = db.prepare(
+        "SELECT mr.id FROM media_requests mr " +
+        "WHERE mr.radarr_id IS NULL AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
+      ).all() as any[];
+      for (const r of orphans) {
+        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
+        dismissed++;
+      }
+
+      res.json({ success: true, dismissed });
+    } catch (error) {
+      console.error("Error cleaning up requests:", error);
+      res.status(500).json({ error: "Failed to cleanup requests" });
+    }
+  });
+
   // GET /api/requests/:id - Get specific request with releases
   router.get("/:id", (req: Request, res: Response) => {
     try {
@@ -207,6 +245,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         dlspeed: torrent.dlspeed,
         upspeed: torrent.upspeed,
         uploaded: torrent.uploaded,
+        seeding_time: torrent.seeding_time,
         ratio: Math.round(torrent.ratio * 100) / 100,
         eta: torrent.eta,
         save_path: torrent.save_path,
@@ -317,6 +356,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           dlspeed: torrent.dlspeed,
           upspeed: torrent.upspeed,
           uploaded: torrent.uploaded,
+          seeding_time: torrent.seeding_time,
           ratio: Math.round(torrent.ratio * 100) / 100,
           eta: torrent.eta,
           save_path: torrent.save_path,
@@ -733,32 +773,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     } catch (error: any) {
       console.error("[Resume] Error:", error.message || error);
       res.status(500).json({ error: error.message || "Failed to resume torrent" });
-    }
-  });
-
-  // POST /api/requests/cleanup - Dismiss requests no longer in Radarr's wanted list
-  router.post("/cleanup", async (req: Request, res: Response) => {
-    try {
-      const movies = await radarr.getWantedMovies();
-      const wantedIds = new Set(movies.filter((m: any) => !m.hasFile && m.monitored).map((m: any) => m.id));
-
-      const stale = db.prepare(
-        "SELECT id, title, radarr_id FROM media_requests " +
-        "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
-      ).all() as any[];
-
-      let dismissed = 0;
-      for (const req of stale) {
-        if (!wantedIds.has(req.radarr_id)) {
-          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-          dismissed++;
-        }
-      }
-
-      res.json({ success: true, dismissed });
-    } catch (error) {
-      console.error("Error cleaning up requests:", error);
-      res.status(500).json({ error: "Failed to cleanup requests" });
     }
   });
 

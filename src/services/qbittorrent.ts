@@ -11,6 +11,7 @@ export interface TorrentInfo {
   num_leechs: number;
   ratio: number;
   uploaded: number;
+  seeding_time: number;
   save_path: string;
   content_path: string;
   added_on: number;

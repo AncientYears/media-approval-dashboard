@@ -487,7 +487,8 @@ body {
   border-radius: 0.25rem;
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
-  width: 180px;
+  flex: 1;
+  min-width: 0;
 }
 
 .search-term-input:focus {

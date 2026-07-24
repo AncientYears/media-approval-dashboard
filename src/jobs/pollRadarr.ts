@@ -78,6 +78,17 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         }
       }
 
+      // Also dismiss orphaned requests with no radarr_id and no approved releases
+      const orphans = db.prepare(
+        "SELECT mr.id, mr.title FROM media_requests mr " +
+        "WHERE mr.radarr_id IS NULL AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
+      ).all() as any[];
+      for (const req of orphans) {
+        console.log(`[Radarr] Auto-dismissing orphan ${req.title} (no radarr_id, no releases)`);
+        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
+      }
+
       const existingStmt = db.prepare(`SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'`);
       const insertStmt = db.prepare(`
         INSERT INTO media_requests (title, type, radarr_id, status, requested_by)

@@ -215,6 +215,7 @@ export default function RequestDetail() {
       setRequest(data);
       setReleases(data.releases || []);
       setApprovedReleases(data.approved_releases || []);
+      setSearchTerm(data.title || "");
       setError(null);
     } catch (err) {
       setError("Failed to load releases");
@@ -446,10 +447,10 @@ export default function RequestDetail() {
                     <span className="ts-label">Peers</span>
                     <span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span>
                   </div>
-                  {ts.completion_on > 0 && (
+                  {ts.completion_on > 0 && (ts.state === "uploading" || ts.state === "stalledUP" || ts.state === "forcedUP" || ts.state === "queuedUP" || ts.state === "pausedUP") && (
                     <div className="ts-item">
                       <span className="ts-label">Seeding</span>
-                      <span className="ts-value">{formatDuration((Date.now() / 1000) - ts.completion_on)}</span>
+                      <span className="ts-value">{formatDuration(ts.seeding_time || 0)}</span>
                     </div>
                   )}
                   {ts.progress === 100 && (
