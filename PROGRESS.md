@@ -1,246 +1,151 @@
 ﻿# Project Implementation Summary
 
-## ✅ Phase 1-2 Complete: Foundation & Frontend
+## Current Status: Phase 1-5 Complete (Production Deployed)
 
-### What Was Built
+### What's Built
 
 #### Backend (Node.js + Express + TypeScript)
-- ✅ Express server with CORS and body-parser middleware
-- ✅ SQLite database with complete schema (8 tables)
-- ✅ Database initialization with proper foreign keys and indexes
-- ✅ TypeScript type definitions for all domain objects
-- ✅ API service classes for Radarr, Sonarr, and ntfy integration
-- ✅ Basic API routes for media requests
-- ✅ Static file serving for frontend
-- ✅ Graceful shutdown handling
+- Express server with CORS, body-parser, SPA fallback
+- SQLite database with migrations and auto-repair
+- TypeScript type definitions for all domain objects
+- Service classes: Radarr, Sonarr, QBittorrent, notifications (ntfy)
+- Polling jobs: Radarr wanted, Sonarr wanted missing, qBittorrent status
+- Torrent name parser (S01E01, Season packs, multi-episode)
+- Release scoring engine with profiles (balanced/audio/quality/size)
+- SSE streaming for search progress
+- DB viewer endpoint
 
 #### Frontend (React + Vite + TypeScript)
-- ✅ React app with React Router for navigation
-- ✅ Dashboard page with request listing
-- ✅ Settings page with connection testing
-- ✅ API client utility with axios
-- ✅ Comprehensive dark-theme CSS styling
-- ✅ Responsive grid layout for request cards
-- ✅ Status badges with color coding
-- ✅ Auto-refresh requests every 30 seconds (ready for real data)
+- Dashboard with requests + managed media sections
+- Franchise detail page (series drill-down by season)
+- Request detail page with release comparison table
+- DB viewer page with editable status dropdowns
+- Toast notification system
+- Custom modal dialogs (no browser alerts)
+- Dark theme with responsive layout
+- Filter bar: status, type, sort
+- Season pills with episode coverage (e.g. "S02 | 5/12 EP")
 
-#### Database (SQLite)
+#### Polling & Status
+- Radarr poller: discovers wanted movies, searches releases, retries
+- Sonarr poller: discovers wanted series seasons, searches releases
+- Status poller: matches torrents by hash/title, transitions DOWNLOADING ↔ SEEDING
+- All pollers: parallel Promise.all searches, 60s intervals (30s for status)
+
+#### Integration Flow
 ```
-media_requests          - Core request tracking with app state machine
-release_candidates      - Release data + Radarr facts + app interpretation
-approval_history        - Approval records with reasoning
-search_history          - Search parameters for tracking tweaks
-release_group_scores    - For v2 release group learning
-custom_rules            - For v2 custom rule engine
-settings                - Configuration storage
+Jellyseerr → Radarr/Sonarr → Poller discovers → User approves →
+Radarr/Sonarr grabs → qBittorrent downloads → Status poller tracks →
+Move to library (hardlinks to Jellyfin folders)
 ```
 
-#### Configuration & Deployment
-- ✅ Multi-stage Dockerfile (backend + frontend)
-- ✅ docker-compose.yml with environment variables
-- ✅ .env.example with all configuration options
-- ✅ .gitignore and .dockerignore
-- ✅ Vite dev proxy for API calls
-- ✅ TypeScript configurations for both backend and frontend
+### API Endpoints
 
-#### Documentation
-- ✅ README.md with project overview and philosophy
-- ✅ DEPLOYMENT.md with comprehensive setup guide
-- ✅ Inline code comments and type annotations
-
-### Project Statistics
-
-| Category | Count |
-|----------|-------|
-| Backend TypeScript files | 7 |
-| Frontend React components | 2 main + 2 pages |
-| Database tables | 8 |
-| API endpoints (basic) | 4 |
-| Environment variables | 12 |
-| Package dependencies | 8 (runtime) + 8 (dev) |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /api/health | Health check |
+| GET | /api/requests | List all requests (no limit) |
+| GET | /api/requests/:id | Request detail + releases + approved |
+| GET | /api/requests/managed | Managed media (franchise grouped) |
+| GET | /api/requests/managed/:sonarrId | Franchise detail with season releases |
+| POST | /api/requests/:id/search | SSE streaming search (progress events) |
+| POST | /api/requests/:id/approve | Approve release + grab via Radarr/Sonarr |
+| POST | /api/requests/:id/dismiss | Dismiss release (manual only) |
+| POST | /api/requests/:id/reactivate | Reactivate dismissed request |
+| POST | /api/requests/:id/set-status | Manually fix stuck status |
+| POST | /api/requests/:id/torrent-status | Single torrent status |
+| POST | /api/requests/:id/torrent-statuses | All torrent statuses |
+| POST | /api/requests/:id/move-to-library | Hardlink to Jellyfin folder |
+| POST | /api/requests/:id/remove-from-library | Remove from Jellyfin folder |
+| POST | /api/requests/:id/torrent/pause | Pause torrent |
+| POST | /api/requests/:id/torrent/resume | Resume torrent |
+| DELETE | /api/requests/:id | Delete request + torrent + Radarr/Sonarr entry |
+| POST | /api/requests/detect-torrents | Match qBittorrent torrents to requests |
+| POST | /api/requests/import-missing | Import Radarr/Sonarr items without DB entries |
+| POST | /api/requests/cleanup | No-op (dismiss is manual only) |
+| POST | /api/requests/reactivate-all | Re-activate all dismissed requests |
+| GET | /api/db | All tables, columns, rows (DB viewer) |
+| GET | /api/settings | Get settings |
+| POST | /api/test-connections | Test Radarr/Sonarr/qBittorrent connectivity |
 
 ### File Structure
 
 ```
 mediaAppThing/
 ├── src/
-│   ├── server.ts                 # Express entry point
-│   ├── db/index.ts              # Database initialization & schema
+│   ├── server.ts                 # Express entry point + static serving
+│   ├── db/index.ts              # Schema, migrations, auto-repair
 │   ├── types/index.ts           # TypeScript interfaces
 │   ├── services/
-│   │   ├── radarr.ts            # Radarr API wrapper
-│   │   ├── sonarr.ts            # Sonarr API wrapper
-│   │   └── notifications.ts     # ntfy integration
-│   └── routes/
-│       └── requests.ts          # API endpoints for requests
+│   │   ├── radarr.ts            # Radarr API (search, grab, unmonitor, delete, getAll)
+│   │   ├── sonarr.ts            # Sonarr API (search, grab, wanted missing)
+│   │   ├── qbittorrent.ts       # qBittorrent Web API v2
+│   │   └── scoring.ts           # Release scoring engine
+│   ├── jobs/
+│   │   ├── pollRadarr.ts        # Discovers wanted movies, searches
+│   │   ├── pollSonarr.ts        # Discovers wanted series, searches
+│   │   └── pollStatus.ts        # Tracks torrent status, transitions state
+│   ├── routes/
+│   │   └── requests.ts          # All API endpoints (~1400 lines)
+│   └── utils/
+│       └── torrentParser.ts     # Parse S01E01, Season packs, multi-episode
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx              # Main app component
-│   │   ├── App.css              # Comprehensive styling
-│   │   ├── api.ts               # Axios client
-│   │   ├── pages/
-│   │   │   ├── Dashboard.tsx    # Main dashboard
-│   │   │   └── Settings.tsx     # Settings & connection test
-│   │   └── components/          # (Ready for future components)
-│   ├── index.html               # HTML entry point
-│   ├── vite.config.ts           # Vite + dev proxy config
-│   └── tsconfig*.json           # TypeScript configs
-├── Dockerfile                   # Multi-stage build
-├── docker-compose.yml           # Orchestration
-├── .env.example                 # Configuration template
-├── README.md                    # Project documentation
-├── DEPLOYMENT.md                # Deployment guide
-└── package.json                 # Backend dependencies
+│   │   ├── App.tsx              # Router + nav + ToastProvider
+│   │   ├── App.css              # All styling (~1700 lines)
+│   │   ├── api.ts               # Axios client + all API functions
+│   │   ├── components/
+│   │   │   └── Toast.tsx        # Toast notification system
+│   │   └── pages/
+│   │       ├── Dashboard.tsx    # Requests + managed media + filter bar
+│   │       ├── RequestDetail.tsx # Release comparison + torrent management
+│   │       ├── FranchiseDetail.tsx # Series season drill-down
+│   │       ├── DatabaseViewer.tsx # DB tables viewer with status editor
+│   │       └── Settings.tsx     # Connection testing
+│   ├── index.html
+│   ├── vite.config.ts
+│   └── tsconfig.json
+├── Dockerfile                   # Multi-stage (frontend + backend)
+├── docker-compose.yml
+├── .env.example
+├── README.md
+├── DEPLOYMENT.md
+└── QUICKSTART.md
 ```
 
-### Development Commands
+### Key Technical Decisions
 
-**Backend:**
+- **No LIMIT on requests query** — was 100, removed because imports exceeded it
+- **Dismiss = manual only** — no auto-dismiss, permanent delete without file deletion
+- **Status preserved on refresh** — DOWNLOADING/SEEDING requests keep status when re-searching
+- **Migration auto-repair** — detects orphaned `media_requests_new` table and restores
+- **SSE for search progress** — streams "querying → indexing → done" to frontend
+- **Clipboard fallback** — textarea execCommand for HTTP servers (no navigator.clipboard)
+
+### DB Schema
+
+```
+media_requests          - Requests with status, radarr_id/sonarr_id, episode_count
+release_candidates      - Releases with torrent_hash, save_path, parsed_episodes
+approval_history        - Approval records linking request → release
+search_history          - Search parameter tracking
+release_group_scores    - Release group bias (v2)
+custom_rules            - Custom require/exclude/prefer rules (v2)
+settings                - Key-value config storage
+```
+
+### Known Issues / Tech Debt
+
+- Server has different DB than local dev — must deploy to test server-side changes
+- `navigator.clipboard` requires HTTPS — textarea fallback handles HTTP
+- DB migration could lose data if interrupted mid-transaction (auto-repair mitigates)
+
+### Commands
+
 ```bash
-npm run dev          # Start with hot-reload (localhost:3000)
-npm run build        # Compile TypeScript
-npm run type-check   # Validate types
-npm start            # Run compiled version
+npm run dev              # Backend dev server (localhost:3000)
+npm run build            # Compile TypeScript
+npm run type-check       # Validate types
+cd frontend && npm run dev   # Frontend dev (localhost:5173)
+docker compose up -d --build # Production deploy
 ```
-
-**Frontend:**
-```bash
-cd frontend
-npm run dev          # Start dev server (localhost:5173)
-npm run build        # Build for production
-npm run preview      # Preview production build
-```
-
-**Docker:**
-```bash
-docker-compose build  # Build the image
-docker-compose up -d  # Start in background
-docker-compose logs   # View logs
-```
-
-### What's Ready to Use
-
-1. **Dashboard** - Displays pending media requests with auto-refresh
-2. **Settings Page** - Test API connections to Radarr/Sonarr
-3. **Database** - Full schema for storing requests, releases, approvals
-4. **API Routes** - `/api/requests`, `/api/requests/:id`, approval endpoints
-5. **Docker** - Production-ready containerized deployment
-
-### What Needs Implementation (Phase 3+)
-
-**Phase 3: Polling & Status Tracking**
-- [ ] Poll Radarr/Sonarr for wanted items
-- [ ] Monitor request status changes
-- [ ] Implement grab trigger via Radarr API
-- [ ] Track approval → download → completion flow
-
-**Phase 4: Smart Release Views**
-- [ ] Release comparison component
-- [ ] Debug view: why did Radarr rank releases this way?
-- [ ] Search tweaking UI panel
-- [ ] Batch approval checkbox & actions
-- [ ] Sonarr season-level approval selector
-
-**Phase 5: Notifications & Intelligence**
-- [ ] ntfy integration for mobile alerts
-- [ ] Real-time status updates
-- [ ] Download progress display
-- [ ] Release attribute scoring explanation
-
-### Known Limitations (v0.1.0)
-
-- ❌ Polling jobs not yet implemented (Phase 3)
-- ❌ Release candidates not displayed (need UI)
-- ❌ Approval flow not complete (need grab trigger)
-- ❌ Notifications not sending (ntfy service ready, needs trigger)
-- ❌ Search tweaking UI not built
-- ❌ Release comparison table not built
-- ❌ Sonarr season selector not implemented
-
-### Next Steps
-
-1. **Start the backend:**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your Radarr/Sonarr API keys
-   npm run dev
-   ```
-
-2. **Start the frontend:**
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-
-3. **Test the setup:**
-   - Visit http://localhost:5173
-   - Go to Settings and click "Test Connections"
-   - Navigate to Dashboard (currently shows mock data from DB)
-
-4. **Implement Phase 3:**
-   - Create polling jobs (`src/jobs/`)
-   - Implement the grab flow
-   - Connect real Radarr/Sonarr data
-
-### Architecture Diagram
-
-```
-┌─────────────────┐
-│  Jellyseerr     │ (User requests media)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Radarr/Sonarr   │ (Wanted items added here)
-└────────┬────────┘
-         │
-         ▼ (App polls)
-┌─────────────────────────────────────┐
-│  Media Approval Dashboard           │
-│  ┌─────────────────────────────────┐│
-│  │  Frontend (React)               ││
-│  │  - Dashboard                    ││
-│  │  - Settings                     ││
-│  │  - Release views (coming)       ││
-│  └─────────────────────────────────┘│
-│  ┌─────────────────────────────────┐│
-│  │  Backend (Express + TypeScript) ││
-│  │  - API routes                   ││
-│  │  - Database (SQLite)            ││
-│  │  - Services (Radarr, Sonarr)   ││
-│  │  - Polling jobs (coming)        ││
-│  └─────────────────────────────────┘│
-└────────┬────────────────────────────┘
-         │ (Approval sent)
-         ▼
-┌─────────────────┐
-│ Radarr/Sonarr   │ (Grab release)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ qBittorrent     │ (Download)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Jellyfin        │ (Watch)
-└─────────────────┘
-```
-
-### Git Status
-
-When ready to commit:
-```bash
-git init
-git add .
-git commit -m "Phase 1-2: Foundation and frontend scaffold"
-```
-
-The `.gitignore` is already set up to exclude node_modules, dist, data/, .env, and logs.
-
----
-
-**Status**: Ready for Phase 3 implementation! 🚀
-
-The foundation is solid. All core services are in place. Next: integrate the polling and approval workflows.

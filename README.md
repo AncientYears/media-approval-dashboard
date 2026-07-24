@@ -1,113 +1,97 @@
 ﻿# Media Approval Dashboard
 
-A human-friendly approval gateway for Radarr/Sonarr that lets you review, compare, and approve media releases before they download.
+A self-hosted approval gateway for Radarr/Sonarr with qBittorrent integration. Review, compare, approve, and track media releases before they download.
 
 ## Features
 
-- **Approval Dashboard**: Review wanted items from Radarr/Sonarr
-- **Release Comparison**: Side-by-side view of candidate releases
-- **Search Tweaking**: Adjust search parameters without opening Radarr
-- **Debug View**: Understand why Radarr ranked releases the way it did
-- **Batch Approval**: Approve multiple releases at once
-- **Notifications**: ntfy integration for mobile alerts
-- **TV Support**: Season-level approval for Sonarr series
+- **Approval Dashboard** — Pending requests + managed media with franchise grouping
+- **Release Comparison** — Side-by-side table with app scoring, quality breakdown, seeder counts
+- **Season Packs** — Parse multi-episode torrents (S02E01-E12), track episode coverage per season
+- **Live Search Progress** — SSE streaming shows "Querying → Found 10 → Indexing 5/10 → Done"
+- **Torrent Management** — Pause, resume, move to library, remove from library
+- **DB Viewer** — Browse all database tables, edit status with inline dropdowns
+- **Import Missing** — Import Radarr/Sonarr items not yet in the DB
+- **Detect Torrents** — Match existing qBittorrent torrents to pending requests
+- **Toast Notifications** — Non-intrusive feedback for all actions
+- **Dark Theme** — Full responsive dark UI
 
 ## Architecture
 
 ```
-Jellyseerr → Radarr/Sonarr → Media Approval Dashboard → Radarr Grab API → qBittorrent → Jellyfin
+Jellyseerr → Radarr/Sonarr → Media Approval Dashboard → Radarr/Sonarr Grab → qBittorrent → Jellyfin
 ```
 
 ## Quick Start
 
-### Backend Setup
+### Docker (Recommended)
 
-1. Copy `.env.example` to `.env` and fill in your API keys:
 ```bash
+git clone https://github.com/AncientYears/media-approval-dashboard.git
+cd media-approval-dashboard
 cp .env.example .env
+# Edit .env with your API keys
+docker compose up -d --build
 ```
 
-2. Required environment variables:
-   - `RADARR_URL` and `RADARR_API_KEY`
-   - `SONARR_URL` and `SONARR_API_KEY`
-   - `NTFY_URL` and `NTFY_TOPIC`
+### Local Development
 
-3. Install and run:
 ```bash
+cp .env.example .env
+# Edit .env
+
+# Backend
+npm install
+npm run dev
+
+# Frontend (separate terminal)
+cd frontend
 npm install
 npm run dev
 ```
 
-The backend will start on `http://localhost:3000`
+### Environment Variables
 
-### Database
+| Variable | Description |
+|----------|-------------|
+| `RADARR_URL` | Radarr API URL (e.g. http://192.168.1.100:7878) |
+| `RADARR_API_KEY` | Radarr API key |
+| `SONARR_URL` | Sonarr API URL |
+| `SONARR_API_KEY` | Sonarr API key |
+| `QBIT_URL` | qBittorrent Web UI URL |
+| `QBIT_USER` | qBittorrent username |
+| `QBIT_PASS` | qBittorrent password |
+| `NTFY_URL` | ntfy server URL |
+| `NTFY_TOPIC` | ntfy notification topic |
+| `POLL_INTERVAL_RADARR` | Radarr poll interval in seconds (default: 60) |
+| `POLL_INTERVAL_SONARR` | Sonarr poll interval in seconds (default: 60) |
+| `POLL_INTERVAL_STATUS` | Status poll interval in seconds (default: 30) |
+| `MEDIA_MOVIES` | Library path for movies (for move-to-library) |
+| `MEDIA_TV` | Library path for TV shows |
 
-SQLite database is automatically initialized at `./data/app.db`
+## API Endpoints
 
-## Project Structure
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/requests` | List all requests |
+| GET | `/api/requests/:id` | Request detail + releases |
+| GET | `/api/requests/managed` | Managed media (franchise grouped) |
+| POST | `/api/requests/:id/search` | Search releases (SSE progress) |
+| POST | `/api/requests/:id/approve` | Approve + grab |
+| POST | `/api/requests/:id/dismiss` | Delete release |
+| POST | `/api/requests/:id/set-status` | Manual status fix |
+| POST | `/api/requests/:id/move-to-library` | Hardlink to library |
+| POST | `/api/requests/detect-torrents` | Match torrents to requests |
+| POST | `/api/requests/import-missing` | Import from Radarr/Sonarr |
+| GET | `/api/db` | Browse all tables |
+| DELETE | `/api/requests/:id` | Delete request + torrent |
 
-```
-.
-├── src/
-│   ├── server.ts              # Express app entry point
-│   ├── types/                 # TypeScript interfaces
-│   ├── db/                    # Database initialization & schema
-│   ├── services/              # API integrations (Radarr, Sonarr, ntfy)
-│   ├── routes/                # API endpoints (to be implemented)
-│   └── jobs/                  # Polling jobs (to be implemented)
-├── frontend/                  # React frontend (to be implemented)
-├── docker-compose.yml         # Docker deployment
-├── .env.example               # Environment template
-└── tsconfig.json              # TypeScript config
-```
+## Tech Stack
 
-## Development
-
-### Run backend in dev mode:
-```bash
-npm run dev
-```
-
-### Type check:
-```bash
-npm run type-check
-```
-
-### Build for production:
-```bash
-npm run build
-npm start
-```
-
-## API Endpoints (Roadmap)
-
-- `GET /api/health` - Health check
-- `GET /api/requests` - List pending requests
-- `GET /api/requests/:id/releases` - Get release candidates for a request
-- `POST /api/requests/:id/approve` - Approve a release
-- `POST /api/requests/:id/search` - Re-search with tweaked parameters
-- `GET /api/settings` - Get configuration
-- `POST /api/test-connections` - Test Radarr/Sonarr connectivity
-
-## Philosophy
-
-This is "giving Radarr a pair of glasses 👓" — not replacing Radarr. The app:
-- ✅ Shows you what Radarr found
-- ✅ Lets you approve before download
-- ✅ Explains Radarr''s ranking
-- ❌ Does NOT manage imports, hardlinks, or folder structure
-- ❌ Does NOT replicate Radarr''s search or parsing logic
-
-Radarr keeps doing what it does best. Your app is the approval layer.
-
-## v1 Scope
-
-Request → Search → Explain → Approve → Download → Watch
-
-Deferred to v2:
-- Machine learning from past searches
-- Release group bias scoring
-- Custom rule engine
+- **Backend**: Node.js, Express, TypeScript, better-sqlite3
+- **Frontend**: React, Vite, TypeScript, React Router
+- **Services**: Radarr API v3, Sonarr API v3, qBittorrent Web API v2
+- **Database**: SQLite with WAL mode
+- **Deployment**: Docker multi-stage build
 
 ## License
 

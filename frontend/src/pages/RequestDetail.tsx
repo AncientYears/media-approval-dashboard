@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
 import { useToast } from "../components/Toast";
 
 function formatSize(mb: number): string {
