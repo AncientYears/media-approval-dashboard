@@ -147,6 +147,14 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         const existing = existingStmt.get(movie.id) as any;
 
         if (existing) {
+          // If request was dismissed/rejected but movie is back in wanted list, re-activate it
+          if (existing.status === "DISMISSED" || existing.status === "REJECTED") {
+            console.log(`[Radarr] Re-activating ${movie.title} (was ${existing.status}, back in wanted list)`);
+            db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
+            await searchForRequest(existing.id, movie.id, movie.title, insertReleaseStmt, awaitingStmt, searchStmt);
+            continue;
+          }
+
           if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
             // Check if it has any releases at all
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
