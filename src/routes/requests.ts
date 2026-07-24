@@ -135,8 +135,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const result = db.prepare(
           "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, ?, '[]')"
         ).run(movie.title, movie.id, status);
+        const requestId = result.lastInsertRowid as number;
         console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id}, status=${status})`);
-        imported.push({ title: movie.title, id: result.lastInsertRowid as number });
+
+        // If DOWNLOADING, try to detect torrent hash from qBittorrent
+        if (status === "DOWNLOADING") {
+          try {
+            const torrents = await qbittorrent.getTorrents();
+            const normTitle = movie.title.toLowerCase().replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+            const match = torrents.find((t) => {
+              const tn = t.name.toLowerCase().replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+              return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
+            });
+            if (match) {
+              db.prepare(
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, 'unknown')"
+              ).run(requestId, `imported-${movie.id}`, movie.title, match.hash, match.save_path);
+              db.prepare(
+                "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
+              ).run(requestId, requestId);
+              console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}`);
+            }
+          } catch {}
+        }
+
+        imported.push({ title: movie.title, id: requestId });
       }
 
       // Import series seasons from Sonarr

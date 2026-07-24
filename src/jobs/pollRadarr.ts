@@ -52,6 +52,7 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
       console.log(`[Radarr] ${releases.length} releases for ${title}`);
     } catch (err) {
       console.error(`[Radarr] Failed to search releases for ${title}:`, err);
+      try { awaitingStmt.run(requestId); } catch {}
     }
   }
 

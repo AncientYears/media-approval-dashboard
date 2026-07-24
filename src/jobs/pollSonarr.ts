@@ -52,6 +52,8 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
       console.log(`[Sonarr] ${releases.length} releases for ${title}`);
     } catch (err) {
       console.error(`[Sonarr] Failed to search releases for ${title}:`, err);
+      // Set to AWAITING_APPROVAL so it doesn't retry forever
+      try { awaitingStmt.run(requestId); } catch {}
     }
   }
 

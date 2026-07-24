@@ -73,12 +73,13 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         }
 
         // Path 2: No release_candidates — try title-matching request title against torrents
-        // This handles imported movies (import-missing) that have no release_candidates
+        // Only for series (more reliable matching). Movies use radarr_id matching.
+        // Strict: torrent name must START with the request title
         if (!requestsWithHashes.has(req.id)) {
           const normTitle = normalizeTitle(req.title);
           const match = torrents.find((t) => {
             const tn = normalizeTitle(t.name);
-            return tn.includes(normTitle) || normTitle.includes(tn);
+            return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
           });
 
           if (match) {
