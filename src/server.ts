@@ -115,6 +115,21 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         for (const id of staleRcs) { delH.run(id); delR.run(id); }
         console.log(`[Startup] Removed ${staleRcs.length} stale release_candidates`);
       }
+
+      // Backfill size_mb=0 from qBittorrent
+      const zeroSizeRcs = withHashes.filter((rc: any) => {
+        const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
+        return t && t.size > 0;
+      });
+      const updateSize = db.prepare("UPDATE release_candidates SET size_mb = ? WHERE id = ?");
+      let backfilled = 0;
+      for (const rc of zeroSizeRcs) {
+        const t = torrents.find((x: any) => x.hash === rc.torrent_hash)!;
+        const sizeMb = Math.round(t.size / (1024 * 1024));
+        updateSize.run(sizeMb, rc.rc_id);
+        backfilled++;
+      }
+      if (backfilled > 0) console.log(`[Startup] Backfilled size_mb for ${backfilled} release_candidates`);
     }
   } catch (err) {
     console.error("[Startup] Fixup error:", err);
