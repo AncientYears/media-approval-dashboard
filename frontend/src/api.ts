@@ -73,6 +73,11 @@ export async function deleteDismissedRequests() {
   return response.data;
 }
 
+export async function deleteRequest(requestId: number) {
+  const response = await api.delete(`/requests/${requestId}`);
+  return response.data;
+}
+
 export async function removeFromLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/remove-from-library`);
   return response.data;

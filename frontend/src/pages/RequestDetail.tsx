@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent } from "../api";
+import { fetchReleases, approveRelease, searchAgain, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -310,6 +310,12 @@ export default function RequestDetail() {
     loadData();
   };
 
+  const handleDelete = async () => {
+    if (!confirm("Permanently delete this request? This cannot be undone.")) return;
+    await deleteRequest(Number(id));
+    navigate("/");
+  };
+
   const handleRemoveFromLibrary = async (releaseId: number) => {
     if (removeConfirmId !== releaseId) {
       setRemoveConfirmId(releaseId);
@@ -529,6 +535,9 @@ export default function RequestDetail() {
           onKeyDown={(e) => { if (e.key === "Enter") handleSearchAgain(); }}
         />
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Refresh</button>
+        {(!hasAnyTorrent && !approvedReleases.some((r: any) => r.torrent_hash)) && (
+          <button className="btn btn-danger btn-tiny" onClick={handleDelete}>Delete</button>
+        )}
       </div>
 
       <div className="release-toolbar">

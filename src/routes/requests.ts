@@ -212,6 +212,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // DELETE /api/requests/:id - Delete a single request and its releases
+  router.delete("/:id", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
+      db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
+      db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
+      console.log(`[Delete] Deleted request #${id}: ${request.title}`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting request:", error);
+      res.status(500).json({ error: "Failed to delete request" });
+    }
+  });
+
   // GET /api/requests/:id/releases - Get releases for a request
   router.get("/:id/releases", (req: Request, res: Response) => {
     try {
