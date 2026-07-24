@@ -64,6 +64,32 @@ export class RadarrService {
     }
   }
 
+  async unmonitorMovie(movieId: number) {
+    try {
+      const movie = await this.getMovie(movieId);
+      await this.client.put(`/api/v3/movie/${movieId}`, {
+        ...movie,
+        monitored: false,
+      });
+      console.log(`[Radarr] Unmonitored movie ${movieId}`);
+    } catch (error) {
+      console.error(`[Radarr] Failed to unmonitor movie ${movieId}:`, error);
+      throw error;
+    }
+  }
+
+  async deleteMovie(movieId: number, deleteFiles: boolean = false) {
+    try {
+      await this.client.delete(`/api/v3/movie/${movieId}`, {
+        params: { deleteFiles, addImportListExclusion: true },
+      });
+      console.log(`[Radarr] Deleted movie ${movieId} (deleteFiles=${deleteFiles})`);
+    } catch (error) {
+      console.error(`[Radarr] Failed to delete movie ${movieId}:`, error);
+      throw error;
+    }
+  }
+
   async testConnection() {
     try {
       await this.client.get("/api/v3/system/status");

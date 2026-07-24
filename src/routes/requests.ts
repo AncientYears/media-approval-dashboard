@@ -434,7 +434,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
         }
       } else {
-        // Legacy: dismiss entire request, delete all torrents
+        // Dismiss entire request, delete all torrents, unmonitor from Radarr
+        const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+
         const releases = db.prepare(
           "SELECT rc.id, rc.torrent_hash FROM release_candidates rc " +
           "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
@@ -447,6 +449,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           }
           db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(release.id);
         }
+
+        // Unmonitor/delete from Radarr
+        if (request?.radarr_id) {
+          try {
+            const movie = await radarr.getMovie(request.radarr_id);
+            if (movie.hasFile) {
+              await radarr.deleteMovie(request.radarr_id, true);
+              console.log(`[Dismiss] Deleted movie from Radarr: ${request.title} (had files)`);
+            } else {
+              await radarr.unmonitorMovie(request.radarr_id);
+              console.log(`[Dismiss] Unmonitored movie in Radarr: ${request.title}`);
+            }
+          } catch (err: any) {
+            console.error(`[Dismiss] Failed to update Radarr for ${request.title}:`, err.message);
+          }
+        }
+
         db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }
 
