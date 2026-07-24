@@ -32,6 +32,11 @@ export async function searchAgain(requestId: number, params: Record<string, any>
   return response.data;
 }
 
+export async function cleanupStaleRequests() {
+  const response = await api.post("/requests/cleanup");
+  return response.data;
+}
+
 export async function fetchTorrentStatus(requestId: number) {
   const response = await api.get(`/requests/${requestId}/torrent-status`);
   return response.data;

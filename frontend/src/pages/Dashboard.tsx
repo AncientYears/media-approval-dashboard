@@ -1,13 +1,13 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, searchAgain } from "../api";
+import { fetchRequests, searchAgain, cleanupStaleRequests } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
 }
 
-const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "REJECTED", "DISMISSED"];
+const STATUS_OPTIONS = ["ALL", "NEW", "SEARCHING", "AWAITING_APPROVAL", "DOWNLOADING", "REJECTED"];
 const TYPE_OPTIONS = ["ALL", "movie", "series"];
 const SORT_OPTIONS = [
   { value: "created_at_desc", label: "Newest first" },
@@ -23,7 +23,6 @@ const STATUS_ORDER: Record<string, number> = {
   NEW: 2,
   DOWNLOADING: 3,
   REJECTED: 6,
-  DISMISSED: 7,
 };
 
 export default function Dashboard() {
@@ -51,12 +50,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadRequests();
+    cleanupStaleRequests().then(() => loadRequests());
     const interval = setInterval(loadRequests, 30000);
     return () => clearInterval(interval);
   }, [loadRequests]);
 
   const requestsList = requests
-    .filter((r: any) => !r.has_torrent)
+    .filter((r: any) => !r.has_torrent && r.status !== "DISMISSED")
     .filter((r: any) => statusFilter === "ALL" || r.status === statusFilter)
     .filter((r: any) => typeFilter === "ALL" || r.type === typeFilter)
     .sort((a: any, b: any) => {
@@ -134,7 +134,7 @@ export default function Dashboard() {
                   <button className="btn btn-secondary" onClick={async () => {
                     await searchAgain(req.id, {});
                     loadRequests();
-                  }}>Search Again</button>
+                  }}>Refresh</button>
                 </div>
               </div>
             ))}

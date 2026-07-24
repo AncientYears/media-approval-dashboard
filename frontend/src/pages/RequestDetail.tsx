@@ -45,7 +45,8 @@ function getQualityScore(quality: string): number {
   return 0;
 }
 
-type SortKey = "app_score" | "radarr_rank" | "size_mb" | "quality" | "seeders";
+type SortKey = "app_score" | "radarr_rank" | "size_mb" | "radarr_quality" | "seeders" | "indexer" | "language" | "radarr_custom_formats";
+type SortDir = "asc" | "desc";
 type FilterQuality = "ALL" | "2160p" | "1080p" | "720p" | "CAM/TS";
 type ViewMode = "list" | "table";
 type ScoreProfile = "balanced" | "max_quality" | "compact" | "remux_only";
@@ -193,6 +194,7 @@ export default function RequestDetail() {
   const [error, setError] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [sortBy, setSortBy] = useState<SortKey>("app_score");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [filterQuality, setFilterQuality] = useState<FilterQuality>("ALL");
   const [filterIndexer, setFilterIndexer] = useState("ALL");
   const [filterLanguage, setFilterLanguage] = useState("ALL");
@@ -204,6 +206,7 @@ export default function RequestDetail() {
   const [moving, setMoving] = useState<number | null>(null);
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const loadData = async (initial = false) => {
     try {
@@ -270,7 +273,7 @@ export default function RequestDetail() {
 
   const handleSearchAgain = async () => {
     setRequest((prev: any) => prev ? { ...prev, status: "SEARCHING" } : prev);
-    await searchAgain(Number(id), {});
+    await searchAgain(Number(id), searchTerm ? { searchTerm } : {});
     loadData();
   };
 
@@ -360,12 +363,16 @@ export default function RequestDetail() {
       return false;
     })
     .sort((a: any, b: any) => {
+      const dir = sortDir === "asc" ? 1 : -1;
       switch (sortBy) {
-        case "app_score": return computeProfileScore(b, scoreProfile) - computeProfileScore(a, scoreProfile);
-        case "radarr_rank": return a.radarr_rank - b.radarr_rank;
-        case "size_mb": return b.size_mb - a.size_mb;
-        case "quality": return getQualityScore(b.radarr_quality) - getQualityScore(a.radarr_quality);
-        case "seeders": return (b.seeders ?? 0) - (a.seeders ?? 0);
+        case "app_score": return (computeProfileScore(b, scoreProfile) - computeProfileScore(a, scoreProfile)) * dir;
+        case "radarr_rank": return (a.radarr_rank - b.radarr_rank) * dir;
+        case "size_mb": return (b.size_mb - a.size_mb) * dir;
+        case "radarr_quality": return (getQualityScore(b.radarr_quality) - getQualityScore(a.radarr_quality)) * dir;
+        case "seeders": return ((b.seeders ?? 0) - (a.seeders ?? 0)) * dir;
+        case "indexer": return (a.indexer || "").localeCompare(b.indexer || "") * dir;
+        case "language": return (a.language || "").localeCompare(b.language || "") * dir;
+        case "radarr_custom_formats": return ((b.radarr_custom_formats?.length || 0) - (a.radarr_custom_formats?.length || 0)) * dir;
         default: return 0;
       }
     });
@@ -509,20 +516,21 @@ export default function RequestDetail() {
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
         </div>
-        <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Search</button>
+        <input
+          className="search-term-input"
+          type="text"
+          placeholder="Search term..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") handleSearchAgain(); }}
+        />
+        <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain}>Refresh</button>
       </div>
 
       <div className="release-toolbar">
         <div className="toolbar-filters">
           <select value={scoreProfile} onChange={(e) => setScoreProfile(e.target.value as ScoreProfile)} title={PROFILES[scoreProfile].desc}>
             {Object.entries(PROFILES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-          </select>
-          <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortKey)}>
-            <option value="app_score">Score</option>
-            <option value="radarr_rank">Radarr</option>
-            <option value="size_mb">Size</option>
-            <option value="quality">Quality</option>
-            <option value="seeders">Seeders</option>
           </select>
           <select value={filterQuality} onChange={(e) => setFilterQuality(e.target.value as FilterQuality)}>
             <option value="ALL">Quality</option>
@@ -560,16 +568,34 @@ export default function RequestDetail() {
           <table className="release-table">
             <thead>
               <tr>
-                <th className="th-rank">#</th>
-                <th>Title</th>
-                <th>Q</th>
-                <th>Size</th>
-                <th>Lang</th>
-                <th>Indexer</th>
-                <th className="th-sl">S/L</th>
-                <th>CF</th>
-                <th className="th-score">Score</th>
-                <th className="th-act"></th>
+                {([
+                  { key: "radarr_rank" as SortKey, label: "#", cls: "th-rank" },
+                  { key: null, label: "Title", cls: "" },
+                  { key: "radarr_quality" as SortKey, label: "Q", cls: "" },
+                  { key: "size_mb" as SortKey, label: "Size", cls: "" },
+                  { key: "language" as SortKey, label: "Lang", cls: "" },
+                  { key: "indexer" as SortKey, label: "Indexer", cls: "" },
+                  { key: "seeders" as SortKey, label: "S/L", cls: "th-sl" },
+                  { key: "radarr_custom_formats" as SortKey, label: "CF", cls: "" },
+                  { key: "app_score" as SortKey, label: "Score", cls: "th-score" },
+                  { key: null, label: "", cls: "th-act" },
+                ]).map((col) => (
+                  <th
+                    key={col.label + col.cls}
+                    className={`${col.cls} ${col.key ? "th-sortable" : ""} ${sortBy === col.key ? "th-active" : ""}`}
+                    onClick={col.key ? () => {
+                      if (sortBy === col.key) {
+                        setSortDir((d) => d === "asc" ? "desc" : "asc");
+                      } else {
+                        setSortBy(col.key);
+                        setSortDir(col.key === "radarr_rank" ? "asc" : "desc");
+                      }
+                    } : undefined}
+                  >
+                    {col.label}
+                    {col.key && sortBy === col.key && <span className="sort-arrow">{sortDir === "asc" ? " ▲" : " ▼"}</span>}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>

@@ -461,6 +461,45 @@ body {
   font-weight: 600;
 }
 
+.th-sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.th-sortable:hover {
+  color: var(--text);
+}
+
+.th-active {
+  color: var(--primary) !important;
+}
+
+.sort-arrow {
+  font-size: 0.55rem;
+  margin-left: 2px;
+}
+
+.search-term-input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  width: 180px;
+}
+
+.search-term-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.search-term-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
 .release-table td {
   padding: 0.25rem 0.4rem;
   border-bottom: 1px solid rgba(51, 65, 85, 0.3);
