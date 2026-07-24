@@ -190,7 +190,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       let detected = 0;
 
       for (const orphan of orphans) {
-        const titleWords = orphan.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w: string) => w.length > 1 && !["the", "and", "for"].includes(w));
+        const titleWords = orphan.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w: string) => w.length > 0 && !["the", "and", "for"].includes(w));
 
         const match = allTorrents.find((t: any) => {
           if (matchedTorrentHashes.has(t.hash)) return false;
