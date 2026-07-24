@@ -58,6 +58,16 @@ export async function dismissRequest(requestId: number, releaseId?: number) {
   return response.data;
 }
 
+export async function reactivateRequest(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/reactivate`);
+  return response.data;
+}
+
+export async function reactivateAllRequests() {
+  const response = await api.post("/requests/reactivate-all");
+  return response.data;
+}
+
 export async function removeFromLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/remove-from-library`);
   return response.data;

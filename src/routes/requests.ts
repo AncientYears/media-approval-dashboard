@@ -154,7 +154,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // GET /api/requests/:id - Get specific request with releases
+  // POST /api/requests/reactivate-all - Re-activate all DISMISSED requests
+  router.post("/reactivate-all", (req: Request, res: Response) => {
+    try {
+      const result = db.prepare(
+        "UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE status = 'DISMISSED'"
+      ).run();
+      console.log(`[Reactivate] Re-activated ${result.changes} dismissed requests`);
+      res.json({ success: true, reactivated: result.changes });
+    } catch (error) {
+      console.error("Error reactivating requests:", error);
+      res.status(500).json({ error: "Failed to reactivate requests" });
+    }
+  });
+
+  // POST /api/requests/:id/reactivate - Re-activate a single DISMISSED request
+  router.post("/:id/reactivate", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (request.status !== "DISMISSED") {
+        return res.status(400).json({ error: "Request is not dismissed", status: request.status });
+      }
+      db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+      console.log(`[Reactivate] Re-activated ${request.title}`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error reactivating request:", error);
+      res.status(500).json({ error: "Failed to reactivate request" });
+    }
+  });
   router.get("/:id", (req: Request, res: Response) => {
     try {
       const { id } = req.params;
