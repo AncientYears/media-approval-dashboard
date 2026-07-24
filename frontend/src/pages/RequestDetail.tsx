@@ -210,6 +210,7 @@ export default function RequestDetail() {
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [searching, setSearching] = useState(false);
+  const [searchProgress, setSearchProgress] = useState("");
 
   const loadData = async (initial = false) => {
     try {
@@ -278,15 +279,50 @@ export default function RequestDetail() {
 
   const handleSearchAgain = async () => {
     setSearching(true);
+    setSearchProgress("Starting search...");
     setRequest((prev: any) => prev ? { ...prev, status: "SEARCHING" } : prev);
     try {
-      await searchAgain(Number(id), searchTerm ? { searchTerm } : {});
-      toast("Search complete", "info");
+      const resp = await fetch(`/api/requests/${id}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchTerm ? { searchTerm } : {}),
+      });
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let eventType = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7);
+          } else if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+            if (eventType === "progress") {
+              setSearchProgress(data.message);
+            } else if (eventType === "done") {
+              setSearchProgress(`Done — ${data.releasesFound} release(s) found`);
+              toast(`Found ${data.releasesFound} release(s)`, "success");
+            } else if (eventType === "error") {
+              setSearchProgress("");
+              toast(data.error, "error");
+            }
+          }
+        }
+      }
     } catch {
+      setSearchProgress("");
       toast("Search failed", "error");
     } finally {
       setSearching(false);
       loadData();
+      setTimeout(() => setSearchProgress(""), 3000);
     }
   };
 
@@ -556,6 +592,13 @@ export default function RequestDetail() {
           <button className="btn btn-danger btn-tiny" onClick={handleDelete}>Delete</button>
         )}
       </div>
+
+      {searchProgress && (
+        <div className="search-progress">
+          <span className="spinner" />
+          <span>{searchProgress}</span>
+        </div>
+      )}
 
       <div className="release-toolbar">
         <div className="toolbar-filters">

@@ -1129,17 +1129,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/:id/search - Re-search for releases
+  // POST /api/requests/:id/search - Re-search for releases (SSE progress)
   router.post("/:id/search", async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { searchTerm } = req.body || {};
+    const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+
+    if (!request) {
+      return res.status(404).json({ error: "Request not found" });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const send = (event: string, data: any) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
     try {
-      const { id } = req.params;
-      const { searchTerm } = req.body || {};
-      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
-
-      if (!request) {
-        return res.status(404).json({ error: "Request not found" });
-      }
-
       db.prepare("DELETE FROM release_candidates WHERE request_id = ? AND id NOT IN (SELECT release_id FROM approval_history WHERE request_id = ?)").run(id, id);
       const prevStatus = request.status;
       const preserveStatus = prevStatus === "DOWNLOADING" || prevStatus === "SEEDING";
@@ -1147,17 +1156,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }
 
+      send("progress", { step: "searching", message: "Querying indexers..." });
+
       let releases: RadarrSearchResult[] = [];
 
       if (request.type === "series" && request.sonarr_id != null && request.season != null) {
-        // Sonarr search
         releases = await sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined);
       } else if (request.radarr_id) {
-        // Radarr search
         releases = await radarr.searchReleases(request.radarr_id, searchTerm || undefined);
       } else {
-        return res.status(400).json({ error: "No Radarr or Sonarr ID associated with this request" });
+        send("error", { error: "No Radarr or Sonarr ID associated with this request" });
+        res.end();
+        return;
       }
+
+      send("progress", { step: "found", message: `Found ${releases.length} release(s), indexing...`, total: releases.length });
 
       const insertStmt = db.prepare(`
         INSERT INTO release_candidates
@@ -1192,6 +1205,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const language = r.languages?.map((l: any) => l.name).join(", ") || r.language?.name || "";
 
         insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0);
+
+        if ((i + 1) % 10 === 0 || i === releases.length - 1) {
+          send("progress", { step: "indexing", message: `Indexed ${i + 1}/${releases.length}`, current: i + 1, total: releases.length });
+        }
       }
 
       if (!preserveStatus) {
@@ -1199,10 +1216,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
       }
 
-      res.json({ success: true, releasesFound: releases.length });
+      send("done", { success: true, releasesFound: releases.length });
+      res.end();
     } catch (error) {
       console.error("Error searching releases:", error);
-      res.status(500).json({ error: "Failed to search releases" });
+      send("error", { error: "Failed to search releases" });
+      res.end();
     }
   });
 

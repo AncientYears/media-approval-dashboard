@@ -12,21 +12,18 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
     running = true;
 
     try {
-      // Get unique requests that have approved releases
       const requests = db.prepare(
-        "SELECT DISTINCT mr.id, mr.title, mr.status FROM media_requests mr " +
-        "JOIN approval_history ah ON ah.request_id = mr.id " +
-        "WHERE mr.status IN ('DOWNLOADING', 'AWAITING_APPROVAL')"
+        "SELECT id, title, status FROM media_requests " +
+        "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL')"
       ).all() as any[];
 
       if (requests.length === 0) return;
 
       const torrents = await qbittorrent.getTorrents();
 
-      // Get all approved release hashes per request
       const releaseHashes = db.prepare(
-        "SELECT ah.request_id, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM approval_history ah " +
-        "JOIN release_candidates rc ON rc.id = ah.release_id"
+        "SELECT rc.request_id, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM release_candidates rc " +
+        "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
       ).all() as any[];
 
       for (const req of requests) {
@@ -44,7 +41,6 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
             torrent = torrents.find((t) => t.hash === h.torrent_hash);
           }
 
-          // Fallback: match by title
           if (!torrent && h.release_title) {
             const normalized = h.release_title.toLowerCase().replace(/[.\-_\[\]]/g, " ");
             torrent = torrents.find((t) => {
@@ -59,7 +55,10 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
             }
           }
 
-          if (!torrent) continue;
+          if (!torrent) {
+            allSeeding = false;
+            continue;
+          }
           anyFound = true;
 
           if (DOWNLOADING_STATES.includes(torrent.state)) {
