@@ -1157,6 +1157,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
   // POST /api/requests/:id/search - Re-search for releases (SSE progress)
   router.post("/:id/search", async (req: Request, res: Response) => {
+    const startTime = Date.now();
     const { id } = req.params;
     const { searchTerm } = req.body || {};
     const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
@@ -1187,12 +1188,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       let releases: RadarrSearchResult[] = [];
 
-      if (request.type === "series" && request.sonarr_id != null && request.season != null) {
-        releases = await sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined);
-      } else if (request.radarr_id) {
-        releases = await radarr.searchReleases(request.radarr_id, searchTerm || undefined);
-      } else {
-        send("error", { error: "No Radarr or Sonarr ID associated with this request" });
+      const searchTimeout = (p: Promise<any>, ms: number) => Promise.race([
+        p,
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), ms))
+      ]);
+
+      try {
+        if (request.type === "series" && request.sonarr_id != null && request.season != null) {
+          releases = await searchTimeout(sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined), 30000);
+        } else if (request.radarr_id) {
+          releases = await searchTimeout(radarr.searchReleases(request.radarr_id, searchTerm || undefined), 30000);
+        } else {
+          send("error", { error: "No Radarr or Sonarr ID associated with this request" });
+          res.end();
+          return;
+        }
+      } catch (searchErr) {
+        console.error(`[Search] ${request.title} timed out or failed:`, (searchErr as Error).message);
+        if (!preserveStatus) {
+          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+        }
+        send("error", { error: "Search timed out or failed" });
         res.end();
         return;
       }
@@ -1243,6 +1259,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       send("done", { success: true, releasesFound: releases.length });
+      console.log(`[Search] ${request.title}: done (${releases.length} releases, ${Date.now() - startTime}ms)`);
       res.end();
     } catch (error) {
       console.error("Error searching releases:", error);
