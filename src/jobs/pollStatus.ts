@@ -82,7 +82,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
 
     try {
       const requests = db.prepare(
-        "SELECT id, title, status, type FROM media_requests " +
+        "SELECT id, title, status, type, updated_at FROM media_requests " +
         "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL', 'SEARCHING')"
       ).all() as any[];
 
@@ -180,8 +180,11 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
 
         if (!anyFound) {
           if (req.status === "SEARCHING") {
-            db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-            console.log(`[Status] ${req.title}: SEARCHING → AWAITING_APPROVAL (no torrent found)`);
+            const elapsed = (Date.now() - new Date(req.updated_at).getTime()) / 1000;
+            if (elapsed > 70) {
+              db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
+              console.log(`[Status] ${req.title}: SEARCHING → AWAITING_APPROVAL (no torrent found after ${Math.round(elapsed)}s)`);
+            }
           }
           continue;
         }

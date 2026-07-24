@@ -219,7 +219,7 @@ export default function RequestDetail() {
       setRequest(data);
       setReleases(data.releases || []);
       setApprovedReleases(data.approved_releases || []);
-      setSearchTerm(data.title || "");
+      if (initial) setSearchTerm(data.title || "");
       setError(null);
     } catch (err) {
       setError("Failed to load releases");
