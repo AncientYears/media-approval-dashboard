@@ -65,40 +65,6 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
 
       console.log(`[Radarr] Found ${wanted.length} wanted movies`);
 
-      // Auto-dismiss requests whose radarr_id is no longer in wanted list
-      const staleRequests = db.prepare(
-        "SELECT id, title, radarr_id FROM media_requests " +
-        "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
-      ).all() as any[];
-      for (const req of staleRequests) {
-        if (!wantedIds.has(req.radarr_id)) {
-          console.log(`[Radarr] Auto-dismissing ${req.title} (radarr_id=${req.radarr_id} no longer wanted)`);
-          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-        }
-      }
-
-      // Also dismiss orphaned requests with no radarr_id and no approved releases (movies only)
-      const orphans = db.prepare(
-        "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.radarr_id IS NULL AND mr.type = 'movie' AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
-        "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
-      ).all() as any[];
-      for (const req of orphans) {
-        console.log(`[Radarr] Auto-dismissing orphan ${req.title} (no radarr_id, no releases)`);
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-      }
-
-      // Dismiss movie requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
-      const empty = db.prepare(
-        "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.type = 'movie' AND mr.status = 'AWAITING_APPROVAL' " +
-        "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
-      ).all() as any[];
-      for (const req of empty) {
-        console.log(`[Radarr] Auto-dismissing empty request ${req.title} (AWAITING_APPROVAL but no releases)`);
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-      }
-
       const existingStmt = db.prepare(`SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'`);
       const insertStmt = db.prepare(`
         INSERT INTO media_requests (title, type, radarr_id, status, requested_by)
@@ -143,11 +109,7 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         const existing = existingStmt.get(movie.id) as any;
 
         if (existing) {
-          if (existing.status === "DISMISSED" || existing.status === "REJECTED") {
-            console.log(`[Radarr] Re-activating ${movie.title} (was ${existing.status}, back in wanted list)`);
-            db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
-            searchesToRun.push({ requestId: existing.id, movieId: movie.id, title: movie.title });
-          } else if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
+          if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
             if (!hasReleases || existing.status === "SEARCHING" || existing.status === "NEW") {
               console.log(`[Radarr] Retrying search for ${movie.title} (status=${existing.status}, releases=${!!hasReleases})`);

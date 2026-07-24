@@ -87,88 +87,53 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/cleanup - Dismiss requests no longer in Radarr/Sonarr wanted list
-  router.post("/cleanup", async (req: Request, res: Response) => {
-    try {
-      let dismissed = 0;
-
-      // Radarr cleanup
-      const movies = await radarr.getWantedMovies();
-      const wantedIds = new Set(movies.filter((m: any) => !m.hasFile && m.monitored).map((m: any) => m.id));
-
-      const stale = db.prepare(
-        "SELECT id, title, radarr_id FROM media_requests " +
-        "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
-      ).all() as any[];
-      for (const r of stale) {
-        if (!wantedIds.has(r.radarr_id)) {
-          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
-          dismissed++;
-        }
-      }
-
-      // Sonarr cleanup
-      try {
-        const wantedSeasons = await sonarr.getWantedMissing();
-        const wantedKeys = new Set(wantedSeasons.map((w) => `${w.seriesId}-${w.seasonNumber}`));
-        const staleSonarr = db.prepare(
-          "SELECT id, title, sonarr_id, season FROM media_requests " +
-          "WHERE sonarr_id IS NOT NULL AND type = 'series' AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
-        ).all() as any[];
-        for (const r of staleSonarr) {
-          if (!wantedKeys.has(`${r.sonarr_id}-${r.season}`)) {
-            db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
-            dismissed++;
-          }
-        }
-      } catch {
-        // Sonarr might not be configured, skip
-      }
-
-      // Dismiss orphaned movie requests with no radarr_id and no approved releases
-      const orphans = db.prepare(
-        "SELECT mr.id FROM media_requests mr " +
-        "WHERE mr.radarr_id IS NULL AND mr.type = 'movie' AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
-        "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
-      ).all() as any[];
-      for (const r of orphans) {
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
-        dismissed++;
-      }
-
-      // Dismiss movie requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
-      const empty = db.prepare(
-        "SELECT mr.id FROM media_requests mr " +
-        "WHERE mr.type = 'movie' AND mr.status = 'AWAITING_APPROVAL' " +
-        "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
-      ).all() as any[];
-      for (const r of empty) {
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
-        dismissed++;
-      }
-
-      res.json({ success: true, dismissed });
-    } catch (error) {
-      console.error("Error cleaning up requests:", error);
-      res.status(500).json({ error: "Failed to cleanup requests" });
-    }
+  // POST /api/requests/cleanup - No-op (auto-dismiss removed, dismiss is manual only)
+  router.post("/cleanup", (req: Request, res: Response) => {
+    res.json({ success: true, dismissed: 0 });
   });
 
   // POST /api/requests/reactivate-all - Re-activate all DISMISSED requests
-  // Requests with approved releases go to DOWNLOADING, others to NEW
-  router.post("/reactivate-all", (req: Request, res: Response) => {
+  // Requests with approved releases go to DOWNLOADING + re-detect torrent hashes
+  router.post("/reactivate-all", async (req: Request, res: Response) => {
     try {
       const dismissed = db.prepare(
-        "SELECT id FROM media_requests WHERE status = 'DISMISSED'"
+        "SELECT id, title, radarr_id, sonarr_id FROM media_requests WHERE status = 'DISMISSED'"
       ).all() as any[];
+
+      // Get all qBittorrent torrents once for matching
+      let allTorrents: any[] = [];
+      try {
+        allTorrents = await qbittorrent.getTorrents();
+      } catch {}
 
       let reactivated = 0;
       for (const r of dismissed) {
-        const hasApproved = db.prepare(
-          "SELECT 1 FROM approval_history WHERE request_id = ? LIMIT 1"
-        ).get(r.id);
-        const newStatus = hasApproved ? "DOWNLOADING" : "NEW";
-        db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, r.id);
+        const approvedRelease = db.prepare(
+          "SELECT rc.id, rc.torrent_hash, rc.title FROM release_candidates rc " +
+          "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? LIMIT 1"
+        ).get(r.id) as any;
+
+        if (approvedRelease) {
+          // Has approved release — go to DOWNLOADING
+          db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
+
+          // If hash is empty, try to re-detect from qBittorrent
+          if (!approvedRelease.torrent_hash && allTorrents.length > 0) {
+            // Match by title (fuzzy — check if torrent name contains the release title)
+            const match = allTorrents.find((t: any) =>
+              t.name.toLowerCase().includes(approvedRelease.title.toLowerCase().slice(0, 20)) ||
+              approvedRelease.title.toLowerCase().includes(t.name.toLowerCase().slice(0, 20))
+            );
+            if (match) {
+              db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
+                .run(match.hash, match.save_path, approvedRelease.id);
+              console.log(`[Reactivate] Re-detected torrent for ${r.title}: ${match.hash}`);
+            }
+          }
+        } else {
+          // No approved release — go to NEW for poller to search
+          db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
+        }
         reactivated++;
       }
 

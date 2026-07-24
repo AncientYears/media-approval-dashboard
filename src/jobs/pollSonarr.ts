@@ -64,40 +64,6 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
 
       console.log(`[Sonarr] Found ${wantedSeasons.length} wanted seasons`);
 
-      // Auto-dismiss requests whose sonarr_id+season is no longer in wanted list
-      const staleRequests = db.prepare(
-        "SELECT id, title, sonarr_id, season FROM media_requests " +
-        "WHERE sonarr_id IS NOT NULL AND type = 'series' AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
-      ).all() as any[];
-      for (const req of staleRequests) {
-        if (!wantedKeys.has(`${req.sonarr_id}-${req.season}`)) {
-          console.log(`[Sonarr] Auto-dismissing ${req.title} (sonarr_id=${req.sonarr_id} season=${req.season} no longer wanted)`);
-          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-        }
-      }
-
-      // Also dismiss orphaned requests with no sonarr_id and no approved releases
-      const orphans = db.prepare(
-        "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.sonarr_id IS NULL AND mr.type = 'series' AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
-        "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
-      ).all() as any[];
-      for (const req of orphans) {
-        console.log(`[Sonarr] Auto-dismissing orphan ${req.title} (no sonarr_id, no releases)`);
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-      }
-
-      // Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
-      const empty = db.prepare(
-        "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.type = 'series' AND mr.status = 'AWAITING_APPROVAL' " +
-        "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
-      ).all() as any[];
-      for (const req of empty) {
-        console.log(`[Sonarr] Auto-dismissing empty request ${req.title} (AWAITING_APPROVAL but no releases)`);
-        db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-      }
-
       const existingStmt = db.prepare(
         `SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ? AND type = 'series'`
       );
@@ -147,11 +113,7 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
           : `${season.title} S${String(season.seasonNumber).padStart(2, "0")}`;
 
         if (existing) {
-          if (existing.status === "DISMISSED" || existing.status === "REJECTED") {
-            console.log(`[Sonarr] Re-activating ${requestTitle} (was ${existing.status}, back in wanted list)`);
-            db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
-            searchesToRun.push({ requestId: existing.id, seriesId: season.seriesId, seasonNumber: season.seasonNumber, title: requestTitle });
-          } else if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
+          if (existing.status === "SEARCHING" || existing.status === "NEW" || existing.status === "AWAITING_APPROVAL") {
             const hasReleases = db.prepare("SELECT 1 FROM release_candidates WHERE request_id = ? LIMIT 1").get(existing.id);
             if (!hasReleases || existing.status === "SEARCHING" || existing.status === "NEW") {
               console.log(`[Sonarr] Retrying search for ${requestTitle} (status=${existing.status}, releases=${!!hasReleases})`);
