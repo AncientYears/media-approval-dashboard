@@ -125,10 +125,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // Sonarr might not be configured, skip
       }
 
-      // Dismiss orphaned requests with no radarr_id AND no sonarr_id, and no approved releases
+      // Dismiss orphaned movie requests with no radarr_id and no approved releases
       const orphans = db.prepare(
         "SELECT mr.id FROM media_requests mr " +
-        "WHERE mr.radarr_id IS NULL AND mr.sonarr_id IS NULL AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "WHERE mr.radarr_id IS NULL AND mr.type = 'movie' AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
         "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
       ).all() as any[];
       for (const r of orphans) {
@@ -136,10 +136,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         dismissed++;
       }
 
-      // Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
+      // Dismiss movie requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
       const empty = db.prepare(
         "SELECT mr.id FROM media_requests mr " +
-        "WHERE mr.status = 'AWAITING_APPROVAL' " +
+        "WHERE mr.type = 'movie' AND mr.status = 'AWAITING_APPROVAL' " +
         "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
       ).all() as any[];
       for (const r of empty) {

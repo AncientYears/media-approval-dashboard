@@ -78,10 +78,10 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         }
       }
 
-      // Also dismiss orphaned requests with no radarr_id and no approved releases
+      // Also dismiss orphaned requests with no radarr_id and no approved releases (movies only)
       const orphans = db.prepare(
         "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.radarr_id IS NULL AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "WHERE mr.radarr_id IS NULL AND mr.type = 'movie' AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
         "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
       ).all() as any[];
       for (const req of orphans) {
@@ -89,10 +89,10 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
       }
 
-      // Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
+      // Dismiss movie requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
       const empty = db.prepare(
         "SELECT mr.id, mr.title FROM media_requests mr " +
-        "WHERE mr.status = 'AWAITING_APPROVAL' " +
+        "WHERE mr.type = 'movie' AND mr.status = 'AWAITING_APPROVAL' " +
         "AND NOT EXISTS (SELECT 1 FROM release_candidates rc WHERE rc.request_id = mr.id)"
       ).all() as any[];
       for (const req of empty) {
