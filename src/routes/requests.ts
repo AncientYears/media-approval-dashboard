@@ -206,16 +206,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     try {
       // All requests with active torrents
       const rows = db.prepare(`
-        SELECT mr.*, 
-          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2 
-           JOIN approval_history ah2 ON ah2.release_id = rc2.id 
-           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
-          (SELECT COUNT(*) FROM release_candidates rc3 
-           JOIN approval_history ah3 ON ah3.release_id = rc3.id 
-           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
-        FROM media_requests mr
-        WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
-        ORDER BY mr.title
+        SELECT * FROM (
+          SELECT mr.*, 
+            (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2 
+             JOIN approval_history ah2 ON ah2.release_id = rc2.id 
+             WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+            (SELECT COUNT(*) FROM release_candidates rc3 
+             JOIN approval_history ah3 ON ah3.release_id = rc3.id 
+             WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+          FROM media_requests mr
+          WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
+        ) sub
+        WHERE sub.release_count > 0
+        ORDER BY sub.title
       `).all() as any[];
 
       const managed: any[] = [];
@@ -1236,8 +1239,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       if (!preserveStatus) {
-        const newStatus = releases.length > 0 ? "AWAITING_APPROVAL" : "SEARCHING";
-        db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
+        db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }
 
       send("done", { success: true, releasesFound: releases.length });

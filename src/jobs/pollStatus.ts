@@ -61,7 +61,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
   let running = false;
 
   const insertRcStmt = db.prepare(
-    "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'detected', ?, ?, 'unknown')"
+    "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'detected', ?, ?, ?, 'unknown')"
   );
   const insertAhStmt = db.prepare(
     "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, ?, 'system')"
@@ -74,7 +74,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
     try {
       const requests = db.prepare(
         "SELECT id, title, status, type FROM media_requests " +
-        "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL', 'SEARCHING', 'NEW')"
+        "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL', 'SEARCHING')"
       ).all() as any[];
 
       if (requests.length === 0) return;
@@ -154,7 +154,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
               allSeeding = false;
             }
 
-            const rcResult = insertRcStmt.run(req.id, `detected-${match.hash.slice(0, 12)}`, match.name, match.hash, match.save_path);
+            const rcResult = insertRcStmt.run(req.id, `detected-${match.hash.slice(0, 12)}`, match.name, Math.round((match.size || 0) / (1024 * 1024)), match.hash, match.save_path);
             insertAhStmt.run(req.id, rcResult.lastInsertRowid);
             console.log(`[Status] Detected torrent for ${req.title}: ${match.name} (hash=${match.hash})`);
             requestsWithHashes.add(req.id);
@@ -162,9 +162,9 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         }
 
         if (!anyFound) {
-          if (req.status === "SEARCHING" || req.status === "NEW") {
+          if (req.status === "SEARCHING") {
             db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
-            console.log(`[Status] ${req.title}: ${req.status} → AWAITING_APPROVAL (no torrent found)`);
+            console.log(`[Status] ${req.title}: SEARCHING → AWAITING_APPROVAL (no torrent found)`);
           }
           continue;
         }

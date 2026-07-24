@@ -56,6 +56,19 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 // Startup fixup: fix stale DOWNLOADING movies that Radarr already has
 (async () => {
   try {
+    // Fix movies incorrectly moved to AWAITING_APPROVAL (no release_candidates, no torrent)
+    const falseAwaiting = db.prepare(
+      `SELECT id, title FROM media_requests mr
+       WHERE mr.status = 'AWAITING_APPROVAL' AND mr.type = 'movie'
+       AND NOT EXISTS (SELECT 1 FROM release_candidates rc
+         JOIN approval_history ah ON ah.release_id = rc.id
+         WHERE ah.request_id = mr.id AND rc.torrent_hash != '')`
+    ).all() as any[];
+    for (const m of falseAwaiting) {
+      db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(m.id);
+      console.log(`[Startup] Reverted ${m.title}: AWAITING_APPROVAL → NEW (no torrent/release)`);
+    }
+
     const staleMovies = db.prepare(
       "SELECT id, title, radarr_id FROM media_requests WHERE type = 'movie' AND status = 'DOWNLOADING' AND radarr_id IS NOT NULL"
     ).all() as any[];
