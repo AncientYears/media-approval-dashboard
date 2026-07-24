@@ -146,7 +146,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         imported.push({ title, id: result.lastInsertRowid as number });
       }
 
-      res.json({ success: true, imported: imported.length, skipped: skipped.length, items: imported, skippedItems: skipped });
+      // Clean up orphaned requests (radarr_id exists in DB but not in Radarr)
+      const radarrIdSet = new Set(radarrMovies.map((m: any) => m.id));
+      const allMovieRequests = db.prepare(
+        "SELECT id, title, radarr_id FROM media_requests WHERE type = 'movie' AND radarr_id IS NOT NULL"
+      ).all() as any[];
+      const orphanedMovies: Array<{ title: string; radarr_id: number }> = [];
+      for (const req of allMovieRequests) {
+        if (!radarrIdSet.has(req.radarr_id)) {
+          db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(req.id);
+          db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(req.id);
+          db.prepare("DELETE FROM media_requests WHERE id = ?").run(req.id);
+          orphanedMovies.push({ title: req.title, radarr_id: req.radarr_id });
+          console.log(`[Import] Removed orphaned request: ${req.title} (radarr_id=${req.radarr_id} not in Radarr)`);
+        }
+      }
+
+      res.json({ success: true, imported: imported.length, skipped: skipped.length, orphaned: orphanedMovies.length, items: imported, skippedItems: skipped, removedOrphans: orphanedMovies.map((o: any) => o.title) });
     } catch (error) {
       console.error("Error importing missing requests:", error);
       res.status(500).json({ error: "Failed to import missing requests" });

@@ -119,11 +119,11 @@ export default function Dashboard() {
           <button className="btn btn-secondary btn-tiny" onClick={async () => {
             const result = await importMissingRequests();
             let msg = `Imported ${result.imported} new request(s).`;
+            if (result.orphaned > 0) {
+              msg += `\nRemoved ${result.orphaned} orphaned request(s) (not in Radarr anymore).`;
+            }
             if (result.skippedItems && result.skippedItems.length > 0) {
-              msg += `\n\nSkipped ${result.skipped} (already in DB):`;
-              for (const s of result.skippedItems) {
-                msg += `\n• ${s.title} (${s.reason})`;
-              }
+              msg += `\n\nSkipped ${result.skipped} (already in DB)`;
             }
             alert(msg);
             loadData();
