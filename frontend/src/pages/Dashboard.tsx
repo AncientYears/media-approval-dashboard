@@ -119,52 +119,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {managed.length > 0 && (
-        <div className="dashboard-section">
-          <h3>Managed Media — {managed.length}</h3>
-          <div className="managed-grid">
-            {managed.map((item: any) => (
-              item.type === "series" ? (
-                <div key={item.sonarr_id} className="managed-card">
-                  <div className="managed-card-header">
-                    <h3>{item.title}</h3>
-                    <div className="managed-card-meta">
-                      <span className="rtag">{item.total_releases} release{item.total_releases !== 1 ? "s" : ""}</span>
-                      <span className="rtag">{formatSize(item.total_size_mb)}</span>
-                    </div>
-                  </div>
-                  <div className="managed-seasons">
-                    {item.seasons.map((s: any) => (
-                      <div key={s.season} className="managed-season" onClick={() => navigate(`/requests/${s.request_id}`)}>
-                        <span className="season-label">S{String(s.season).padStart(2, "0")}</span>
-                        <span className={`season-status ${s.release_count > 0 ? "has-content" : "empty"}`}>
-                          {s.release_count > 0 ? `${s.release_count} release${s.release_count !== 1 ? "s" : ""}` : "pending"}
-                        </span>
-                        {s.total_size_mb > 0 && <span className="season-size">{formatSize(s.total_size_mb)}</span>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div key={item.request_id} className="managed-card">
-                  <div className="managed-card-header">
-                    <h3>{item.title}</h3>
-                    <div className="managed-card-meta">
-                      <span className="rtag">Movie</span>
-                      <span className="rtag">{item.release_count} release{item.release_count !== 1 ? "s" : ""}</span>
-                      <span className="rtag">{formatSize(item.total_size_mb)}</span>
-                    </div>
-                  </div>
-                  <div className="request-actions">
-                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
-                  </div>
-                </div>
-              )
-            ))}
-          </div>
-        </div>
-      )}
-
       {requestsList.length > 0 && (
         <div className="dashboard-section">
           <h3>Requests — {requestsList.length}</h3>
@@ -203,6 +157,44 @@ export default function Dashboard() {
                   }}>Delete</button>
                 </div>
               </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {managed.length > 0 && (
+        <div className="dashboard-section">
+          <h3>Managed Media — {managed.length}</h3>
+          <div className="requests-grid">
+            {managed.map((item: any) => (
+              item.type === "series" ? (
+                <div key={item.sonarr_id} className="request-card managed-card">
+                  <div className="request-header">
+                    <h3>{item.title}</h3>
+                    <span className="rtag">{item.total_releases}r / {formatSize(item.total_size_mb)}</span>
+                  </div>
+                  <div className="managed-seasons">
+                    {item.seasons.map((s: any) => (
+                      <div key={s.season} className="managed-season" onClick={() => navigate(`/requests/${s.request_id}`)}>
+                        <span className="season-label">S{String(s.season).padStart(2, "0")}</span>
+                        <span className={`season-status ${s.release_count > 0 ? "has-content" : "empty"}`}>
+                          {s.release_count > 0 ? `${s.release_count}r` : "pending"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div key={item.request_id} className="request-card managed-card">
+                  <div className="request-header">
+                    <h3>{item.title}</h3>
+                    <span className="rtag">Movie · {item.release_count}r / {formatSize(item.total_size_mb)}</span>
+                  </div>
+                  <div className="request-actions">
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
+                  </div>
+                </div>
+              )
             ))}
           </div>
         </div>
