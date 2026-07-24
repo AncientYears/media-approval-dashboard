@@ -155,13 +155,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   });
 
   // POST /api/requests/reactivate-all - Re-activate all DISMISSED requests
+  // Requests with approved releases go to DOWNLOADING, others to NEW
   router.post("/reactivate-all", (req: Request, res: Response) => {
     try {
-      const result = db.prepare(
-        "UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE status = 'DISMISSED'"
-      ).run();
-      console.log(`[Reactivate] Re-activated ${result.changes} dismissed requests`);
-      res.json({ success: true, reactivated: result.changes });
+      const dismissed = db.prepare(
+        "SELECT id FROM media_requests WHERE status = 'DISMISSED'"
+      ).all() as any[];
+
+      let reactivated = 0;
+      for (const r of dismissed) {
+        const hasApproved = db.prepare(
+          "SELECT 1 FROM approval_history WHERE request_id = ? LIMIT 1"
+        ).get(r.id);
+        const newStatus = hasApproved ? "DOWNLOADING" : "NEW";
+        db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, r.id);
+        reactivated++;
+      }
+
+      console.log(`[Reactivate] Re-activated ${reactivated} dismissed requests`);
+      res.json({ success: true, reactivated });
     } catch (error) {
       console.error("Error reactivating requests:", error);
       res.status(500).json({ error: "Failed to reactivate requests" });
@@ -191,8 +203,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (request.status !== "DISMISSED") {
         return res.status(400).json({ error: "Request is not dismissed", status: request.status });
       }
-      db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-      console.log(`[Reactivate] Re-activated ${request.title}`);
+      const hasApproved = db.prepare(
+        "SELECT 1 FROM approval_history WHERE request_id = ? LIMIT 1"
+      ).get(id);
+      const newStatus = hasApproved ? "DOWNLOADING" : "NEW";
+      db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
+      console.log(`[Reactivate] Re-activated ${request.title} → ${newStatus}`);
       res.json({ success: true });
     } catch (error) {
       console.error("Error reactivating request:", error);
