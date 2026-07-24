@@ -34,11 +34,20 @@ function torrentMatchesTitle(torrentName: string, requestTitle: string): boolean
 
   if (tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".")) {
     if (reqWords.length <= 2 && hasSequelAfter(tn, normTitle.length)) return false;
+    const after = tn.slice(normTitle.length).replace(/^[\s.\-_]+/, "");
+    if (/^e\d/i.test(after)) return false;
     return true;
   }
 
   const allPresent = reqWords.every((w) => tn.includes(w));
   if (!allPresent) return false;
+
+  const lastWord = reqWords[reqWords.length - 1];
+  const lastIdx = tn.lastIndexOf(lastWord);
+  if (lastIdx >= 0) {
+    const afterLast = tn.slice(lastIdx + lastWord.length).replace(/^[\s.\-_]+/, "");
+    if (/^e\d/i.test(afterLast)) return false;
+  }
 
   if (reqWords.length <= 2) {
     const firstWord = reqWords[0];
