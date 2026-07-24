@@ -19,14 +19,24 @@ function titleWords(title: string): string[] {
     .filter((w) => w.length > 0 && !["the", "and", "for"].includes(w));
 }
 
+function hasSequelAfter(tn: string, matchEnd: number): boolean {
+  const after = tn.slice(matchEnd).replace(/^[\s.\-_]+/, "");
+  return /^\d{1,2}[\s.\-_]/.test(after) && !/^(19|20)\d{2}/.test(after);
+}
+
 function torrentMatchesTitle(torrentName: string, requestTitle: string): boolean {
   const tn = normalizeTitle(torrentName);
   const normTitle = normalizeTitle(requestTitle);
   if (tn === normTitle) return true;
-  if (tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".")) return true;
 
   const reqWords = titleWords(requestTitle);
   if (reqWords.length === 0) return false;
+
+  if (tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".")) {
+    if (reqWords.length <= 2 && hasSequelAfter(tn, normTitle.length)) return false;
+    return true;
+  }
+
   const allPresent = reqWords.every((w) => tn.includes(w));
   if (!allPresent) return false;
 
@@ -50,6 +60,13 @@ function torrentMatchesTitle(torrentName: string, requestTitle: string): boolean
 export function createStatusPoller(db: Database, qbittorrent: QBittorrentService, intervalSeconds: number) {
   let running = false;
 
+  const insertRcStmt = db.prepare(
+    "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'detected', ?, ?, 'unknown')"
+  );
+  const insertAhStmt = db.prepare(
+    "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, ?, 'system')"
+  );
+
   async function poll() {
     if (running) return;
     running = true;
@@ -57,13 +74,12 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
     try {
       const requests = db.prepare(
         "SELECT id, title, status, type FROM media_requests " +
-        "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL')"
+        "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL', 'SEARCHING', 'NEW')"
       ).all() as any[];
 
       if (requests.length === 0) return;
 
       const torrents = await qbittorrent.getTorrents();
-      if (torrents.length === 0) return;
 
       const releaseHashes = db.prepare(
         "SELECT rc.request_id, rc.torrent_hash, rc.id as release_id, rc.title as release_title FROM release_candidates rc " +
@@ -83,7 +99,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
           let torrent = null;
 
           if (h.torrent_hash) {
-            const candidate = torrents.find((t) => t.hash === h.torrent_hash);
+            const candidate = torrents.length > 0 ? torrents.find((t) => t.hash === h.torrent_hash) : null;
             if (candidate && !torrentMatchesTitle(candidate.name, req.title)) {
               console.log(`[Status] Stale hash for ${req.title}: hash=${h.torrent_hash} is actually "${candidate.name}" — removing`);
               staleHashIds.push(h.release_id);
@@ -92,7 +108,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
             torrent = candidate;
           }
 
-          if (!torrent && h.release_title) {
+          if (!torrent && h.release_title && torrents.length > 0) {
             const matched = torrents.find((t) => torrentMatchesTitle(t.name, h.release_title));
             if (matched) {
               torrent = matched;
@@ -124,7 +140,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
           requestsWithHashes.delete(req.id);
         }
 
-        if (!requestsWithHashes.has(req.id)) {
+        if (!requestsWithHashes.has(req.id) && torrents.length > 0) {
           const match = torrents.find((t) => torrentMatchesTitle(t.name, req.title));
 
           if (match) {
@@ -137,10 +153,21 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
             } else {
               allSeeding = false;
             }
+
+            const rcResult = insertRcStmt.run(req.id, `detected-${match.hash.slice(0, 12)}`, match.name, match.hash, match.save_path);
+            insertAhStmt.run(req.id, rcResult.lastInsertRowid);
+            console.log(`[Status] Detected torrent for ${req.title}: ${match.name} (hash=${match.hash})`);
+            requestsWithHashes.add(req.id);
           }
         }
 
-        if (!anyFound) continue;
+        if (!anyFound) {
+          if (req.status === "SEARCHING" || req.status === "NEW") {
+            db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
+            console.log(`[Status] ${req.title}: ${req.status} → AWAITING_APPROVAL (no torrent found)`);
+          }
+          continue;
+        }
 
         const prevState = req.status;
         let newState = prevState;
