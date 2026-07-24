@@ -93,7 +93,7 @@ export default function Dashboard() {
   }, [loadData]);
 
   const requestsList = requests
-    .filter((r: any) => !r.has_torrent)
+    .filter((r: any) => r.status !== "DOWNLOADING" && r.status !== "SEEDING")
     .filter((r: any) => statusFilter === "ALL" || r.status === statusFilter)
     .filter((r: any) => typeFilter === "ALL" || r.type === typeFilter)
     .sort((a: any, b: any) => {

@@ -31,8 +31,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
       requested_by TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(title, type, season)
+      app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS release_candidates (
@@ -111,35 +110,42 @@ export function initializeDatabase(dbPath: string): DBInstance {
     CREATE INDEX IF NOT EXISTS idx_release_candidates_torrent_hash ON release_candidates(torrent_hash);
   `);
 
+    // Repair: if media_requests_new exists but media_requests does not,
+    // the previous migration dropped the old table but failed to rename.
+    const tableNames = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[];
+    const hasNewTable = tableNames.some((t: any) => t.name === "media_requests_new");
+    const hasMainTable = tableNames.some((t: any) => t.name === "media_requests");
+    if (hasNewTable && !hasMainTable) {
+      db.exec(`ALTER TABLE media_requests_new RENAME TO media_requests`);
+    } else if (hasNewTable && hasMainTable) {
+      // Both exist — old migration leftover, safe to drop the temp table
+      db.exec(`DROP TABLE IF EXISTS media_requests_new`);
+    }
+
     // Migration: remove overly-strict UNIQUE(title, type, season)
-    // The poller uses sonarr_id/radarr_id for dedup, not this constraint
-    // Only run if the old UNIQUE constraint still exists (origin='u' = user-defined, not 'pk' = primary key)
     const indexes = db.prepare("PRAGMA index_list(media_requests)").all() as any[];
     const hasUniqueConstraint = indexes.some((idx: any) => idx.unique === 1 && idx.origin === "u");
     if (hasUniqueConstraint) {
-      try {
-        db.exec(`
-          CREATE TABLE media_requests_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
-            radarr_id INTEGER,
-            sonarr_id INTEGER,
-            season INTEGER,
-            status TEXT NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED', 'REJECTED', 'DISMISSED')),
-            requested_by TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            episode_count INTEGER
-          );
-          INSERT INTO media_requests_new SELECT * FROM media_requests;
-          DROP TABLE media_requests;
-          ALTER TABLE media_requests_new RENAME TO media_requests;
-        `);
-      } catch {
-        // migration failed, leave tables as-is
-      }
+      // Use a safe 3-step approach: create new, copy data, swap — never drop first
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS media_requests_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
+          radarr_id INTEGER,
+          sonarr_id INTEGER,
+          season INTEGER,
+          status TEXT NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED', 'REJECTED', 'DISMISSED')),
+          requested_by TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          episode_count INTEGER
+        );
+        INSERT INTO media_requests_new SELECT * FROM media_requests;
+      `);
+      db.exec(`DROP TABLE media_requests`);
+      db.exec(`ALTER TABLE media_requests_new RENAME TO media_requests`);
     }
 
     // Recreate indexes that may have been lost during migration
