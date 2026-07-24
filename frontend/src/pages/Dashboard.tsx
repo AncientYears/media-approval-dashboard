@@ -118,7 +118,14 @@ export default function Dashboard() {
           }}>Detect Torrents</button>
           <button className="btn btn-secondary btn-tiny" onClick={async () => {
             const result = await importMissingRequests();
-            alert(`Imported ${result.imported} missing request(s).`);
+            let msg = `Imported ${result.imported} new request(s).`;
+            if (result.skippedItems && result.skippedItems.length > 0) {
+              msg += `\n\nSkipped ${result.skipped} (already in DB):`;
+              for (const s of result.skippedItems) {
+                msg += `\n• ${s.title} (${s.reason})`;
+              }
+            }
+            alert(msg);
             loadData();
           }}>Import Missing</button>
         </div>

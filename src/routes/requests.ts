@@ -98,6 +98,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.post("/import-missing", async (req: Request, res: Response) => {
     try {
       const imported: Array<{ title: string; id: number }> = [];
+      const skipped: Array<{ title: string; radarr_id: number; reason: string }> = [];
 
       // Import movies from Radarr
       const radarrMovies = await radarr.getAllMovies();
@@ -110,9 +111,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .all().map((r: any) => r.title.toLowerCase())
       );
 
+      console.log(`[Import] Radarr returned ${radarrMovies.length} movies. DB has ${existingRadarrIds.size} radarr_ids, ${existingTitles.size} movie titles.`);
+
       for (const movie of radarrMovies) {
-        if (existingRadarrIds.has(movie.id)) continue;
-        if (existingTitles.has(movie.title.toLowerCase())) continue;
+        if (existingRadarrIds.has(movie.id)) {
+          skipped.push({ title: movie.title, radarr_id: movie.id, reason: "radarr_id exists in DB" });
+          continue;
+        }
+        if (existingTitles.has(movie.title.toLowerCase())) {
+          skipped.push({ title: movie.title, radarr_id: movie.id, reason: "title exists in DB" });
+          continue;
+        }
         const status = movie.hasFile ? "DOWNLOADING" : "NEW";
         const result = db.prepare(
           "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, ?, '[]')"
@@ -137,7 +146,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         imported.push({ title, id: result.lastInsertRowid as number });
       }
 
-      res.json({ success: true, imported: imported.length, items: imported });
+      res.json({ success: true, imported: imported.length, skipped: skipped.length, items: imported, skippedItems: skipped });
     } catch (error) {
       console.error("Error importing missing requests:", error);
       res.status(500).json({ error: "Failed to import missing requests" });
