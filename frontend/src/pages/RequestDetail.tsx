@@ -7,6 +7,25 @@ function formatSize(mb: number): string {
   return `${mb} MB`;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i > 2 ? 2 : 1)} ${units[i]}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return "0s";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 function getQualityScore(quality: string): number {
   const q = quality.toUpperCase();
   if (q.includes("REMUX-2160") || q.includes("REMUX2160")) return 10;
@@ -388,26 +407,52 @@ export default function RequestDetail() {
                 <div className="torrent-progress-bar">
                   <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
                 </div>
-                <div className="torrent-meta">
-                  <span>{ts.progress}%</span>
-                  {ts.state === "downloading" && <span>↓ {(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>}
-                  {ts.state === "downloading" && ts.eta > 0 && ts.eta < 8640000 && (
-                    <span>ETA: {ts.eta >= 3600
-                      ? `${Math.floor(ts.eta / 3600)}h ${Math.floor((ts.eta % 3600) / 60)}m`
-                      : `${Math.floor(ts.eta / 60)}m ${ts.eta % 60}s`
-                    }</span>
+                <div className="torrent-stats-grid">
+                  <div className="ts-item ts-primary">
+                    <span className="ts-value">{ts.progress}%</span>
+                  </div>
+                  {ts.state === "downloading" && (
+                    <div className="ts-item ts-speed">
+                      <span className="ts-icon">↓</span>
+                      <span className="ts-value">{(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>
+                    </div>
                   )}
-                  <span>↑ {(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
-                  <span>Ratio: {ts.ratio}</span>
-                  <span>Seeds: {ts.num_seeds}/{ts.num_leechs + ts.num_seeds}</span>
+                  {ts.state === "downloading" && ts.eta > 0 && ts.eta < 8640000 && (
+                    <div className="ts-item">
+                      <span className="ts-label">ETA</span>
+                      <span className="ts-value">{formatDuration(ts.eta)}</span>
+                    </div>
+                  )}
+                  <div className="ts-item ts-speed">
+                    <span className="ts-icon">↑</span>
+                    <span className="ts-value">{(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
+                  </div>
+                  <div className="ts-item">
+                    <span className="ts-label">Ratio</span>
+                    <span className="ts-value">{ts.ratio.toFixed(2)}</span>
+                  </div>
+                  <div className="ts-item">
+                    <span className="ts-label">Uploaded</span>
+                    <span className="ts-value">{formatBytes(ts.uploaded || 0)}</span>
+                  </div>
+                  <div className="ts-item">
+                    <span className="ts-label">Peers</span>
+                    <span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span>
+                  </div>
+                  {ts.completion_on > 0 && (
+                    <div className="ts-item">
+                      <span className="ts-label">Seeding</span>
+                      <span className="ts-value">{formatDuration((Date.now() / 1000) - ts.completion_on)}</span>
+                    </div>
+                  )}
                   {ts.progress === 100 && (
-                    <>
+                    <div className="ts-item ts-actions">
                       {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" || ts.state === "queuedUP" ? (
                         <button className="btn btn-secondary btn-tiny" onClick={() => handlePause(ar.id)}>Pause</button>
                       ) : (
                         <button className="btn btn-secondary btn-tiny" onClick={() => handleResume(ar.id)}>Resume</button>
                       )}
-                    </>
+                    </div>
                   )}
                 </div>
                 {ts.progress === 100 && (

@@ -61,8 +61,22 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
     try {
       const movies = await radarr.getWantedMovies();
       const wanted = movies.filter((m: any) => !m.hasFile && m.monitored);
+      const wantedIds = new Set(wanted.map((m: any) => m.id));
 
       console.log(`[Radarr] Found ${wanted.length} wanted movies`);
+
+      // Auto-dismiss requests whose radarr_id is no longer in wanted list
+      // (user deleted the request from Jellyseerr)
+      const staleRequests = db.prepare(
+        "SELECT id, title, radarr_id FROM media_requests " +
+        "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
+      ).all() as any[];
+      for (const req of staleRequests) {
+        if (!wantedIds.has(req.radarr_id)) {
+          console.log(`[Radarr] Auto-dismissing ${req.title} (radarr_id=${req.radarr_id} no longer wanted)`);
+          db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
+        }
+      }
 
       const existingStmt = db.prepare(`SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'`);
       const insertStmt = db.prepare(`

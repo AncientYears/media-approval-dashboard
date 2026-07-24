@@ -206,6 +206,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         progress: Math.round(torrent.progress * 100),
         dlspeed: torrent.dlspeed,
         upspeed: torrent.upspeed,
+        uploaded: torrent.uploaded,
         ratio: Math.round(torrent.ratio * 100) / 100,
         eta: torrent.eta,
         save_path: torrent.save_path,
@@ -216,6 +217,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         size: torrent.size,
         num_seeds: torrent.num_seeds,
         num_leechs: torrent.num_leechs,
+        added_on: torrent.added_on,
+        completion_on: torrent.completion_on,
       });
     } catch (error) {
       console.error("Error fetching torrent status:", error);
@@ -313,6 +316,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           progress: Math.round(torrent.progress * 100),
           dlspeed: torrent.dlspeed,
           upspeed: torrent.upspeed,
+          uploaded: torrent.uploaded,
           ratio: Math.round(torrent.ratio * 100) / 100,
           eta: torrent.eta,
           save_path: torrent.save_path,
@@ -323,6 +327,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           size: torrent.size,
           num_seeds: torrent.num_seeds,
           num_leechs: torrent.num_leechs,
+          added_on: torrent.added_on,
+          completion_on: torrent.completion_on,
         });
       }
 
