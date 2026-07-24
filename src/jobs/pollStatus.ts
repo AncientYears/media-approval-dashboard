@@ -78,7 +78,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         if (anyDownloading) {
           newState = "DOWNLOADING";
         } else if (allSeeding) {
-          newState = "AWAITING_APPROVAL";
+          newState = "SEEDING";
         }
 
         if (newState !== prevState) {
