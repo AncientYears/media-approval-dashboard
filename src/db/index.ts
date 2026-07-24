@@ -113,27 +113,31 @@ export function initializeDatabase(dbPath: string): DBInstance {
 
     // Migration: remove overly-strict UNIQUE(title, type, season)
     // The poller uses sonarr_id/radarr_id for dedup, not this constraint
-    try {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS media_requests_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          title TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
-          radarr_id INTEGER,
-          sonarr_id INTEGER,
-          season INTEGER,
-          status TEXT NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED', 'REJECTED', 'DISMISSED')),
-          requested_by TEXT NOT NULL DEFAULT '[]',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        INSERT INTO media_requests_new SELECT * FROM media_requests;
-        DROP TABLE media_requests;
-        ALTER TABLE media_requests_new RENAME TO media_requests;
-      `);
-    } catch {
-      // already migrated or table doesn't exist yet
+    // Only run if media_requests_new doesn't already exist (migration was completed)
+    const newTableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='media_requests_new'").get();
+    if (!newTableExists) {
+      try {
+        db.exec(`
+          CREATE TABLE media_requests_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
+            radarr_id INTEGER,
+            sonarr_id INTEGER,
+            season INTEGER,
+            status TEXT NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED', 'REJECTED', 'DISMISSED')),
+            requested_by TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+          INSERT INTO media_requests_new SELECT * FROM media_requests;
+          DROP TABLE media_requests;
+          ALTER TABLE media_requests_new RENAME TO media_requests;
+        `);
+      } catch {
+        // migration failed, leave tables as-is
+      }
     }
 
     // Recreate indexes that may have been lost during migration
