@@ -1167,7 +1167,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+    res.setHeader("Connection", "close");
     res.flushHeaders();
 
     const send = (event: string, data: any) => {
