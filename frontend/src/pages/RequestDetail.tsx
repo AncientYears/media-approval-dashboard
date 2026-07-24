@@ -290,8 +290,9 @@ export default function RequestDetail() {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let searchDone = false;
 
-      while (true) {
+      while (!searchDone) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -308,10 +309,12 @@ export default function RequestDetail() {
               setSearchProgress(data.message);
             } else if (eventType === "done") {
               setSearchProgress(`Done — ${data.releasesFound} release(s) found`);
-              toast(`Found ${data.releasesFound} release(s)`, "success");
+              if (data.releasesFound > 0) toast(`Found ${data.releasesFound} release(s)`, "success");
+              searchDone = true;
             } else if (eventType === "error") {
               setSearchProgress("");
               toast(data.error, "error");
+              searchDone = true;
             }
           }
         }
