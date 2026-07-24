@@ -6,8 +6,10 @@ import path from "path";
 import { initializeDatabase } from "./db/index";
 import { createRequestRoutes } from "./routes/requests";
 import { RadarrService } from "./services/radarr";
+import { SonarrService } from "./services/sonarr";
 import { QBittorrentService } from "./services/qbittorrent";
 import { createRadarrPoller } from "./jobs/pollRadarr";
+import { createSonarrPoller } from "./jobs/pollSonarr";
 import { createStatusPoller } from "./jobs/pollStatus";
 
 // Load environment variables
@@ -34,6 +36,14 @@ const radarr = new RadarrService(
 const radarrPollInterval = parseInt(process.env.POLL_INTERVAL_RADARR || "60", 10);
 const radarrPoller = createRadarrPoller(db, radarr, radarrPollInterval);
 
+// Initialize Sonarr service and start polling
+const sonarr = new SonarrService(
+  process.env.SONARR_URL || "http://localhost:8989",
+  process.env.SONARR_API_KEY || ""
+);
+const sonarrPollInterval = parseInt(process.env.POLL_INTERVAL_SONARR || "60", 10);
+const sonarrPoller = createSonarrPoller(db, sonarr, sonarrPollInterval);
+
 const qbittorrent = new QBittorrentService(
   process.env.QBIT_URL || "http://localhost:8080",
   process.env.QBIT_USER || "",
@@ -53,14 +63,17 @@ app.get("/api/health", (req, res) => {
 });
 
 // API Routes
-app.use("/api/requests", createRequestRoutes(db, radarr, qbittorrent));
+app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent));
 
 // Test connections endpoint
 app.post("/api/test-connections", async (req, res) => {
-  const qbitResult = await qbittorrent.testConnection();
+  const [qbitResult, sonarrResult] = await Promise.all([
+    qbittorrent.testConnection(),
+    sonarr.testConnection(),
+  ]);
   res.json({
     radarr: { success: true },
-    sonarr: { success: true },
+    sonarr: sonarrResult,
     jellyseerr: { success: true },
     ntfy: { success: true },
     qbittorrent: qbitResult,
@@ -96,6 +109,7 @@ const server = app.listen(PORT, () => {
 process.on("SIGINT", () => {
   console.log("Shutting down gracefully...");
   radarrPoller.stop();
+  sonarrPoller.stop();
   statusPoller.stop();
   server.close(() => {
     closeDb();

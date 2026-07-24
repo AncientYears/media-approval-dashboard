@@ -111,6 +111,36 @@ export function initializeDatabase(dbPath: string): DBInstance {
     CREATE INDEX IF NOT EXISTS idx_release_candidates_torrent_hash ON release_candidates(torrent_hash);
   `);
 
+    // Migration: remove overly-strict UNIQUE(title, type, season)
+    // The poller uses sonarr_id/radarr_id for dedup, not this constraint
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS media_requests_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
+          radarr_id INTEGER,
+          sonarr_id INTEGER,
+          season INTEGER,
+          status TEXT NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED', 'REJECTED', 'DISMISSED')),
+          requested_by TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          app_last_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO media_requests_new SELECT * FROM media_requests;
+        DROP TABLE media_requests;
+        ALTER TABLE media_requests_new RENAME TO media_requests;
+      `);
+    } catch {
+      // already migrated or table doesn't exist yet
+    }
+
+    // Recreate indexes that may have been lost during migration
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_media_requests_status ON media_requests(status);
+    `);
+
     // Migration: add info_url if missing
     const cols = db.prepare("PRAGMA table_info(release_candidates)").all() as any[];
     const colNames = cols.map((c: any) => c.name);

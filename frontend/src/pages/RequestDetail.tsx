@@ -516,6 +516,9 @@ export default function RequestDetail() {
         <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
+          {request.type === "series" && request.season != null && (
+            <span className="rtag">S{String(request.season).padStart(2, "0")}</span>
+          )}
         </div>
         <input
           className="search-term-input"

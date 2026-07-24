@@ -124,7 +124,9 @@ export default function Dashboard() {
                   </span>
                 </div>
                 <p className="request-meta">
-                  Type: <strong>{req.type}</strong> &middot; {new Date(req.created_at).toLocaleDateString()}
+                  Type: <strong>{req.type}</strong>
+                  {req.type === "series" && req.season != null && <> · Season {req.season}</>}
+                  {" · "}{new Date(req.created_at).toLocaleDateString()}
                 </p>
                 {req.requested_by && Array.isArray(req.requested_by) && req.requested_by.length > 0 && (
                   <p className="request-meta">Requested by: {req.requested_by.join(", ")}</p>

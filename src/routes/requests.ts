@@ -1,6 +1,7 @@
 ﻿import { Router, Request, Response } from "express";
 import { Database } from "better-sqlite3";
 import { RadarrService } from "../services/radarr";
+import { SonarrService } from "../services/sonarr";
 import { QBittorrentService } from "../services/qbittorrent";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
@@ -45,7 +46,7 @@ function hardlinkDirRecursive(srcDir: string, destDir: string) {
   }
 }
 
-export function createRequestRoutes(db: Database, radarr: RadarrService, qbittorrent: QBittorrentService) {
+export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService) {
   const router = Router();
 
   // GET /api/requests - List all pending requests
@@ -86,19 +87,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
-  // POST /api/requests/cleanup - Dismiss requests no longer in Radarr's wanted list
+  // POST /api/requests/cleanup - Dismiss requests no longer in Radarr/Sonarr wanted list
   router.post("/cleanup", async (req: Request, res: Response) => {
     try {
+      let dismissed = 0;
+
+      // Radarr cleanup
       const movies = await radarr.getWantedMovies();
       const wantedIds = new Set(movies.filter((m: any) => !m.hasFile && m.monitored).map((m: any) => m.id));
 
-      // 1) Dismiss requests with a radarr_id no longer in wanted list
       const stale = db.prepare(
         "SELECT id, title, radarr_id FROM media_requests " +
         "WHERE radarr_id IS NOT NULL AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
       ).all() as any[];
-
-      let dismissed = 0;
       for (const r of stale) {
         if (!wantedIds.has(r.radarr_id)) {
           db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
@@ -106,10 +107,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         }
       }
 
-      // 2) Also dismiss orphaned requests with no radarr_id AND no approved releases
+      // Sonarr cleanup
+      try {
+        const wantedSeasons = await sonarr.getWantedMissing();
+        const wantedKeys = new Set(wantedSeasons.map((w) => `${w.seriesId}-${w.seasonNumber}`));
+        const staleSonarr = db.prepare(
+          "SELECT id, title, sonarr_id, season FROM media_requests " +
+          "WHERE sonarr_id IS NOT NULL AND type = 'series' AND status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL')"
+        ).all() as any[];
+        for (const r of staleSonarr) {
+          if (!wantedKeys.has(`${r.sonarr_id}-${r.season}`)) {
+            db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
+            dismissed++;
+          }
+        }
+      } catch {
+        // Sonarr might not be configured, skip
+      }
+
+      // Dismiss orphaned requests with no radarr_id AND no sonarr_id, and no approved releases
       const orphans = db.prepare(
         "SELECT mr.id FROM media_requests mr " +
-        "WHERE mr.radarr_id IS NULL AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
+        "WHERE mr.radarr_id IS NULL AND mr.sonarr_id IS NULL AND mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL') " +
         "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.request_id = mr.id)"
       ).all() as any[];
       for (const r of orphans) {
@@ -117,7 +136,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         dismissed++;
       }
 
-      // 3) Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
+      // Dismiss requests stuck in AWAITING_APPROVAL with zero releases (stale/empty)
       const empty = db.prepare(
         "SELECT mr.id FROM media_requests mr " +
         "WHERE mr.status = 'AWAITING_APPROVAL' " +
@@ -245,6 +264,35 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         } catch {
           // ignore
         }
+      } else if (request?.sonarr_id) {
+        try {
+          const series = await sonarr.getSeries(request.sonarr_id);
+          const seasonNum = request.season || 1;
+          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
+          if (fs.existsSync(seasonFolder)) {
+            const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (files.length > 0) destPath = path.join(seasonFolder, files[0]);
+            else destPath = seasonFolder;
+            // Check if torrent content matches any library file
+            if (fs.existsSync(contentPath)) {
+              const st = fs.statSync(contentPath);
+              let actualSize = 0;
+              if (st.isFile()) {
+                actualSize = st.size;
+              } else if (st.isDirectory()) {
+                const vf = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+                if (vf.length > 0) actualSize = fs.statSync(path.join(contentPath, vf[0])).size;
+              }
+              // For series, just check if any file exists in the season folder
+              if (actualSize > 0 && files.length > 0) {
+                inLibrary = true;
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
       }
 
       res.json({
@@ -287,15 +335,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
       ).all(id) as any[];
 
-      // Fetch movie info ONCE for all releases
+      // Fetch movie/series info ONCE for all releases
       let movieFolderPath = "";
       let libraryVideoName = "";
       let radarrFileSize = 0;
+      let isSonarr = false;
+      let seriesSeasonFolder = "";
       if (request?.radarr_id) {
         try {
           const movie = await radarr.getMovie(request.radarr_id);
           movieFolderPath = movie.path || movie.folderPath || "";
-          // Get the actual file size from Radarr's movieFile
           if (movie.movieFile?.size) {
             radarrFileSize = movie.movieFile.size;
           }
@@ -308,6 +357,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
               libraryVideoName = files[0];
             }
           }
+        } catch {
+          // ignore
+        }
+      } else if (request?.sonarr_id) {
+        isSonarr = true;
+        try {
+          const series = await sonarr.getSeries(request.sonarr_id);
+          const seasonNum = request.season || 1;
+          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          seriesSeasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
         } catch {
           // ignore
         }
@@ -334,26 +393,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           contentPath = "/media" + contentPath;
         }
 
-        const destPath = movieFolderPath ? path.join(movieFolderPath, libraryVideoName || "") : "";
-        // Check if THIS torrent's actual file size matches what Radarr has in library
+        let destPath = "";
         let inLibrary = false;
-        if (radarrFileSize > 0) {
-          // Get actual file size of the torrent's content on disk
-          let actualSize = 0;
-          if (fs.existsSync(contentPath)) {
-            const st = fs.statSync(contentPath);
-            if (st.isFile()) {
-              actualSize = st.size;
-            } else if (st.isDirectory()) {
-              // content_path is a directory, check for the main file
-              const files = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-              if (files.length > 0) {
-                actualSize = fs.statSync(path.join(contentPath, files[0])).size;
-              }
+
+        if (isSonarr) {
+          // Series: check if any files exist in season folder
+          destPath = seriesSeasonFolder;
+          if (seriesSeasonFolder && fs.existsSync(seriesSeasonFolder)) {
+            const files = fs.readdirSync(seriesSeasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (files.length > 0) {
+              destPath = path.join(seriesSeasonFolder, files[0]);
+              inLibrary = true;
             }
           }
-          // Match if sizes are within 1% (accounts for metadata differences)
-          inLibrary = actualSize > 0 && Math.abs(actualSize - radarrFileSize) < radarrFileSize * 0.01;
+        } else {
+          // Movie: Radarr size comparison
+          destPath = movieFolderPath ? path.join(movieFolderPath, libraryVideoName || "") : "";
+          if (radarrFileSize > 0) {
+            let actualSize = 0;
+            if (fs.existsSync(contentPath)) {
+              const st = fs.statSync(contentPath);
+              if (st.isFile()) {
+                actualSize = st.size;
+              } else if (st.isDirectory()) {
+                const files = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+                if (files.length > 0) {
+                  actualSize = fs.statSync(path.join(contentPath, files[0])).size;
+                }
+              }
+            }
+            inLibrary = actualSize > 0 && Math.abs(actualSize - radarrFileSize) < radarrFileSize * 0.01;
+          }
         }
 
         results.push({
@@ -466,6 +536,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           }
         }
 
+        // Unmonitor/delete from Sonarr
+        if (request?.sonarr_id) {
+          try {
+            const series = await sonarr.getSeries(request.sonarr_id);
+            if (request.season != null) {
+              const seasonObj = series.seasons?.find((s: any) => s.seasonNumber === request.season);
+              const hasFile = (seasonObj?.statistics?.episodeFileCount || 0) > 0;
+              if (hasFile) {
+                await sonarr.deleteSeries(request.sonarr_id, true);
+                console.log(`[Dismiss] Deleted series from Sonarr: ${request.title} (had files)`);
+              } else {
+                await sonarr.unmonitorSeason(request.sonarr_id, request.season);
+                console.log(`[Dismiss] Unmonitored season ${request.season} in Sonarr: ${request.title}`);
+              }
+            } else {
+              await sonarr.deleteSeries(request.sonarr_id, true);
+              console.log(`[Dismiss] Deleted series from Sonarr: ${request.title}`);
+            }
+          } catch (err: any) {
+            console.error(`[Dismiss] Failed to update Sonarr for ${request.title}:`, err.message);
+          }
+        }
+
         db.prepare("UPDATE media_requests SET status = 'DISMISSED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }
 
@@ -482,7 +575,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       const { id } = req.params;
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
-      if (!request.radarr_id) return res.status(400).json({ error: "No Radarr movie ID" });
 
       const release = db.prepare(
         "SELECT rc.torrent_hash FROM release_candidates rc " +
@@ -499,11 +591,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         contentPath = "/media" + contentPath;
       }
 
-      const movie = await radarr.getMovie(request.radarr_id);
-      const movieFolder = movie.path || movie.folderPath;
-      if (!movieFolder) return res.status(500).json({ error: "Could not determine movie folder" });
+      let destPath = "";
 
-      const destPath = path.join(movieFolder, path.basename(contentPath));
+      if (request.sonarr_id) {
+        // Sonarr series — target season folder
+        try {
+          const series = await sonarr.getSeries(request.sonarr_id);
+          const seasonNum = request.season || 1;
+          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
+          if (fs.existsSync(seasonFolder)) {
+            const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (files.length > 0) destPath = path.join(seasonFolder, files[0]);
+            else destPath = seasonFolder;
+          }
+        } catch {
+          // ignore
+        }
+      } else if (request.radarr_id) {
+        // Radarr movie
+        const movie = await radarr.getMovie(request.radarr_id);
+        const movieFolder = movie.path || movie.folderPath;
+        if (movieFolder) destPath = path.join(movieFolder, path.basename(contentPath));
+      }
+
+      if (!destPath) return res.status(500).json({ error: "Could not determine library path" });
 
       if (!fs.existsSync(destPath)) {
         return res.json({ success: true, message: "File not in library", path: destPath });
@@ -518,7 +630,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
     }
   });
 
-  // POST /api/requests/:id/move-to-library - Hardlink files from download folder to Radarr movie folder
+  // POST /api/requests/:id/move-to-library - Hardlink files from download folder to library
   router.post("/:id/move-to-library", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -551,18 +663,33 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
 
-      if (!request.radarr_id) {
-        return res.status(400).json({ error: "No Radarr movie ID associated" });
-      }
+      let destFolder = "";
 
-      const movie = await radarr.getMovie(request.radarr_id);
-      const movieFolder = movie.path || movie.folderPath;
-      if (!movieFolder) {
-        return res.status(500).json({ error: "Could not determine movie folder from Radarr" });
+      if (request.type === "series" && request.sonarr_id) {
+        // Sonarr series — target /media/Serialy/<name>/S01/
+        try {
+          const series = await sonarr.getSeries(request.sonarr_id);
+          const seasonNum = request.season || 1;
+          destFolder = path.join(
+            series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title),
+            `S${String(seasonNum).padStart(2, "0")}`
+          );
+        } catch {
+          return res.status(500).json({ error: "Could not determine series folder from Sonarr" });
+        }
+      } else if (request.radarr_id) {
+        // Radarr movie
+        const movie = await radarr.getMovie(request.radarr_id);
+        destFolder = movie.path || movie.folderPath;
+        if (!destFolder) {
+          return res.status(500).json({ error: "Could not determine movie folder from Radarr" });
+        }
+      } else {
+        return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
       }
 
       const fileName = path.basename(contentPath);
-      const destPath = path.join(movieFolder, fileName);
+      const destPath = path.join(destFolder, fileName);
 
       if (fs.existsSync(destPath)) {
         return res.json({ success: true, message: "File already exists in library", source: contentPath, destination: destPath, alreadyExists: true });
@@ -570,9 +697,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
 
       const stat = fs.statSync(contentPath);
       if (stat.isDirectory()) {
-        hardlinkDirRecursive(contentPath, path.join(movieFolder, path.basename(contentPath)));
+        hardlinkDirRecursive(contentPath, path.join(destFolder, path.basename(contentPath)));
       } else {
-        fs.mkdirSync(movieFolder, { recursive: true });
+        fs.mkdirSync(destFolder, { recursive: true });
         try {
           fs.linkSync(contentPath, destPath);
         } catch (linkErr: any) {
@@ -609,12 +736,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
       db.prepare("DELETE FROM release_candidates WHERE request_id = ? AND id NOT IN (SELECT release_id FROM approval_history WHERE request_id = ?)").run(id, id);
       db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
 
-      const radarrId = request.radarr_id;
-      if (!radarrId) {
-        return res.status(400).json({ error: "No Radarr ID associated with this request" });
-      }
+      let releases: RadarrSearchResult[] = [];
 
-      const releases = await radarr.searchReleases(radarrId, searchTerm || undefined);
+      if (request.type === "series" && request.sonarr_id != null && request.season != null) {
+        // Sonarr search
+        releases = await sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined);
+      } else if (request.radarr_id) {
+        // Radarr search
+        releases = await radarr.searchReleases(request.radarr_id, searchTerm || undefined);
+      } else {
+        return res.status(400).json({ error: "No Radarr or Sonarr ID associated with this request" });
+      }
 
       const insertStmt = db.prepare(`
         INSERT INTO release_candidates
@@ -748,6 +880,72 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, qbittor
           } else {
             console.error(`[Radarr] Failed to grab release for ${request.title}:`, grabErr);
             return res.status(500).json({ error: "Failed to grab release from Radarr", details: String(grabErr) });
+          }
+        }
+      } else if (request.sonarr_id && release.radarr_release_id) {
+        // Sonarr grab
+        try {
+          console.log(`[Sonarr] Refreshing release cache for ${request.title} before grab...`);
+          let refreshedReleases: RadarrSearchResult[] = [];
+          try {
+            refreshedReleases = await sonarr.searchReleases(request.sonarr_id, request.season || 1);
+          } catch {
+            // proceed with stale guid
+          }
+
+          let indexerId = release.radarr_indexer_id || 0;
+          let guid = release.radarr_release_id;
+
+          if (refreshedReleases.length > 0) {
+            const match = refreshedReleases.find((r) => r.guid === guid);
+            if (match) {
+              indexerId = match.indexerId || indexerId;
+            }
+          }
+
+          let preGrabHashes: Set<string> = new Set();
+          try {
+            const preTorrents = await qbittorrent.getTorrents();
+            preGrabHashes = new Set(preTorrents.map((t) => t.hash));
+          } catch {
+            // qBittorrent might not be reachable
+          }
+
+          await sonarr.grabRelease(guid, indexerId);
+          console.log(`[Sonarr] Grabbed release for ${request.title}: ${release.title}`);
+
+          const detectTorrent = async (attempt: number) => {
+            try {
+              const postTorrents = await qbittorrent.getTorrents();
+              const newTorrent = postTorrents.find((t) => !preGrabHashes.has(t.hash));
+              if (newTorrent) {
+                db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
+                  .run(newTorrent.hash, newTorrent.save_path, release.id);
+                console.log(`[Sonarr] Detected new torrent: ${newTorrent.name} hash=${newTorrent.hash}`);
+                return;
+              }
+            } catch {
+              // retry
+            }
+            if (attempt < 10) {
+              setTimeout(() => detectTorrent(attempt + 1), 3000);
+            } else {
+              console.log(`[Sonarr] Could not detect new torrent for ${request.title} after 30s`);
+            }
+          };
+          setTimeout(() => detectTorrent(0), 3000);
+        } catch (grabErr: any) {
+          if (grabErr?.response?.status === 409) {
+            console.log(`[Sonarr] Release already grabbed for ${request.title}`);
+          } else if (grabErr?.response?.status === 404) {
+            console.error(`[Sonarr] Release expired from cache for ${request.title}, needs re-search`);
+            return res.status(500).json({
+              error: "Release expired from Sonarr cache",
+              details: "The release was found when searching but expired before grab. Please search again and approve quickly.",
+            });
+          } else {
+            console.error(`[Sonarr] Failed to grab release for ${request.title}:`, grabErr);
+            return res.status(500).json({ error: "Failed to grab release from Sonarr", details: String(grabErr) });
           }
         }
       }
