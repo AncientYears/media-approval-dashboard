@@ -388,10 +388,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ORDER BY rc.app_score DESC, rc.size_mb DESC
         `).all(s.id, s.id) as any[];
 
-        // Get covered episodes from parsed_episodes
+        // Get covered episodes — only from approved releases with torrent_hash (actually have these episodes)
         const coveredEps = new Set<number>();
         for (const r of releases) {
-          if (r.parsed_episodes) {
+          if (r.approved_at && r.torrent_hash && r.parsed_episodes) {
             const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
             if (epMatches) {
               for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));

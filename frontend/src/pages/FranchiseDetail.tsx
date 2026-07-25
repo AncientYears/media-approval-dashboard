@@ -2,6 +2,9 @@ import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchFranchiseTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
 
+const SEARCH_MODES = ["season", "episodes"] as const;
+type SearchMode = typeof SEARCH_MODES[number];
+
 const POLL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_SEARCH_ALL || "0") * 1000;
 
 function formatSize(mb: number): string {
@@ -283,8 +286,6 @@ export default function FranchiseDetail() {
     );
   }
 
-  const activeTorrents = franchiseTorrents.filter((t) => t.found);
-
   return (
     <div className="container">
       <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")} style={{ marginBottom: 12 }}>
@@ -317,112 +318,79 @@ export default function FranchiseDetail() {
         </div>
       )}
 
-      {activeTorrents.length > 0 && (
-        <div className="franchise-torrents-section" style={{ marginBottom: 16 }}>
-          <h3 style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Active Torrents</h3>
-          {activeTorrents.map((ts: any) => (
-            <div key={ts.release_id} className="torrent-panel" style={{ marginBottom: 8 }}>
-              <div className="approved-release-info">
-                <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>S{String(ts.season).padStart(2, "0")}</span>
-                <span className="approved-title" title={ts.title}>
-                  {ts.title}
-                </span>
-                <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state}</span>
-              </div>
-              {ts.progress < 100 && (
-                <>
-                  <div className="torrent-progress-bar">
-                    <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
-                  </div>
-                  <div className="torrent-stats-grid" style={{ fontSize: 12 }}>
-                    <div className="ts-item ts-primary"><span className="ts-value">{ts.progress}%</span></div>
-                    {ts.state === "downloading" && (
-                      <div className="ts-item ts-speed"><span className="ts-icon">↓</span><span className="ts-value">{(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span></div>
-                    )}
-                    <div className="ts-item ts-speed"><span className="ts-icon">↑</span><span className="ts-value">{(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span></div>
-                    <div className="ts-item"><span className="ts-label">Ratio</span><span className="ts-value">{ts.ratio.toFixed(2)}</span></div>
-                    <div className="ts-item"><span className="ts-label">Peers</span><span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span></div>
-                  </div>
-                </>
-              )}
-              {ts.progress === 100 && (
-                <div className="torrent-paths">
-                  <div className="torrent-path-row">
-                    <span className="path-label">Source:</span>
-                    <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.content_path)}>{ts.content_path}</span>
-                    {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" ? (
-                      <button className="btn btn-secondary btn-tiny" onClick={() => handlePause(ts.release_id)}>Pause</button>
-                    ) : (
-                      <button className="btn btn-secondary btn-tiny" onClick={() => handleResume(ts.release_id)}>Resume</button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="franchise-seasons-list">
         {franchise.seasons.map((season: any) => {
           const hasReleases = season.total_candidates > 0;
           const hasTorrents = season.status === "DOWNLOADING" || season.status === "SEEDING";
           const isSearching = season.status === "SEARCHING";
           const isExpanded = expandedSeasons.has(season.season);
-          const topReleases = (season.releases || [])
-            .filter((r: any) => r.approved)
-            .slice(0, 3);
+          const seasonTorrents = franchiseTorrents.filter((t) => t.found && t.season === season.season);
+          const epCount = season.episode_count || 0;
+          const covered = new Set<number>(season.covered_episodes || []);
+          const epGrid = epCount > 0 ? Array.from({ length: epCount }, (_, i) => i + 1) : [];
+
           return (
             <div key={season.season} className="franchise-season-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-              <div style={{ display: "flex", cursor: "pointer" }} onClick={() => {
+              <div style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={() => {
                 if (isExpanded) { const next = new Set(expandedSeasons); next.delete(season.season); setExpandedSeasons(next); }
                 else { const next = new Set(expandedSeasons); next.add(season.season); setExpandedSeasons(next); }
               }}>
                 <div className="fr-season-left">
                   <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
                   <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
-                    {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
+                    {epCount > 0 ? `${covered.size}/${epCount} episodes` : season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
                   </span>
                   {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
                   {hasTorrents && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: season.status === "SEEDING" ? "#2d6a4f" : "#1d6099" }}>{season.status === "SEEDING" ? "SEEDING" : "DOWNLOADING"}</span>}
+                  {seasonTorrents.length > 0 && seasonTorrents.some((t: any) => t.progress < 100) && (
+                    <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: "#1d6099" }}>
+                      {seasonTorrents.filter((t: any) => t.progress < 100).reduce((s: number, t: any) => Math.max(s, t.progress), 0)}%
+                    </span>
+                  )}
                 </div>
                 <div className="fr-season-right">
                   <span className="rtag">{formatSize(season.total_size_mb)}</span>
-                  {topReleases.length > 0 && (
-                    <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: "#2d6a4f" }}>{topReleases.length} approved</span>
-                  )}
+                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }} style={{ marginRight: 4 }}>
+                    Open Season &rsaquo;
+                  </button>
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
                 </div>
               </div>
               {isExpanded && (
-                <div style={{ padding: "8px 0 4px 0" }}>
-                  {topReleases.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4 }}>Approved:</div>
-                      {topReleases.map((r: any) => {
-                        const ts = franchiseTorrents.find((t) => t.release_id === r.id);
-                        return (
-                          <div key={r.id} className="release-card" style={{ marginBottom: 4 }}>
-                            <div className="release-row">
-                              <div className="release-main">
-                                <div className="release-info">
-                                  <span className="release-title" title={r.title} style={{ fontSize: 12 }}>{r.title}</span>
-                                  <div className="release-tags">
-                                    <span className="rtag">{r.quality}</span>
-                                    <span className="rtag">{formatSize(r.size_mb)}</span>
-                                    {ts?.found && <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state} {ts.progress}%</span>}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
+                <div className="season-expanded-content">
+                  {epGrid.length > 0 && (
+                    <div className="episode-grid-section">
+                      <div className="episode-grid-header">
+                        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>Episodes</span>
+                        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{covered.size}/{epCount} have</span>
+                      </div>
+                      <div className="episode-grid">
+                        {epGrid.map((ep) => (
+                          <span key={ep} className={`ep-cell ${covered.has(ep) ? "ep-have" : "ep-missing"}`}>
+                            {String(ep).padStart(2, "0")}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   )}
-                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
-                    Open Season &rsaquo;
-                  </button>
+                  {seasonTorrents.length > 0 && (
+                    <div className="season-torrents-section">
+                      {seasonTorrents.map((ts: any) => (
+                        <div key={ts.release_id} className="season-torrent-row">
+                          <div className="approved-release-info">
+                            <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state}</span>
+                            <span className="approved-title" title={ts.title} style={{ fontSize: 12, flex: 1, minWidth: 0 }}>{ts.title}</span>
+                            {ts.progress < 100 && <span style={{ fontSize: 11, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>{ts.progress}%</span>}
+                          </div>
+                          {ts.progress < 100 && (
+                            <div className="torrent-progress-bar" style={{ marginTop: 4 }}>
+                              <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -453,6 +421,7 @@ function SeasonDetail({ season, franchise, onBack }: {
   const [moving, setMoving] = useState<number | null>(null);
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "list">("table");
+  const [searchMode, setSearchMode] = useState<SearchMode>("season");
   const [processing, setProcessing] = useState<number | null>(null);
 
   const loadData = useCallback(async () => {
@@ -751,10 +720,17 @@ function SeasonDetail({ season, franchise, onBack }: {
           <span className="detail-title-text">{franchise.title}</span>
           <span className="rtag">S{String(season.season).padStart(2, "0")}</span>
         </div>
+        <div className="search-mode-toggle">
+          {SEARCH_MODES.map((m) => (
+            <button key={m} className={`btn btn-tiny ${searchMode === m ? "btn-primary" : "btn-secondary"}`} onClick={() => setSearchMode(m)}>
+              {m === "season" ? "Season" : "Episodes"}
+            </button>
+          ))}
+        </div>
         <input
           className="search-term-input"
           type="text"
-          placeholder="Search term (e.g. S02E05 1080p)..."
+          placeholder={searchMode === "season" ? "Search season pack..." : "e.g. S02E05 1080p..."}
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}

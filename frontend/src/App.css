@@ -1455,6 +1455,79 @@ body {
   line-height: 1;
 }
 
+.season-expanded-content {
+  padding: 8px 0 4px 0;
+}
+
+.episode-grid-section {
+  margin-bottom: 8px;
+}
+
+.episode-grid-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.episode-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.ep-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 22px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.ep-have {
+  background: #2d6a4f;
+  color: #a7f3d0;
+}
+
+.ep-missing {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.season-torrents-section {
+  margin-top: 8px;
+}
+
+.season-torrent-row {
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin-bottom: 4px;
+}
+
+.search-mode-toggle {
+  display: flex;
+  gap: 0;
+}
+
+.search-mode-toggle .btn {
+  border-radius: 0;
+}
+
+.search-mode-toggle .btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.search-mode-toggle .btn:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;
