@@ -329,7 +329,7 @@ export default function FranchiseDetail() {
                 <div className="fr-season-right" style={{ gap: 6 }}>
                   <button className="btn btn-secondary btn-tiny" onClick={(e) => {
                     e.stopPropagation();
-                    setInitialSearch({ term: searchTerm.trim() || "", mode: "season" });
+                    setInitialSearch({ term: season.title, mode: "season" });
                     setSelectedSeason(season);
                   }}>
                     Search

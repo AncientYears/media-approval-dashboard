@@ -322,7 +322,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               total_size_mb: s.total_size_mb,
               release_count: s.release_count,
               title: s.title,
-              episode_count: s.episode_count,
+          episode_count: s.episode_count,
               covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
             };
           }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0)),
@@ -357,7 +357,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   });
 
   // GET /api/requests/managed/:sonarrId - Franchise detail: all seasons + all releases
-  router.get("/managed/:sonarrId", (req: Request, res: Response) => {
+  router.get("/managed/:sonarrId", async (req: Request, res: Response) => {
     try {
       const sonarrId = Number(req.params.sonarrId);
       const seasons = db.prepare(`
@@ -379,7 +379,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
 
-      const seasonDetails = seasons.map((s: any) => {
+      const seasonDetails: any[] = [];
+      for (const s of seasons) {
+        // Backfill episode_count from Sonarr if null
+        let episodeCount = s.episode_count;
+        if (!episodeCount && s.sonarr_id) {
+          try {
+            const series = await sonarr.getSeries(s.sonarr_id);
+            const sonarrSeason = (series.seasons || []).find((sn: any) => sn.seasonNumber === s.season);
+            if (sonarrSeason?.statistics?.episodeCount) {
+              episodeCount = sonarrSeason.statistics.episodeCount;
+              db.prepare("UPDATE media_requests SET episode_count = ? WHERE id = ?").run(episodeCount, s.id);
+            }
+          } catch {}
+        }
+
         const releases = db.prepare(`
           SELECT rc.*, ah.approved_at, ah.approval_reason
           FROM release_candidates rc
@@ -403,14 +417,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
-        return {
+        seasonDetails.push({
           season: s.season,
           request_id: s.id,
           status: s.status,
           total_size_mb: s.total_size_mb,
           release_count: s.release_count,
           title: s.title,
-          episode_count: s.episode_count,
+          episode_count: episodeCount,
           covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
           releases: releases.map((r: any) => ({
             id: r.id,
@@ -428,8 +442,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             info_url: r.info_url || '',
             indexer: r.indexer || '',
           })),
-        };
-      });
+        });
+      }
 
       res.json({
         title: franchiseTitle,
