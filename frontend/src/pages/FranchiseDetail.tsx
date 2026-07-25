@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchFranchiseTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
 
 const POLL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_SEARCH_ALL || "0") * 1000;
 
@@ -116,8 +116,12 @@ export default function FranchiseDetail() {
   const [selectedSeason, setSelectedSeason] = useState<any>(null);
   const [searchingAll, setSearchingAll] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [franchiseTorrents, setFranchiseTorrents] = useState<any[]>([]);
+  const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
   const autoSearchDone = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadFranchise = useCallback(async () => {
     if (!sonarrId) return;
@@ -132,12 +136,35 @@ export default function FranchiseDetail() {
     }
   }, [sonarrId]);
 
+  const loadFranchiseTorrents = useCallback(async () => {
+    if (!sonarrId) return;
+    try {
+      const ts = await fetchFranchiseTorrentStatuses(Number(sonarrId));
+      setFranchiseTorrents(Array.isArray(ts) ? ts : []);
+    } catch {
+      setFranchiseTorrents([]);
+    }
+  }, [sonarrId]);
+
   useEffect(() => {
     setLoading(true);
     setSelectedSeason(null);
     autoSearchDone.current = false;
     loadFranchise();
   }, [loadFranchise]);
+
+  useEffect(() => {
+    if (!franchise) return;
+    loadFranchiseTorrents();
+    statusPollRef.current = setInterval(loadFranchiseTorrents, 3000);
+    return () => { if (statusPollRef.current) clearInterval(statusPollRef.current); };
+  }, [franchise, loadFranchiseTorrents]);
+
+  useEffect(() => {
+    if (franchise && !searchTerm) {
+      setSearchTerm(franchise.title || "");
+    }
+  }, [franchise, searchTerm]);
 
   const runSearchStream = useCallback(async (force: boolean, silent = false) => {
     if (!franchise?.sonarr_id) return;
@@ -147,7 +174,7 @@ export default function FranchiseDetail() {
       const resp = await fetch(`/api/requests/managed/${franchise.sonarr_id}/search-all`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, searchTerm: searchTerm.trim() || undefined }),
       });
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
@@ -205,7 +232,7 @@ export default function FranchiseDetail() {
     }
     if (!silent) setSearchingAll(false);
     await loadFranchise();
-  }, [franchise?.sonarr_id, loadFranchise]);
+  }, [franchise?.sonarr_id, searchTerm, loadFranchise]);
 
   useEffect(() => {
     if (loading || !franchise || autoSearchDone.current) return;
@@ -221,6 +248,27 @@ export default function FranchiseDetail() {
     return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
   }, [POLL_MS, searchingAll, runSearchStream]);
 
+  const handlePause = async (releaseId?: number) => {
+    await pauseTorrent(undefined, releaseId);
+    loadFranchiseTorrents();
+  };
+
+  const handleResume = async (releaseId?: number) => {
+    await resumeTorrent(undefined, releaseId);
+    loadFranchiseTorrents();
+  };
+
+  const handleCopyPath = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  };
+
   if (loading) return <div className="container"><p>Loading...</p></div>;
   if (error) return <div className="container error"><p>{error}</p></div>;
   if (!franchise) return <div className="container"><p>Not found</p></div>;
@@ -235,6 +283,8 @@ export default function FranchiseDetail() {
     );
   }
 
+  const activeTorrents = franchiseTorrents.filter((t) => t.found);
+
   return (
     <div className="container">
       <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")} style={{ marginBottom: 12 }}>
@@ -246,7 +296,16 @@ export default function FranchiseDetail() {
         {franchise.total_releases} release{franchise.total_releases !== 1 ? "s" : ""} · {formatSize(franchise.total_size_mb)}
       </p>
 
-      <div className="request-actions" style={{ marginBottom: 16 }}>
+      <div className="detail-topbar" style={{ marginBottom: 12 }}>
+        <input
+          className="search-term-input"
+          type="text"
+          placeholder="Search term (e.g. 1080p, S01, Complete)..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") runSearchStream(true); }}
+          style={{ flex: 1 }}
+        />
         <button className="btn btn-primary btn-tiny" onClick={() => runSearchStream(true)} disabled={searchingAll}>
           {searchingAll ? <><span className="spinner" /> {searchProgress || "Searching..."}</> : "Search All Seasons"}
         </button>
@@ -258,25 +317,114 @@ export default function FranchiseDetail() {
         </div>
       )}
 
+      {activeTorrents.length > 0 && (
+        <div className="franchise-torrents-section" style={{ marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Active Torrents</h3>
+          {activeTorrents.map((ts: any) => (
+            <div key={ts.release_id} className="torrent-panel" style={{ marginBottom: 8 }}>
+              <div className="approved-release-info">
+                <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>S{String(ts.season).padStart(2, "0")}</span>
+                <span className="approved-title" title={ts.title}>
+                  {ts.title}
+                </span>
+                <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state}</span>
+              </div>
+              {ts.progress < 100 && (
+                <>
+                  <div className="torrent-progress-bar">
+                    <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
+                  </div>
+                  <div className="torrent-stats-grid" style={{ fontSize: 12 }}>
+                    <div className="ts-item ts-primary"><span className="ts-value">{ts.progress}%</span></div>
+                    {ts.state === "downloading" && (
+                      <div className="ts-item ts-speed"><span className="ts-icon">↓</span><span className="ts-value">{(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span></div>
+                    )}
+                    <div className="ts-item ts-speed"><span className="ts-icon">↑</span><span className="ts-value">{(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span></div>
+                    <div className="ts-item"><span className="ts-label">Ratio</span><span className="ts-value">{ts.ratio.toFixed(2)}</span></div>
+                    <div className="ts-item"><span className="ts-label">Peers</span><span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span></div>
+                  </div>
+                </>
+              )}
+              {ts.progress === 100 && (
+                <div className="torrent-paths">
+                  <div className="torrent-path-row">
+                    <span className="path-label">Source:</span>
+                    <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.content_path)}>{ts.content_path}</span>
+                    {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" ? (
+                      <button className="btn btn-secondary btn-tiny" onClick={() => handlePause(ts.release_id)}>Pause</button>
+                    ) : (
+                      <button className="btn btn-secondary btn-tiny" onClick={() => handleResume(ts.release_id)}>Resume</button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="franchise-seasons-list">
         {franchise.seasons.map((season: any) => {
           const hasReleases = season.total_candidates > 0;
           const hasTorrents = season.status === "DOWNLOADING" || season.status === "SEEDING";
           const isSearching = season.status === "SEARCHING";
+          const isExpanded = expandedSeasons.has(season.season);
+          const topReleases = (season.releases || [])
+            .filter((r: any) => r.approved)
+            .slice(0, 3);
           return (
-            <div key={season.season} className="franchise-season-row" onClick={() => setSelectedSeason(season)}>
-              <div className="fr-season-left">
-                <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
-                <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
-                  {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
-                </span>
-                {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
-                {hasTorrents && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: season.status === "SEEDING" ? "#2d6a4f" : "#1d6099" }}>{season.status === "SEEDING" ? "SEEDING" : "DOWNLOADING"}</span>}
+            <div key={season.season} className="franchise-season-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
+              <div style={{ display: "flex", cursor: "pointer" }} onClick={() => {
+                if (isExpanded) { const next = new Set(expandedSeasons); next.delete(season.season); setExpandedSeasons(next); }
+                else { const next = new Set(expandedSeasons); next.add(season.season); setExpandedSeasons(next); }
+              }}>
+                <div className="fr-season-left">
+                  <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
+                  <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
+                    {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
+                  </span>
+                  {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
+                  {hasTorrents && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: season.status === "SEEDING" ? "#2d6a4f" : "#1d6099" }}>{season.status === "SEEDING" ? "SEEDING" : "DOWNLOADING"}</span>}
+                </div>
+                <div className="fr-season-right">
+                  <span className="rtag">{formatSize(season.total_size_mb)}</span>
+                  {topReleases.length > 0 && (
+                    <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: "#2d6a4f" }}>{topReleases.length} approved</span>
+                  )}
+                  <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
+                </div>
               </div>
-              <div className="fr-season-right">
-                <span className="rtag">{formatSize(season.total_size_mb)}</span>
-                <span className="fr-arrow">&rsaquo;</span>
-              </div>
+              {isExpanded && (
+                <div style={{ padding: "8px 0 4px 0" }}>
+                  {topReleases.length > 0 && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4 }}>Approved:</div>
+                      {topReleases.map((r: any) => {
+                        const ts = franchiseTorrents.find((t) => t.release_id === r.id);
+                        return (
+                          <div key={r.id} className="release-card" style={{ marginBottom: 4 }}>
+                            <div className="release-row">
+                              <div className="release-main">
+                                <div className="release-info">
+                                  <span className="release-title" title={r.title} style={{ fontSize: 12 }}>{r.title}</span>
+                                  <div className="release-tags">
+                                    <span className="rtag">{r.quality}</span>
+                                    <span className="rtag">{formatSize(r.size_mb)}</span>
+                                    {ts?.found && <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state} {ts.progress}%</span>}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
+                    Open Season &rsaquo;
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}

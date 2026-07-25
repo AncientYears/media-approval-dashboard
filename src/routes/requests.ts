@@ -444,6 +444,95 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/managed/:sonarrId/torrent-statuses - All torrent statuses across all seasons
+  router.get("/managed/:sonarrId/torrent-statuses", async (req: Request, res: Response) => {
+    try {
+      const sonarrId = Number(req.params.sonarrId);
+      const seasons = db.prepare(
+        "SELECT id, season, title, sonarr_id FROM media_requests WHERE sonarr_id = ? AND type = 'series'"
+      ).all(sonarrId) as any[];
+
+      if (seasons.length === 0) {
+        return res.status(404).json({ error: "Franchise not found" });
+      }
+
+      const requestIds = seasons.map((s: any) => s.id);
+      const placeholders = requestIds.map(() => "?").join(",");
+
+      const releases = db.prepare(
+        "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id, rc.size_mb, ah.request_id " +
+        "FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id " +
+        `WHERE ah.request_id IN (${placeholders}) AND rc.torrent_hash != ''`
+      ).all(...requestIds) as any[];
+
+      if (releases.length === 0) {
+        return res.json([]);
+      }
+
+      const torrents = await qbittorrent.getTorrents();
+      const results: any[] = [];
+
+      for (const release of releases) {
+        const torrent = torrents.find((t: any) => t.hash === release.torrent_hash);
+        if (!torrent) {
+          results.push({ release_id: release.release_id, request_id: release.request_id, title: release.title, found: false });
+          continue;
+        }
+
+        const season = seasons.find((s: any) => s.id === release.request_id);
+        let inLibrary = false;
+        let libraryPath = "";
+
+        if (season) {
+          try {
+            const series = await sonarr.getSeries(season.sonarr_id);
+            const seasonFolder = path.join(
+              series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
+              `S${String(season.season).padStart(2, "0")}`
+            );
+            if (fs.existsSync(seasonFolder)) {
+              const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+              if (files.length > 0) {
+                inLibrary = true;
+                libraryPath = path.join(seasonFolder, files[0]);
+              }
+            }
+          } catch {}
+        }
+
+        results.push({
+          release_id: release.release_id,
+          request_id: release.request_id,
+          season: season?.season,
+          title: release.title,
+          found: true,
+          hash: torrent.hash,
+          name: torrent.name,
+          state: torrent.state,
+          progress: Math.round(torrent.progress * 100),
+          dlspeed: torrent.dlspeed,
+          upspeed: torrent.upspeed,
+          uploaded: torrent.uploaded,
+          seeding_time: torrent.seeding_time,
+          ratio: Math.round(torrent.ratio * 100) / 100,
+          eta: torrent.eta,
+          save_path: torrent.save_path,
+          content_path: torrent.content_path,
+          in_library: inLibrary,
+          library_path: libraryPath,
+          num_seeds: torrent.num_seeds,
+          num_leechs: torrent.num_leechs,
+        });
+      }
+
+      res.json(results);
+    } catch (error: any) {
+      console.error("Error fetching franchise torrent statuses:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // POST /api/requests/reactivate-all - Re-activate all DISMISSED requests
   // Requests with approved releases go to DOWNLOADING + re-detect torrent hashes
   router.post("/reactivate-all", async (req: Request, res: Response) => {

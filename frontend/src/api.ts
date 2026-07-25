@@ -62,6 +62,11 @@ export async function fetchTorrentStatuses(requestId: number) {
   return response.data;
 }
 
+export async function fetchFranchiseTorrentStatuses(sonarrId: number) {
+  const response = await api.get(`/requests/managed/${sonarrId}/torrent-statuses`);
+  return response.data;
+}
+
 export async function moveToLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/move-to-library`);
   return response.data;
