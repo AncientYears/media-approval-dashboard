@@ -106,7 +106,6 @@ export default function Dashboard() {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let eventType = "";
       while (true) {
         const { done: readerDone, value } = await reader.read();
         if (readerDone) break;
@@ -114,15 +113,14 @@ export default function Dashboard() {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
-          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-          else if (line.startsWith("data: ")) {
+          if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
             if (data.message) setMovieSearchProgress(data.message);
             if (data.totalFound != null) {
               setMovieSearchProgress(`Done — ${data.totalFound} release(s)`);
               setTimeout(() => setMovieSearchProgress(""), 3000);
             }
-          } else if (line.trim() === "") eventType = "";
+          }
         }
       }
     } catch {
