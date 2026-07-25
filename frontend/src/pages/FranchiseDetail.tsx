@@ -637,9 +637,9 @@ function SeasonDetail({ season, franchise, onBack }: {
                 {([
                   { key: null, label: "Ep", cls: "" },
                   { key: null, label: "Title", cls: "" },
-                  { key: "radarr_quality" as const, label: "Q", cls: "" },
-                  { key: "size_mb" as const, label: "Size", cls: "" },
-                  { key: "indexer" as const, label: "Indexer", cls: "" },
+                  { key: null, label: "Q", cls: "" },
+                  { key: null, label: "Size", cls: "" },
+                  { key: null, label: "Indexer", cls: "" },
                   { key: "seeders" as const, label: "S/L", cls: "th-sl" },
                   { key: "app_score" as const, label: "Score", cls: "th-score" },
                   { key: null, label: "", cls: "th-act" },
