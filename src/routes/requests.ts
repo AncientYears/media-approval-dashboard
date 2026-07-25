@@ -650,11 +650,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const row = db.prepare(`
         SELECT mr.status, mr.episode_count,
           (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
-           JOIN approval_history ah2 ON ah2.release_id = rc2.id
-           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+           WHERE rc2.request_id = mr.id) as total_size_mb,
           (SELECT COUNT(*) FROM release_candidates rc3
-           JOIN approval_history ah3 ON ah3.release_id = rc3.id
-           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+           WHERE rc3.request_id = mr.id) as release_count
         FROM media_requests mr WHERE mr.id = ?
       `).get(seasonId) as any;
       return row || {};

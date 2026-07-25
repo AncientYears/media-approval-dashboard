@@ -131,9 +131,10 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       if (staleHashes.size > 0) {
         const delH = db.prepare("DELETE FROM approval_history WHERE release_id IN (SELECT id FROM release_candidates WHERE torrent_hash = ?)");
         const delR = db.prepare("DELETE FROM release_candidates WHERE torrent_hash = ?");
-        const countHash = db.prepare("SELECT COUNT(*) as cnt FROM release_candidates WHERE torrent_hash = ?").get as any;
+        const cntStmt = db.prepare("SELECT COUNT(*) as cnt FROM release_candidates WHERE torrent_hash = ?");
         for (const [hash, reason] of staleHashes) {
-          const { cnt } = countHash(hash);
+          const row = cntStmt.get(hash) as any;
+          const cnt = row?.cnt ?? 0;
           console.log(`[Startup] Stale hash=${hash}: ${reason} — removing ${cnt} RC(s)`);
           delH.run(hash);
           delR.run(hash);
