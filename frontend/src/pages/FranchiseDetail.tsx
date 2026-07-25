@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary } from "../api";
 
@@ -304,6 +304,7 @@ function SeasonDetail({ season, franchise, onBack }: {
   const [moveResults, setMoveResults] = useState<Record<number, any>>({});
   const [moving, setMoving] = useState<number | null>(null);
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<"table" | "list">("table");
 
   const loadData = useCallback(async () => {
     try {
@@ -619,11 +620,79 @@ function SeasonDetail({ season, franchise, onBack }: {
             <button className={`btn btn-tiny ${sortBy === "size_mb" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("size_mb")}>Size</button>
             <button className={`btn btn-tiny ${sortBy === "seeders" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("seeders")}>Seeders</button>
           </div>
+          <div className="view-toggle">
+            <button className={`vt-btn ${viewMode === "table" ? "active" : ""}`} onClick={() => setViewMode("table")} title="Table">=</button>
+            <button className={`vt-btn ${viewMode === "list" ? "active" : ""}`} onClick={() => setViewMode("list")} title="List">≡</button>
+          </div>
         </div>
       </div>
 
       {filtered.length === 0 ? (
         <div className="empty-state"><p>{releases.length === 0 ? "No releases found. Click Search above." : "No matches for this filter."}</p></div>
+      ) : viewMode === "table" ? (
+        <div className="table-wrap">
+          <table className="release-table">
+            <thead>
+              <tr>
+                {([
+                  { key: null, label: "Ep", cls: "" },
+                  { key: null, label: "Title", cls: "" },
+                  { key: "radarr_quality" as const, label: "Q", cls: "" },
+                  { key: "size_mb" as const, label: "Size", cls: "" },
+                  { key: "indexer" as const, label: "Indexer", cls: "" },
+                  { key: "seeders" as const, label: "S/L", cls: "th-sl" },
+                  { key: "app_score" as const, label: "Score", cls: "th-score" },
+                  { key: null, label: "", cls: "th-act" },
+                ]).map((col) => (
+                  <th
+                    key={col.label + col.cls}
+                    className={`${col.cls} ${col.key ? "th-sortable" : ""} ${sortBy === col.key ? "th-active" : ""}`}
+                    onClick={col.key ? () => setSortBy(col.key!) : undefined}
+                  >
+                    {col.label}
+                    {col.key && sortBy === col.key && <span className="sort-arrow">{"\u25B2"}</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r: any) => {
+                const isExpanded = expandedIds.has(r.id);
+                return (
+                  <Fragment key={r.id}>
+                    <tr className={isExpanded ? "row-expanded" : ""} onClick={() => { const next = new Set(expandedIds); if (next.has(r.id)) next.delete(r.id); else next.add(r.id); setExpandedIds(next); }}>
+                      <td className="td-ep">{r.parsed_episodes || "-"}</td>
+                      <td className="td-title">
+                        {r.info_url ? <a href={r.info_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title={r.title}>{r.title}</a> : <span title={r.title}>{r.title}</span>}
+                      </td>
+                      <td><span className="rtag">{r.quality || r.radarr_quality}</span></td>
+                      <td className="td-size">{formatSize(r.size_mb)}</td>
+                      <td className="td-indexer">{r.indexer}</td>
+                      <td className="td-sl">{r.seeders != null ? <><span className="sl-seed">{r.seeders}</span>/<span className="sl-leech">{r.leechers ?? 0}</span></> : "-"}</td>
+                      <td className="td-score">{r.app_score}/20</td>
+                      <td className="td-act" onClick={(e) => e.stopPropagation()}>
+                        {!r.approved ? (
+                          <button className="btn btn-primary btn-tiny" onClick={() => handleApprove(r.id)} disabled={approvingId !== null}>
+                            {approvingId === r.id ? "Approving..." : "Approve"}
+                          </button>
+                        ) : (
+                          <span className="rtag" style={{ background: "#2d6a4f" }}>APPROVED</span>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="expanded-row">
+                        <td colSpan={8}>
+                          <Breakdown r={r} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <div className="releases-list">
           {filtered.map((r: any) => {

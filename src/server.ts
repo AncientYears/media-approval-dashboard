@@ -104,33 +104,41 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 
     if (withHashes.length > 0) {
       const torrents = await qbittorrent.getTorrents();
-      const staleRcs: number[] = [];
+      const staleHashes = new Map<string, string>();
       for (const rc of withHashes) {
+        if (staleHashes.has(rc.torrent_hash)) continue;
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
-        if (t) {
-          const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-          const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-          const isMatch = tn === req || tn.startsWith(req + " ") || tn.startsWith(req + ".") || (tn.startsWith(req) && tn.length > req.length && /[e\d]/.test(tn[req.length]));
-          if (!isMatch) {
-            staleRcs.push(rc.rc_id);
-            console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} is actually "${t.name}"`);
-          } else if (rc.req_season != null) {
-            const tnSeasonMatch = t.name.toUpperCase().match(/\bS(\d{1,2})\b/);
-            if (tnSeasonMatch) {
-              const torrentSeason = parseInt(tnSeasonMatch[1], 10);
-              if (torrentSeason !== rc.req_season) {
-                staleRcs.push(rc.rc_id);
-                console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} season mismatch (torrent is S${String(torrentSeason).padStart(2, "0")})`);
-              }
+        if (!t) continue;
+        const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+        const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+        const isMatch = tn === req || tn.startsWith(req + " ") || tn.startsWith(req + ".") || (tn.startsWith(req) && tn.length > req.length && /[e\d]/.test(tn[req.length]));
+        let reason = "";
+        if (!isMatch) {
+          reason = `title mismatch (is "${t.name}")`;
+        } else if (rc.req_season != null) {
+          const tnSeasonMatch = t.name.toUpperCase().match(/\bS(\d{1,2})\b/);
+          if (tnSeasonMatch) {
+            const torrentSeason = parseInt(tnSeasonMatch[1], 10);
+            if (torrentSeason !== rc.req_season) {
+              reason = `season mismatch (torrent is S${String(torrentSeason).padStart(2, "0")})`;
             }
           }
         }
+        if (reason) {
+          staleHashes.set(rc.torrent_hash, reason);
+        }
       }
-      if (staleRcs.length > 0) {
-        const delH = db.prepare("DELETE FROM approval_history WHERE release_id = ?");
-        const delR = db.prepare("DELETE FROM release_candidates WHERE id = ?");
-        for (const id of staleRcs) { delH.run(id); delR.run(id); }
-        console.log(`[Startup] Removed ${staleRcs.length} stale release_candidates`);
+      if (staleHashes.size > 0) {
+        const delH = db.prepare("DELETE FROM approval_history WHERE release_id IN (SELECT id FROM release_candidates WHERE torrent_hash = ?)");
+        const delR = db.prepare("DELETE FROM release_candidates WHERE torrent_hash = ?");
+        const countHash = db.prepare("SELECT COUNT(*) as cnt FROM release_candidates WHERE torrent_hash = ?").get as any;
+        for (const [hash, reason] of staleHashes) {
+          const { cnt } = countHash(hash);
+          console.log(`[Startup] Stale hash=${hash}: ${reason} — removing ${cnt} RC(s)`);
+          delH.run(hash);
+          delR.run(hash);
+        }
+        console.log(`[Startup] Removed ${staleHashes.size} stale hash(es)`);
       }
 
       // Backfill size_mb=0 from qBittorrent

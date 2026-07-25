@@ -543,6 +543,12 @@ body {
   text-align: center;
 }
 
+.td-ep {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+
 .td-title {
   font-weight: 500;
   display: -webkit-box;
