@@ -130,7 +130,6 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
               torrent = matched;
               db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
                 .run(matched.hash, matched.save_path, h.release_id);
-              console.log(`[Status] Hash by title match for ${req.title}: ${matched.hash}`);
             }
           }
 

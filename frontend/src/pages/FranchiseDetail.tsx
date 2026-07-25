@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchFranchiseTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchFranchiseTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
 type SearchMode = typeof SEARCH_MODES[number];
@@ -122,6 +122,7 @@ export default function FranchiseDetail() {
   const [searchTerm, setSearchTerm] = useState("");
   const [franchiseTorrents, setFranchiseTorrents] = useState<any[]>([]);
   const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
+  const [seasonEpisodes, setSeasonEpisodes] = useState<Record<number, any[]>>({});
   const autoSearchDone = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -300,27 +301,48 @@ export default function FranchiseDetail() {
       <div className="franchise-seasons-list">
         {franchise.seasons.map((season: any) => {
           const hasReleases = season.total_candidates > 0;
-          const hasTorrents = season.status === "DOWNLOADING" || season.status === "SEEDING";
           const isSearching = season.status === "SEARCHING";
           const isExpanded = expandedSeasons.has(season.season);
-          const seasonTorrents = franchiseTorrents.filter((t) => t.found && t.season === season.season);
           const epCount = season.episode_count || 0;
           const covered = new Set<number>(season.covered_episodes || []);
-          const epGrid = epCount > 0 ? Array.from({ length: epCount }, (_, i) => i + 1) : [];
+          const filledCount = covered.size;
+          const missingCount = epCount > 0 ? epCount - filledCount : 0;
+          const hasTorrents = season.status === "DOWNLOADING" || season.status === "SEEDING";
+          const episodes = seasonEpisodes[season.season] || [];
+
+          const toggleExpand = async () => {
+            const next = new Set(expandedSeasons);
+            if (isExpanded) {
+              next.delete(season.season);
+            } else {
+              next.add(season.season);
+              if (!seasonEpisodes[season.season]) {
+                try {
+                  const data = await fetchSeasonEpisodes(Number(sonarrId), season.season);
+                  setSeasonEpisodes((prev) => ({ ...prev, [season.season]: data.episodes || [] }));
+                } catch {}
+              }
+            }
+            setExpandedSeasons(next);
+          };
 
           return (
             <div key={season.season} className="franchise-season-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-              <div style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={() => {
-                if (isExpanded) { const next = new Set(expandedSeasons); next.delete(season.season); setExpandedSeasons(next); }
-                else { const next = new Set(expandedSeasons); next.add(season.season); setExpandedSeasons(next); }
-              }}>
+              <div style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={toggleExpand}>
                 <div className="fr-season-left">
                   <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
-                  <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
-                    {epCount > 0 ? `${covered.size}/${epCount} episodes` : season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
-                  </span>
+                  {epCount > 0 ? (
+                    <span className={`season-status ${filledCount === epCount ? "has-content" : "empty"}`}>
+                      {filledCount === epCount ? "FILLED" : `${missingCount} MISSING`}
+                      <span style={{ marginLeft: 4, opacity: 0.7 }}>{filledCount}/{epCount}</span>
+                    </span>
+                  ) : (
+                    <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
+                      {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
+                    </span>
+                  )}
                   {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
-                  {hasTorrents && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: season.status === "SEEDING" ? "#2d6a4f" : "#1d6099" }}>{season.status === "SEEDING" ? "SEEDING" : "DOWNLOADING"}</span>}
+                  {hasTorrents && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: season.status === "SEEDING" ? "#2d6a4f" : "#1d6099" }}>{season.status}</span>}
                   {seasonTorrents.length > 0 && seasonTorrents.some((t: any) => t.progress < 100) && (
                     <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: "#1d6099" }}>
                       {seasonTorrents.filter((t: any) => t.progress < 100).reduce((s: number, t: any) => Math.max(s, t.progress), 0)}%
@@ -337,23 +359,29 @@ export default function FranchiseDetail() {
               </div>
               {isExpanded && (
                 <div className="season-expanded-content">
-                  {epGrid.length > 0 && (
-                    <div className="episode-grid-section">
-                      <div className="episode-grid-header">
-                        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>Episodes</span>
-                        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{covered.size}/{epCount} have</span>
-                      </div>
-                      <div className="episode-grid">
-                        {epGrid.map((ep) => (
-                          <span key={ep} className={`ep-cell ${covered.has(ep) ? "ep-have" : "ep-missing"}`}>
-                            {String(ep).padStart(2, "0")}
-                          </span>
-                        ))}
-                      </div>
+                  {episodes.length > 0 ? (
+                    <div className="episode-list">
+                      {episodes.map((ep: any) => (
+                        <div key={ep.episodeNumber} className={`episode-row ${ep.covered ? "ep-covered" : "ep-missing-row"}`}>
+                          <span className="ep-num">E{String(ep.episodeNumber).padStart(2, "0")}</span>
+                          <span className="ep-title">{ep.title}</span>
+                          {ep.covered && <span className="ep-check">&#10003;</span>}
+                        </div>
+                      ))}
                     </div>
+                  ) : epCount > 0 ? (
+                    <div className="episode-grid">
+                      {Array.from({ length: epCount }, (_, i) => (
+                        <span key={i + 1} className={`ep-cell ${covered.has(i + 1) ? "ep-have" : "ep-missing"}`}>
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "4px 0" }}>No episode data available</div>
                   )}
                   {seasonTorrents.length > 0 && (
-                    <div className="season-torrents-section">
+                    <div className="season-torrents-section" style={{ marginTop: 8 }}>
                       {seasonTorrents.map((ts: any) => (
                         <div key={ts.release_id} className="season-torrent-row">
                           <div className="approved-release-info">

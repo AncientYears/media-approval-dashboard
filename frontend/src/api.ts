@@ -161,3 +161,8 @@ export async function setRequestStatus(requestId: number, status: string) {
   const response = await api.post(`/requests/${requestId}/set-status`, { status });
   return response.data;
 }
+
+export async function fetchSeasonEpisodes(sonarrId: number, season: number) {
+  const response = await api.get(`/requests/managed/${sonarrId}/season/${season}/episodes`);
+  return response.data;
+}

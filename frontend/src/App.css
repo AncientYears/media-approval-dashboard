@@ -1511,6 +1511,49 @@ body {
   margin-bottom: 4px;
 }
 
+.episode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.episode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.episode-row.ep-covered {
+  color: #a7f3d0;
+}
+
+.episode-row.ep-missing-row {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.ep-num {
+  font-family: monospace;
+  font-weight: 500;
+  min-width: 30px;
+}
+
+.ep-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ep-check {
+  color: #2d6a4f;
+  font-weight: bold;
+}
+
 .search-mode-toggle {
   display: flex;
   gap: 0;

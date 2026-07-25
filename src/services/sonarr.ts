@@ -135,6 +135,25 @@ export class SonarrService {
     }
   }
 
+  async getSeasonEpisodes(seriesId: number, seasonNumber: number) {
+    try {
+      const response = await this.client.get("/api/v3/episode", {
+        params: { seriesId, seasonNumber },
+      });
+      return response.data as Array<{
+        id: number;
+        episodeNumber: number;
+        title: string;
+        hasFile: boolean;
+        airDateUtc?: string;
+        overview?: string;
+      }>;
+    } catch (error) {
+      console.error(`[Sonarr] Failed to fetch episodes for series ${seriesId} season ${seasonNumber}:`, error);
+      throw error;
+    }
+  }
+
   async testConnection() {
     try {
       await this.client.get("/api/v3/system/status");

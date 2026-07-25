@@ -444,6 +444,74 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/managed/:sonarrId/season/:season/episodes - Episode list with coverage from Sonarr
+  router.get("/managed/:sonarrId/season/:season/episodes", async (req: Request, res: Response) => {
+    try {
+      const sonarrId = Number(req.params.sonarrId);
+      const seasonNum = Number(req.params.season);
+
+      const row = db.prepare(
+        "SELECT id, sonarr_id, title FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?"
+      ).get(sonarrId, seasonNum) as any;
+
+      if (!row) return res.status(404).json({ error: "Season not found" });
+
+      let sonarrEpisodes: Array<{ episodeNumber: number; title: string; hasFile: boolean; airDateUtc?: string }> = [];
+      try {
+        const episodes = await sonarr.getSeasonEpisodes(row.sonarr_id, seasonNum);
+        sonarrEpisodes = episodes.map((e) => ({
+          episodeNumber: e.episodeNumber,
+          title: e.title,
+          hasFile: e.hasFile,
+          airDateUtc: e.airDateUtc,
+        }));
+      } catch {
+        // Sonarr might not have the series, fall back to empty
+      }
+
+      const coveredEps = new Set<number>();
+      const releases = db.prepare(`
+        SELECT rc.parsed_episodes, ah.approved_at, rc.torrent_hash
+        FROM release_candidates rc
+        LEFT JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = ?
+        WHERE rc.request_id = ?
+      `).all(row.id, row.id) as any[];
+
+      for (const r of releases) {
+        if (r.approved_at && r.torrent_hash && r.parsed_episodes) {
+          const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
+          if (epMatches) {
+            for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+          }
+          const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+          if (rangeMatch) {
+            for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+          }
+        }
+      }
+
+      if (sonarrEpisodes.length > 0) {
+        const episodes = sonarrEpisodes.map((e) => ({
+          ...e,
+          covered: coveredEps.has(e.episodeNumber),
+        }));
+        res.json({ episodeCount: episodes.length, coveredCount: coveredEps.size, episodes });
+      } else {
+        const epCount = row.episode_count || 0;
+        const episodes = Array.from({ length: epCount }, (_, i) => ({
+          episodeNumber: i + 1,
+          title: `Episode ${i + 1}`,
+          hasFile: false,
+          covered: coveredEps.has(i + 1),
+        }));
+        res.json({ episodeCount: epCount, coveredCount: coveredEps.size, episodes });
+      }
+    } catch (error: any) {
+      console.error("Error fetching season episodes:", error.message || error);
+      res.status(500).json({ error: error.message || "Failed to fetch episodes" });
+    }
+  });
+
   // GET /api/requests/managed/:sonarrId/torrent-statuses - All torrent statuses across all seasons
   router.get("/managed/:sonarrId/torrent-statuses", async (req: Request, res: Response) => {
     try {
