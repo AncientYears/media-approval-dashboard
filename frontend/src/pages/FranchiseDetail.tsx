@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease } from "../api";
 
@@ -130,7 +130,6 @@ export default function FranchiseDetail() {
         season={selectedSeason}
         franchise={franchise}
         onBack={() => setSelectedSeason(null)}
-        onNavigateHome={() => navigate("/")}
       />
     );
   }
@@ -185,11 +184,10 @@ export default function FranchiseDetail() {
   );
 }
 
-function SeasonDetail({ season, franchise, onBack, onNavigateHome }: {
+function SeasonDetail({ season, franchise, onBack }: {
   season: any;
   franchise: any;
   onBack: () => void;
-  onNavigateHome: () => void;
 }) {
   const [releases, setReleases] = useState<any[]>([]);
   const [request, setRequest] = useState<any>(null);
@@ -236,7 +234,6 @@ function SeasonDetail({ season, franchise, onBack, onNavigateHome }: {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let eventType = "";
       while (true) {
         const { done: readerDone, value } = await reader.read();
         if (readerDone) break;
@@ -244,11 +241,10 @@ function SeasonDetail({ season, franchise, onBack, onNavigateHome }: {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
-          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-          else if (line.startsWith("data: ")) {
+          if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
             if (data.message) setSearchProgress(data.message);
-          } else if (line.trim() === "") eventType = "";
+          }
         }
       }
     } catch {
