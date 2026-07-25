@@ -113,16 +113,28 @@ export async function removeFromLibrary(requestId: number) {
   return response.data;
 }
 
-export async function pauseTorrent(requestId: number, releaseId?: number) {
-  const params = releaseId ? `?releaseId=${releaseId}` : "";
-  const response = await api.post(`/requests/${requestId}/torrent/pause${params}`);
-  return response.data;
+export async function pauseTorrent(requestId: number | undefined, releaseId?: number) {
+  if (requestId) {
+    const params = releaseId ? `?releaseId=${releaseId}` : "";
+    const response = await api.post(`/requests/${requestId}/torrent/pause${params}`);
+    return response.data;
+  }
+  if (releaseId) {
+    const response = await api.post(`/requests/0/torrent/pause?releaseId=${releaseId}`);
+    return response.data;
+  }
 }
 
-export async function resumeTorrent(requestId: number, releaseId?: number) {
-  const params = releaseId ? `?releaseId=${releaseId}` : "";
-  const response = await api.post(`/requests/${requestId}/torrent/resume${params}`);
-  return response.data;
+export async function resumeTorrent(requestId: number | undefined, releaseId?: number) {
+  if (requestId) {
+    const params = releaseId ? `?releaseId=${releaseId}` : "";
+    const response = await api.post(`/requests/${requestId}/torrent/resume${params}`);
+    return response.data;
+  }
+  if (releaseId) {
+    const response = await api.post(`/requests/0/torrent/resume?releaseId=${releaseId}`);
+    return response.data;
+  }
 }
 
 export async function testConnections() {
