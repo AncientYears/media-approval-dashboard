@@ -69,6 +69,8 @@ export default function Dashboard() {
   const [sortBy, setSortBy] = useState("status_asc");
   const [modal, setModal] = useState<{ title?: string; lines: string[] } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
+  const [movieSearching, setMovieSearching] = useState(false);
+  const [movieSearchProgress, setMovieSearchProgress] = useState("");
 
   const loadData = useCallback(async () => {
     try {
@@ -91,6 +93,45 @@ export default function Dashboard() {
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  const handleSearchAllMovies = async () => {
+    setMovieSearching(true);
+    setMovieSearchProgress("Searching...");
+    try {
+      const resp = await fetch("/api/requests/managed/search-all-movies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let eventType = "";
+      while (true) {
+        const { done: readerDone, value } = await reader.read();
+        if (readerDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+          else if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+            if (data.message) setMovieSearchProgress(data.message);
+            if (data.totalFound != null) {
+              setMovieSearchProgress(`Done — ${data.totalFound} release(s)`);
+              setTimeout(() => setMovieSearchProgress(""), 3000);
+            }
+          } else if (line.trim() === "") eventType = "";
+        }
+      }
+    } catch {
+      setMovieSearchProgress("Search failed");
+      setTimeout(() => setMovieSearchProgress(""), 3000);
+    }
+    setMovieSearching(false);
+    loadData();
+  };
 
   const requestsList = requests
     .filter((r: any) => r.status !== "DOWNLOADING" && r.status !== "SEEDING")
@@ -239,6 +280,12 @@ export default function Dashboard() {
       {managed.length > 0 && (
         <div className="dashboard-section">
           <h3>Managed Media — {managed.length}</h3>
+          <div className="request-actions" style={{ marginBottom: 12 }}>
+            <button className="btn btn-primary btn-tiny" onClick={handleSearchAllMovies} disabled={movieSearching}>
+              {movieSearching ? movieSearchProgress || "Searching..." : "Search All Movies"}
+            </button>
+            {movieSearchProgress && <span className="search-progress" style={{ marginLeft: 8 }}>{movieSearchProgress}</span>}
+          </div>
           <div className="requests-grid">
             {managed.map((item: any) => (
               item.type === "series" ? (

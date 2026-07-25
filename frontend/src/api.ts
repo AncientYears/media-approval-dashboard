@@ -125,6 +125,11 @@ export async function searchAllSeasons(sonarrId: number, searchTerm?: string) {
   return response.data;
 }
 
+export async function searchAllMovies(searchTerm?: string) {
+  const response = await api.post("/requests/managed/search-all-movies", { searchTerm });
+  return response.data;
+}
+
 export async function fetchSettings() {
   const response = await api.get("/settings");
   return response.data;
