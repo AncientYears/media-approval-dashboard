@@ -251,27 +251,6 @@ export default function FranchiseDetail() {
     return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
   }, [POLL_MS, searchingAll, runSearchStream]);
 
-  const handlePause = async (releaseId?: number) => {
-    await pauseTorrent(undefined, releaseId);
-    loadFranchiseTorrents();
-  };
-
-  const handleResume = async (releaseId?: number) => {
-    await resumeTorrent(undefined, releaseId);
-    loadFranchiseTorrents();
-  };
-
-  const handleCopyPath = async (text: string) => {
-    try { await navigator.clipboard.writeText(text); } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-  };
-
   if (loading) return <div className="container"><p>Loading...</p></div>;
   if (error) return <div className="container error"><p>{error}</p></div>;
   if (!franchise) return <div className="container"><p>Not found</p></div>;
