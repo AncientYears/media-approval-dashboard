@@ -117,6 +117,7 @@ export default function FranchiseDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<any>(null);
+  const [initialSearch, setInitialSearch] = useState<{ term: string; mode: SearchMode } | null>(null);
   const [searchingAll, setSearchingAll] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -242,7 +243,8 @@ export default function FranchiseDetail() {
       <SeasonDetail
         season={selectedSeason}
         franchise={franchise}
-        onBack={() => setSelectedSeason(null)}
+        initialSearch={initialSearch}
+        onBack={() => { setSelectedSeason(null); setInitialSearch(null); }}
       />
     );
   }
@@ -311,24 +313,14 @@ export default function FranchiseDetail() {
               <div className="franchise-season-header" style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={toggleExpand}>
                 <div className="fr-season-left">
                   <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
-                  {epCount > 0 ? (
+                  {isSearching ? (
+                    <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>
+                  ) : epCount > 0 ? (
                     <span className={`season-status ${filledCount === epCount ? "has-content" : "empty"}`}>
                       {filledCount === epCount ? "FILLED" : `${missingCount} MISSING`}
                       <span style={{ marginLeft: 4, opacity: 0.7 }}>{filledCount}/{epCount}</span>
                     </span>
                   ) : (
-                    <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
-                      {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
-                    </span>
-                  )}
-                  {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
-                  {!isSearching && epCount > 0 && (
-                    <span className={`season-status ${filledCount === epCount ? "has-content" : "empty"}`}>
-                      {filledCount === epCount ? "FILLED" : `${missingCount} MISSING`}
-                      <span style={{ marginLeft: 4, opacity: 0.7 }}>{filledCount}/{epCount}</span>
-                    </span>
-                  )}
-                  {!isSearching && epCount === 0 && (
                     <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
                       {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
                     </span>
@@ -344,22 +336,45 @@ export default function FranchiseDetail() {
               {isExpanded && (
                 <div className="season-expanded-content">
                   {episodes.length > 0 ? (
-                    <div className="episode-list">
-                      {episodes.map((ep: any) => (
-                        <div key={ep.episodeNumber} className={`episode-row ${ep.covered ? "ep-covered" : "ep-missing-row"}`}>
-                          <span className="ep-num">E{String(ep.episodeNumber).padStart(2, "0")}</span>
-                          <span className="ep-title">{ep.title}</span>
-                          {ep.covered ? (
-                            <>
-                              {ep.quality && <span className="rtag" style={{ fontSize: 9, padding: "1px 4px" }}>{ep.quality}</span>}
-                              <span className="ep-badge ep-filled">FILLED</span>
-                            </>
-                          ) : (
-                            <span className="ep-badge ep-missed">MISSING</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+                    <>
+                      <div className="episode-list">
+                        {episodes.map((ep: any) => (
+                          <div key={ep.episodeNumber} className={`episode-row ${ep.covered ? "ep-covered" : "ep-missing-row"}`}>
+                            <span className="ep-num">E{String(ep.episodeNumber).padStart(2, "0")}</span>
+                            {ep.covered ? (
+                              <>
+                                <span className="ep-title">{ep.title}</span>
+                                {ep.quality && <span className="rtag" style={{ fontSize: 9, padding: "1px 4px" }}>{ep.quality}</span>}
+                                <span className="ep-badge ep-filled">FILLED</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="ep-title">{ep.title}</span>
+                                <span className="ep-badge ep-missed">MISSING</span>
+                                <button className="btn btn-secondary btn-tiny" style={{ fontSize: 9, padding: "1px 5px" }} onClick={(e) => {
+                                  e.stopPropagation();
+                                  setInitialSearch({ term: `S${String(season.season).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`, mode: "episodes" });
+                                  setSelectedSeason(season);
+                                }}>Search</button>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="episode-actions">
+                        {filledCount < epCount && (
+                          <button className="btn btn-secondary btn-tiny" onClick={(e) => {
+                            e.stopPropagation();
+                            setInitialSearch({ term: "", mode: "season" });
+                            setSelectedSeason(season);
+                          }}>Search Season</button>
+                        )}
+                        <button className="btn btn-secondary btn-tiny" onClick={(e) => {
+                          e.stopPropagation();
+                          runSearchStream(true);
+                        }}>Search Franchise</button>
+                      </div>
+                    </>
                   ) : epCount > 0 ? (
                     <div className="episode-grid">
                       {Array.from({ length: epCount }, (_, i) => (
@@ -381,16 +396,17 @@ export default function FranchiseDetail() {
   );
 }
 
-function SeasonDetail({ season, franchise, onBack }: {
+function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   season: any;
   franchise: any;
+  initialSearch?: { term: string; mode: SearchMode } | null;
   onBack: () => void;
 }) {
   const [releases, setReleases] = useState<any[]>([]);
   const [approvedReleases, setApprovedReleases] = useState<any[]>([]);
 
   const [torrentStatuses, setTorrentStatuses] = useState<any[]>([]);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTerm] = useState(initialSearch?.term || "");
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [approvingId, setApprovingId] = useState<number | null>(null);
@@ -401,7 +417,7 @@ function SeasonDetail({ season, franchise, onBack }: {
   const [moving, setMoving] = useState<number | null>(null);
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "list">("table");
-  const [searchMode, setSearchMode] = useState<SearchMode>("season");
+  const [searchMode, setSearchMode] = useState<SearchMode>(initialSearch?.mode || "season");
   const [processing, setProcessing] = useState<number | null>(null);
 
   const loadData = useCallback(async () => {
@@ -429,6 +445,14 @@ function SeasonDetail({ season, franchise, onBack }: {
 
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => { loadTorrentStatuses(); }, [loadTorrentStatuses]);
+
+  const initialSearchDone = useRef(false);
+  useEffect(() => {
+    if (initialSearch?.term && !initialSearchDone.current) {
+      initialSearchDone.current = true;
+      handleSearch();
+    }
+  });
 
   useEffect(() => {
     if (!hasAnyTorrent) return;
