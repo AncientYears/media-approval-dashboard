@@ -317,8 +317,8 @@ export default function FranchiseDetail() {
                     <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>
                   ) : epCount > 0 ? (
                     <>
-                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{filledCount} filled</span>
-                      <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>
+                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{filledCount}/{epCount}</span>
+                      {missingCount > 0 && <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>}
                     </>
                   ) : (
                     <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
@@ -327,8 +327,12 @@ export default function FranchiseDetail() {
                   )}
                 </div>
                 <div className="fr-season-right" style={{ gap: 6 }}>
-                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); runSearchStream(true); }} disabled={searchingAll}>
-                    Search All
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => {
+                    e.stopPropagation();
+                    setInitialSearch({ term: searchTerm.trim() || "", mode: "season" });
+                    setSelectedSeason(season);
+                  }}>
+                    Search
                   </button>
                   <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
                     Open Season &rsaquo;
@@ -356,7 +360,8 @@ export default function FranchiseDetail() {
                                 <span className="ep-badge ep-missed">MISSING</span>
                                 <button className="btn btn-secondary btn-tiny" style={{ fontSize: 9, padding: "1px 5px" }} onClick={(e) => {
                                   e.stopPropagation();
-                                  setInitialSearch({ term: `S${String(season.season).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`, mode: "episodes" });
+                                  const epCode = `S${String(season.season).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
+                                  setInitialSearch({ term: `${epCode} ${ep.title}`, mode: "episodes" });
                                   setSelectedSeason(season);
                                 }}>Search</button>
                               </>

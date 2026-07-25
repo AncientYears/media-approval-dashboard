@@ -1776,8 +1776,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       try {
         if (useProwlarr) {
           const rawQuery = searchTerm || request.title;
-          const episodePattern = /^(?:S\d{1,2})?E\d{1,3}(?:E\d{1,3})*$/i;
-          const query = episodePattern.test(rawQuery.trim()) ? `${request.title} ${rawQuery.trim()}` : rawQuery;
+          const episodePrefix = rawQuery.trim().match(/^(S\d{1,2}E\d{1,3}(?:E\d{1,3})*)\s*(.*)/i);
+          let query: string;
+          if (episodePrefix) {
+            const baseTitle = request.title.replace(/\s+S\d{1,2}$/i, "").trim();
+            const episodeName = episodePrefix[2] || "";
+            query = `${baseTitle} ${episodePrefix[1]}${episodeName ? " " + episodeName : ""}`.trim();
+          } else {
+            query = rawQuery;
+          }
           const categories = request.type === "movie" ? [2000] : [5000];
           send("progress", { step: "searching", message: `Searching Prowlarr: "${query}"...` });
           const prowlarrResults = await searchTimeout(prowlarr.search(query, categories), 45000);
