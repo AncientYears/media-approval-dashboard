@@ -21,13 +21,21 @@ function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
   if (titleLower.includes("2160p") || titleLower.includes("4k")) qualityName = "Bluray-2160p";
   else if (titleLower.includes("1080p")) qualityName = "Bluray-1080p";
   else if (titleLower.includes("720p")) qualityName = "Bluray-720p";
-  else if (titleLower.includes("480p") || titleLower.includes("dvd")) qualityName = "DVD";
+  else if (titleLower.includes("480p")) qualityName = "DVD";
+  else if (titleLower.includes("dvdremux") || titleLower.includes("dvd remux")) qualityName = "Remux-480p";
   else if (titleLower.includes("remux")) qualityName = "Remux-1080p";
   else if (titleLower.includes("web-dl") || titleLower.includes("webdl")) qualityName = "WEBDL-1080p";
-  else if (titleLower.includes("webrip")) qualityName = "WEBRip-1080p";
-  else if (titleLower.includes("bluray") || titleLower.includes("bdrip")) qualityName = "Bluray-1080p";
+  else if (titleLower.includes("webrip") || titleLower.includes("web-rip")) qualityName = "WEBRip-1080p";
+  else if (titleLower.includes("bluray") || titleLower.includes("bdrip") || titleLower.includes("blu-ray")) qualityName = "Bluray-1080p";
   else if (titleLower.includes("hdtv")) qualityName = "HDTV-1080p";
-  else if (titleLower.includes("cam") || titleLower.includes("ts ") || titleLower.includes("telesync")) qualityName = "CAM";
+  else if (titleLower.includes("hdrip") || titleLower.includes("hd-rip")) qualityName = "HDTV-720p";
+  else if (titleLower.includes("dvdrip") || titleLower.includes("dvd-rip") || titleLower.includes("dvdr")) qualityName = "DVD";
+  else if (titleLower.includes("tvrip") || titleLower.includes("tv-rip") || titleLower.includes("tv rip")) qualityName = "HDTV-480p";
+  else if (titleLower.includes("vhsrip") || titleLower.includes("vhs-rip")) qualityName = "VHS";
+  else if (titleLower.includes("cam") || titleLower.includes("telesync") || titleLower.includes("telecine") || titleLower.includes("ts ")) qualityName = "CAM";
+  else if (titleLower.includes("scr") || titleLower.includes("screener")) qualityName = "SCR";
+  else if (titleLower.includes("tc ")) qualityName = "TELECINE";
+  else if (titleLower.includes("pal") || titleLower.includes("ntsc")) qualityName = "DVD";
 
   return {
     guid,
@@ -256,7 +264,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           FROM media_requests mr
           WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
         ) sub
-        WHERE sub.release_count > 0
         ORDER BY sub.title
       `).all() as any[];
 
@@ -353,14 +360,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sonarrId = Number(req.params.sonarrId);
       const seasons = db.prepare(`
         SELECT mr.*,
-          (SELECT COALESCE(SUM(rc.size_mb), 0) FROM release_candidates rc 
-           JOIN approval_history ah ON ah.release_id = rc.id 
-           WHERE ah.request_id = mr.id AND rc.torrent_hash != '') as total_size_mb,
-          (SELECT COUNT(*) FROM release_candidates rc2 
+          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2 
            JOIN approval_history ah2 ON ah2.release_id = rc2.id 
-           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as release_count
+           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+          (SELECT COUNT(*) FROM release_candidates rc3 
+           JOIN approval_history ah3 ON ah3.release_id = rc3.id 
+           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
         FROM media_requests mr
-        WHERE mr.sonarr_id = ? AND mr.status IN ('DOWNLOADING', 'SEEDING')
+        WHERE mr.sonarr_id = ? AND mr.type = 'series'
         ORDER BY mr.season
       `).all(sonarrId) as any[];
 

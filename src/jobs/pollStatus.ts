@@ -110,9 +110,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
           if (h.torrent_hash) {
             const candidate = torrents.length > 0 ? torrents.find((t) => t.hash === h.torrent_hash) : null;
             if (candidate && !torrentMatchesTitle(candidate.name, req.title)) {
-              console.log(`[Status] Stale hash for ${req.title}: hash=${h.torrent_hash} is actually "${candidate.name}" — removing`);
-              staleHashIds.push(h.release_id);
-              continue;
+              console.log(`[Status] Hash match but title mismatch for ${req.title}: hash=${h.torrent_hash} is "${candidate.name}" — keeping (hash is correct)`);
             }
             torrent = candidate;
           }
