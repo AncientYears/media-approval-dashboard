@@ -118,8 +118,6 @@ export default function FranchiseDetail() {
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<any>(null);
   const [initialSearch, setInitialSearch] = useState<{ term: string; mode: SearchMode } | null>(null);
-  const [searchingAll, setSearchingAll] = useState(false);
-  const [searchProgress, setSearchProgress] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
   const [seasonEpisodes, setSeasonEpisodes] = useState<Record<number, any[]>>({});
@@ -152,15 +150,13 @@ export default function FranchiseDetail() {
     }
   }, [franchise, searchTerm]);
 
-  const runSearchStream = useCallback(async (force: boolean, silent = false) => {
+  const fireSearchAll = useCallback(async () => {
     if (!franchise?.sonarr_id) return;
-    if (!silent) setSearchingAll(true);
-    if (!silent) setSearchProgress("Searching...");
     try {
       const resp = await fetch(`/api/requests/managed/${franchise.sonarr_id}/search-all`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force, searchTerm: searchTerm.trim() || undefined }),
+        body: JSON.stringify({ force: true, searchTerm: searchTerm.trim() || undefined }),
       });
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
@@ -177,7 +173,6 @@ export default function FranchiseDetail() {
             eventType = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
-            if (data.message && !silent) setSearchProgress(data.message);
             if (eventType === "found" && data.season != null) {
               setFranchise((prev: any) => {
                 if (!prev) return prev;
@@ -200,39 +195,27 @@ export default function FranchiseDetail() {
                 };
               });
             }
-            if (data.totalFound != null && !silent) {
-              const msg = `Done — ${data.totalFound} release(s), ${data.seasons || 0} season(s)${data.skipped ? `, ${data.skipped} skipped` : ""}`;
-              setSearchProgress(msg);
-              setTimeout(() => setSearchProgress(""), 3000);
-            }
           } else if (line.trim() === "") {
             eventType = "";
           }
         }
       }
-    } catch {
-      if (!silent) {
-        setSearchProgress("Search failed");
-        setTimeout(() => setSearchProgress(""), 3000);
-      }
-    }
-    if (!silent) setSearchingAll(false);
-    await loadFranchise();
-  }, [franchise?.sonarr_id, searchTerm, loadFranchise]);
+    } catch {}
+  }, [franchise?.sonarr_id, searchTerm]);
 
   useEffect(() => {
     if (loading || !franchise || autoSearchDone.current) return;
     autoSearchDone.current = true;
-    runSearchStream(false, true);
-  }, [loading, franchise, runSearchStream]);
+    fireSearchAll();
+  }, [loading, franchise, fireSearchAll]);
 
   useEffect(() => {
     if (POLL_MS <= 0) return;
     pollTimerRef.current = setInterval(() => {
-      if (!searchingAll) runSearchStream(false, true);
+      fireSearchAll();
     }, POLL_MS);
     return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
-  }, [POLL_MS, searchingAll, runSearchStream]);
+  }, [POLL_MS, fireSearchAll]);
 
   if (loading) return <div className="container"><p>Loading...</p></div>;
   if (error) return <div className="container error"><p>{error}</p></div>;
@@ -267,19 +250,25 @@ export default function FranchiseDetail() {
           placeholder="Search term (e.g. 1080p, S01, Complete)..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") runSearchStream(true); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && franchise.seasons.length > 0) {
+              fireSearchAll();
+              setInitialSearch({ term: searchTerm.trim() || franchise.title, mode: "season" });
+              setSelectedSeason(franchise.seasons[0]);
+            }
+          }}
           style={{ flex: 1 }}
         />
-        <button className="btn btn-primary btn-tiny" onClick={() => runSearchStream(true)} disabled={searchingAll}>
-          {searchingAll ? <><span className="spinner" /> {searchProgress || "Searching..."}</> : "Search All Seasons"}
+        <button className="btn btn-primary btn-tiny" onClick={() => {
+          fireSearchAll();
+          if (franchise.seasons.length > 0) {
+            setInitialSearch({ term: searchTerm.trim() || franchise.title, mode: "season" });
+            setSelectedSeason(franchise.seasons[0]);
+          }
+        }}>
+          Search All Seasons
         </button>
       </div>
-
-      {searchProgress && (
-        <div className="search-progress">
-          <span>{searchProgress}</span>
-        </div>
-      )}
 
       <div className="franchise-seasons-list">
         {franchise.seasons.map((season: any) => {

@@ -56,17 +56,19 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 ## Franchise Management (2-Layer UI)
 
 ### Layer 1 — Franchise Overview (`/franchise/:sonarrId`)
-- Shows all seasons as clickable rows with release counts and status badges
+- Shows all seasons as clickable rows with colored filled/missing badges (e.g. `12/24` green, `8 missing` red)
+- Expandable episode grid: Sonarr episode list with titles, FILLED/MISSED badges, quality tags, per-episode Search button
 - Search term input (default: franchise title, editable) — custom queries go to Prowlarr
-- "Search All Seasons" button with SSE progress
-- Expandable season rows: shows approved releases + torrent status
-- Active torrent panels at top (progress bar, speed, peers, pause/resume)
+- "Search All Seasons" button: fires background SSE search-all, navigates to first season's SeasonDetail
+- Per-season Search button in header: navigates to SeasonDetail with season-specific auto-search
 - Click a season → Layer 2
 
 ### Layer 2 — Season Detail (SeasonDetail component)
 - Full release table/list with toggle (table default, card alternative)
 - Score breakdown (quality, CF, size, rank) with expandable details
 - Episode filter and sort controls (score, size, seeders)
+- Search mode toggle (Season pack | Individual episodes)
+- Auto-triggers search on mount when navigated with `initialSearch`
 - Approve → grab via magnet or Sonarr/Radarr
 - Torrent panel: progress bar, stats grid, source/library paths
 - Move to Library (hardlink) / Process (remux/repack) / Remove from Library
@@ -167,5 +169,10 @@ PROCESSING_WORKSPACE=/media/processing
 - [ ] Season regex handles S##E## format correctly
 - [ ] Startup cleanup doesn't nuke valid RCs for same hash
 - [ ] Franchise search-all filters results by season number
-- [ ] Franchise overview shows active torrents + search term input
+- [ ] Franchise overview shows colored filled/missing badges per season
+- [ ] Franchise episode grid shows Sonarr episode titles with FILLED/MISSED badges
+- [ ] Per-season Search navigates to SeasonDetail with auto-search
+- [ ] Per-episode Search includes episode name in query
+- [ ] "Search All Seasons" fires background search + navigates to first season
+- [ ] SeasonDetail search mode toggle (Season | Episodes) works
 - [ ] Processing pipeline creates hardlinks and runs mkvmerge/ffmpeg
