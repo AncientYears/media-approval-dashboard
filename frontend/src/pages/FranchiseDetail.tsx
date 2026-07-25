@@ -41,10 +41,10 @@ export default function FranchiseDetail() {
     loadFranchise();
   }, [loadFranchise]);
 
-  const runSearchStream = useCallback(async (force: boolean) => {
+  const runSearchStream = useCallback(async (force: boolean, silent = false) => {
     if (!franchise?.sonarr_id) return;
-    setSearchingAll(true);
-    setSearchProgress("Searching...");
+    if (!silent) setSearchingAll(true);
+    if (!silent) setSearchProgress("Searching...");
     try {
       const resp = await fetch(`/api/requests/managed/${franchise.sonarr_id}/search-all`, {
         method: "POST",
@@ -90,8 +90,11 @@ export default function FranchiseDetail() {
               });
             }
             if (data.totalFound != null) {
-              setSearchProgress(`Done — ${data.totalFound} release(s), ${data.seasons || 0} season(s)${data.skipped ? `, ${data.skipped} skipped` : ""}`);
-              setTimeout(() => setSearchProgress(""), 3000);
+              const msg = `Done — ${data.totalFound} release(s), ${data.seasons || 0} season(s)${data.skipped ? `, ${data.skipped} skipped` : ""}`;
+              if (!silent) {
+                setSearchProgress(msg);
+                setTimeout(() => setSearchProgress(""), 3000);
+              }
             }
           } else if (line.trim() === "") {
             eventType = "";
@@ -99,23 +102,25 @@ export default function FranchiseDetail() {
         }
       }
     } catch {
-      setSearchProgress("Search failed");
-      setTimeout(() => setSearchProgress(""), 3000);
+      if (!silent) {
+        setSearchProgress("Search failed");
+        setTimeout(() => setSearchProgress(""), 3000);
+      }
     }
-    setSearchingAll(false);
+    if (!silent) setSearchingAll(false);
     await loadFranchise();
   }, [franchise?.sonarr_id, loadFranchise]);
 
   useEffect(() => {
     if (loading || !franchise || autoSearchDone.current) return;
     autoSearchDone.current = true;
-    runSearchStream(false);
+    runSearchStream(false, true);
   }, [loading, franchise, runSearchStream]);
 
   useEffect(() => {
     if (POLL_MS <= 0) return;
     pollTimerRef.current = setInterval(() => {
-      if (!searchingAll) runSearchStream(false);
+      if (!searchingAll) runSearchStream(false, true);
     }, POLL_MS);
     return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
   }, [POLL_MS, searchingAll, runSearchStream]);

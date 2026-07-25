@@ -110,7 +110,8 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         if (t) {
           const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
           const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-          if (tn !== req && !tn.startsWith(req + " ") && !tn.startsWith(req + ".")) {
+          const isMatch = tn === req || tn.startsWith(req + " ") || tn.startsWith(req + ".") || (tn.startsWith(req) && tn.length > req.length && /[e\d]/.test(tn[req.length]));
+          if (!isMatch) {
             staleRcs.push(rc.rc_id);
             console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} is actually "${t.name}"`);
           }
