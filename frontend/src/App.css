@@ -1520,7 +1520,7 @@ body {
 .episode-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   padding: 3px 6px;
   border-radius: 4px;
   font-size: 12px;
@@ -1552,6 +1552,27 @@ body {
 .ep-check {
   color: #2d6a4f;
   font-weight: bold;
+}
+
+.ep-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ep-filled {
+  background: #2d6a4f;
+  color: #a7f3d0;
+}
+
+.ep-missed {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
 }
 
 .search-mode-toggle {

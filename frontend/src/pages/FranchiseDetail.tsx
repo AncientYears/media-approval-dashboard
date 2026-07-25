@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchFranchiseTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
 type SearchMode = typeof SEARCH_MODES[number];
@@ -122,10 +122,8 @@ export default function FranchiseDetail() {
   const [searchTerm, setSearchTerm] = useState("");
   const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
   const [seasonEpisodes, setSeasonEpisodes] = useState<Record<number, any[]>>({});
-  const [franchiseTorrents, setFranchiseTorrents] = useState<any[]>([]);
   const autoSearchDone = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadFranchise = useCallback(async () => {
     if (!sonarrId) return;
@@ -140,29 +138,12 @@ export default function FranchiseDetail() {
     }
   }, [sonarrId]);
 
-  const loadFranchiseTorrents = useCallback(async () => {
-    if (!sonarrId) return;
-    try {
-      const ts = await fetchFranchiseTorrentStatuses(Number(sonarrId));
-      setFranchiseTorrents(Array.isArray(ts) ? ts : []);
-    } catch {
-      setFranchiseTorrents([]);
-    }
-  }, [sonarrId]);
-
   useEffect(() => {
     setLoading(true);
     setSelectedSeason(null);
     autoSearchDone.current = false;
     loadFranchise();
   }, [loadFranchise]);
-
-  useEffect(() => {
-    if (!franchise) return;
-    loadFranchiseTorrents();
-    statusPollRef.current = setInterval(loadFranchiseTorrents, 3000);
-    return () => { if (statusPollRef.current) clearInterval(statusPollRef.current); };
-  }, [franchise, loadFranchiseTorrents]);
 
   useEffect(() => {
     if (franchise && !searchTerm) {
@@ -307,9 +288,7 @@ export default function FranchiseDetail() {
           const covered = new Set<number>(season.covered_episodes || []);
           const filledCount = covered.size;
           const missingCount = epCount > 0 ? epCount - filledCount : 0;
-          const hasTorrents = season.status === "DOWNLOADING" || season.status === "SEEDING";
           const episodes = seasonEpisodes[season.season] || [];
-          const seasonTorrents = franchiseTorrents.filter((t) => t.found && t.season === season.season);
 
           const toggleExpand = async () => {
             const next = new Set(expandedSeasons);
@@ -343,12 +322,6 @@ export default function FranchiseDetail() {
                     </span>
                   )}
                   {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
-                  {hasTorrents && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: season.status === "SEEDING" ? "#2d6a4f" : "#1d6099" }}>{season.status}</span>}
-                  {seasonTorrents.length > 0 && seasonTorrents.some((t: any) => t.progress < 100) && (
-                    <span className="rtag" style={{ fontSize: 10, padding: "2px 5px", background: "#1d6099" }}>
-                      {seasonTorrents.filter((t: any) => t.progress < 100).reduce((s: number, t: any) => Math.max(s, t.progress), 0)}%
-                    </span>
-                  )}
                 </div>
                 <div className="fr-season-right">
                   <span className="rtag">{formatSize(season.total_size_mb)}</span>
@@ -366,7 +339,14 @@ export default function FranchiseDetail() {
                         <div key={ep.episodeNumber} className={`episode-row ${ep.covered ? "ep-covered" : "ep-missing-row"}`}>
                           <span className="ep-num">E{String(ep.episodeNumber).padStart(2, "0")}</span>
                           <span className="ep-title">{ep.title}</span>
-                          {ep.covered && <span className="ep-check">&#10003;</span>}
+                          {ep.covered ? (
+                            <>
+                              {ep.quality && <span className="rtag" style={{ fontSize: 9, padding: "1px 4px" }}>{ep.quality}</span>}
+                              <span className="ep-badge ep-filled">FILLED</span>
+                            </>
+                          ) : (
+                            <span className="ep-badge ep-missed">MISSING</span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -380,24 +360,6 @@ export default function FranchiseDetail() {
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "4px 0" }}>No episode data available</div>
-                  )}
-                  {seasonTorrents.length > 0 && (
-                    <div className="season-torrents-section" style={{ marginTop: 8 }}>
-                      {seasonTorrents.map((ts: any) => (
-                        <div key={ts.release_id} className="season-torrent-row">
-                          <div className="approved-release-info">
-                            <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state}</span>
-                            <span className="approved-title" title={ts.title} style={{ fontSize: 12, flex: 1, minWidth: 0 }}>{ts.title}</span>
-                            {ts.progress < 100 && <span style={{ fontSize: 11, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>{ts.progress}%</span>}
-                          </div>
-                          {ts.progress < 100 && (
-                            <div className="torrent-progress-bar" style={{ marginTop: 4 }}>
-                              <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
                   )}
                 </div>
               )}

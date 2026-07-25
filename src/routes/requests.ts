@@ -470,8 +470,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const coveredEps = new Set<number>();
+      const epQuality: Record<number, string> = {};
       const releases = db.prepare(`
-        SELECT rc.parsed_episodes, ah.approved_at, rc.torrent_hash
+        SELECT rc.parsed_episodes, rc.radarr_quality, ah.approved_at, rc.torrent_hash
         FROM release_candidates rc
         LEFT JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = ?
         WHERE rc.request_id = ?
@@ -479,13 +480,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       for (const r of releases) {
         if (r.approved_at && r.torrent_hash && r.parsed_episodes) {
+          const quality = r.radarr_quality || "";
           const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
           if (epMatches) {
-            for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+            for (const em of epMatches) {
+              const epNum = parseInt(em.slice(1), 10);
+              coveredEps.add(epNum);
+              if (!epQuality[epNum] || quality.toLowerCase().includes("remux")) epQuality[epNum] = quality;
+            }
           }
           const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
           if (rangeMatch) {
-            for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+            for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) {
+              coveredEps.add(i);
+              if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
+            }
           }
         }
       }
@@ -494,6 +503,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const episodes = sonarrEpisodes.map((e) => ({
           ...e,
           covered: coveredEps.has(e.episodeNumber),
+          quality: epQuality[e.episodeNumber] || "",
         }));
         res.json({ episodeCount: episodes.length, coveredCount: coveredEps.size, episodes });
       } else {
