@@ -360,12 +360,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sonarrId = Number(req.params.sonarrId);
       const seasons = db.prepare(`
         SELECT mr.*,
-          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2 
-           JOIN approval_history ah2 ON ah2.release_id = rc2.id 
-           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
-          (SELECT COUNT(*) FROM release_candidates rc3 
-           JOIN approval_history ah3 ON ah3.release_id = rc3.id 
-           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
+           WHERE rc2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+          (SELECT COUNT(*) FROM release_candidates rc3
+           WHERE rc3.request_id = mr.id AND rc3.torrent_hash != '') as release_count,
+          (SELECT COUNT(*) FROM release_candidates rc4
+           WHERE rc4.request_id = mr.id) as total_candidates
         FROM media_requests mr
         WHERE mr.sonarr_id = ? AND mr.type = 'series'
         ORDER BY mr.season
@@ -381,10 +381,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const releases = db.prepare(`
           SELECT rc.*, ah.approved_at, ah.approval_reason
           FROM release_candidates rc
-          JOIN approval_history ah ON ah.release_id = rc.id
-          WHERE ah.request_id = ?
+          LEFT JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = ?
+          WHERE rc.request_id = ?
           ORDER BY rc.app_score DESC, rc.size_mb DESC
-        `).all(s.id) as any[];
+        `).all(s.id, s.id) as any[];
 
         // Get covered episodes from parsed_episodes
         const coveredEps = new Set<number>();
@@ -416,10 +416,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             size_mb: r.size_mb,
             quality: r.radarr_quality,
             seeders: r.seeders,
+            leechers: r.leechers,
             release_group: r.release_group,
             torrent_hash: r.torrent_hash,
             app_score: r.app_score,
             parsed_episodes: r.parsed_episodes || '',
+            approved: !!r.approved_at,
+            approved_at: r.approved_at || null,
+            info_url: r.info_url || '',
+            indexer: r.indexer || '',
           })),
         };
       });
@@ -664,7 +669,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       try {
         const prowlarrApiKey = process.env.PROWLARR_API_KEY;
         if (prowlarrApiKey && prowlarr) {
-          const query = req.body?.searchTerm || season.title;
+          const query = req.body?.searchTerm || season.title.replace(/\s+S\d+$/, "");
           const results = await Promise.race([
             prowlarr.search(query, [5000]),
             new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
@@ -1080,7 +1085,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const releases = db.prepare(
         "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id, rc.size_mb FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+        "WHERE rc.request_id = ? AND rc.torrent_hash != ''"
       ).all(id) as any[];
 
       // Fetch movie/series info ONCE for all releases
