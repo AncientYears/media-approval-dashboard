@@ -104,9 +104,8 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 
     if (withHashes.length > 0) {
       const torrents = await qbittorrent.getTorrents();
-      const staleHashes = new Map<string, string>();
+      const staleRcIds: { id: number; reason: string }[] = [];
       for (const rc of withHashes) {
-        if (staleHashes.has(rc.torrent_hash)) continue;
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
         if (!t) continue;
         const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
@@ -116,7 +115,7 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         if (!isMatch) {
           reason = `title mismatch (is "${t.name}")`;
         } else if (rc.req_season != null) {
-          const tnSeasonMatch = t.name.toUpperCase().match(/\bS(\d{1,2})\b/);
+          const tnSeasonMatch = t.name.toUpperCase().match(/\bS(\d{1,2})(?:E\d|\b)/);
           if (tnSeasonMatch) {
             const torrentSeason = parseInt(tnSeasonMatch[1], 10);
             if (torrentSeason !== rc.req_season) {
@@ -125,21 +124,18 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
           }
         }
         if (reason) {
-          staleHashes.set(rc.torrent_hash, reason);
+          staleRcIds.push({ id: rc.rc_id, reason });
         }
       }
-      if (staleHashes.size > 0) {
-        const delH = db.prepare("DELETE FROM approval_history WHERE release_id IN (SELECT id FROM release_candidates WHERE torrent_hash = ?)");
-        const delR = db.prepare("DELETE FROM release_candidates WHERE torrent_hash = ?");
-        const cntStmt = db.prepare("SELECT COUNT(*) as cnt FROM release_candidates WHERE torrent_hash = ?");
-        for (const [hash, reason] of staleHashes) {
-          const row = cntStmt.get(hash) as any;
-          const cnt = row?.cnt ?? 0;
-          console.log(`[Startup] Stale hash=${hash}: ${reason} — removing ${cnt} RC(s)`);
-          delH.run(hash);
-          delR.run(hash);
+      if (staleRcIds.length > 0) {
+        const delH = db.prepare("DELETE FROM approval_history WHERE release_id = ?");
+        const delR = db.prepare("DELETE FROM release_candidates WHERE id = ?");
+        for (const { id, reason } of staleRcIds) {
+          console.log(`[Startup] Stale RC id=${id}: ${reason}`);
+          delH.run(id);
+          delR.run(id);
         }
-        console.log(`[Startup] Removed ${staleHashes.size} stale hash(es)`);
+        console.log(`[Startup] Removed ${staleRcIds.length} stale RC(s)`);
       }
 
       // Backfill size_mb=0 from qBittorrent

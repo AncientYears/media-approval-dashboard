@@ -264,7 +264,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           FROM media_requests mr
           WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
         ) sub
-        WHERE sub.release_count > 0
         ORDER BY sub.title
       `).all() as any[];
 
@@ -678,7 +677,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const targetSeason = season.season;
           const mapped = allMapped.filter((r: RadarrSearchResult) => {
             const title = (r.title || "").toUpperCase();
-            const sMatch = title.match(/\bS(\d{1,2})\b/);
+            const sMatch = title.match(/\bS(\d{1,2})(?:E\d|\b)/);
             if (sMatch) {
               return parseInt(sMatch[1], 10) === targetSeason;
             }

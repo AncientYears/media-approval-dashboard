@@ -26,7 +26,7 @@ function hasSequelAfter(tn: string, matchEnd: number): boolean {
 
 function extractSeasonFromTitle(title: string): number | null {
   const norm = normalizeTitle(title);
-  const match = norm.match(/\bs(\d{1,2})\b/);
+  const match = norm.match(/\bs(\d{1,2})(?:e\d|\b)/);
   return match ? parseInt(match[1], 10) : null;
 }
 
