@@ -316,17 +316,20 @@ export default function FranchiseDetail() {
                   {isSearching ? (
                     <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>
                   ) : epCount > 0 ? (
-                    <span className={`season-status ${filledCount === epCount ? "has-content" : "empty"}`}>
-                      {filledCount === epCount ? "FILLED" : `${missingCount} MISSING`}
-                      <span style={{ marginLeft: 4, opacity: 0.7 }}>{filledCount}/{epCount}</span>
-                    </span>
+                    <>
+                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{filledCount} filled</span>
+                      <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>
+                    </>
                   ) : (
                     <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
                       {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
                     </span>
                   )}
                 </div>
-                <div className="fr-season-right">
+                <div className="fr-season-right" style={{ gap: 6 }}>
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); runSearchStream(true); }} disabled={searchingAll}>
+                    Search All
+                  </button>
                   <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
                     Open Season &rsaquo;
                   </button>
@@ -369,10 +372,6 @@ export default function FranchiseDetail() {
                             setSelectedSeason(season);
                           }}>Search Season</button>
                         )}
-                        <button className="btn btn-secondary btn-tiny" onClick={(e) => {
-                          e.stopPropagation();
-                          runSearchStream(true);
-                        }}>Search Franchise</button>
                       </div>
                     </>
                   ) : epCount > 0 ? (
@@ -487,9 +486,9 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       }
     } catch {
       setSearchProgress("Search failed");
-      setTimeout(() => setSearchProgress(""), 2000);
     }
     setSearching(false);
+    setTimeout(() => setSearchProgress(""), 2000);
     await loadData();
   };
 
