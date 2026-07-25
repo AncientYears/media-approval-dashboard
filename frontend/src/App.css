@@ -1429,11 +1429,17 @@ body {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  cursor: pointer;
   transition: background 0.15s;
 }
 
-.franchise-season-row:hover {
+.franchise-season-header {
+  cursor: pointer;
+  border-radius: 8px;
+  margin: -10px -14px;
+  padding: 10px 14px;
+}
+
+.franchise-season-header:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
@@ -1538,7 +1544,8 @@ body {
 .ep-num {
   font-family: monospace;
   font-weight: 500;
-  min-width: 30px;
+  min-width: 28px;
+  flex-shrink: 0;
 }
 
 .ep-title {
@@ -1547,6 +1554,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-right: 4px;
 }
 
 .ep-check {

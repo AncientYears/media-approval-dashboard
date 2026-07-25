@@ -308,7 +308,7 @@ export default function FranchiseDetail() {
 
           return (
             <div key={season.season} className="franchise-season-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-              <div style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={toggleExpand}>
+              <div className="franchise-season-header" style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={toggleExpand}>
                 <div className="fr-season-left">
                   <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
                   {epCount > 0 ? (
@@ -322,10 +322,20 @@ export default function FranchiseDetail() {
                     </span>
                   )}
                   {isSearching && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>}
+                  {!isSearching && epCount > 0 && (
+                    <span className={`season-status ${filledCount === epCount ? "has-content" : "empty"}`}>
+                      {filledCount === epCount ? "FILLED" : `${missingCount} MISSING`}
+                      <span style={{ marginLeft: 4, opacity: 0.7 }}>{filledCount}/{epCount}</span>
+                    </span>
+                  )}
+                  {!isSearching && epCount === 0 && (
+                    <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
+                      {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
+                    </span>
+                  )}
                 </div>
                 <div className="fr-season-right">
-                  <span className="rtag">{formatSize(season.total_size_mb)}</span>
-                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }} style={{ marginRight: 4 }}>
+                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
                     Open Season &rsaquo;
                   </button>
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
