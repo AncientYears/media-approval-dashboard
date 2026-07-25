@@ -96,8 +96,8 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
     }
 
     // Clean up stale release_candidates where hash doesn't match title
-    const withHashes = db.prepare(
-      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, rc.size_mb " +
+        const withHashes = db.prepare(
+      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, mr.season as req_season, rc.size_mb " +
       "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
       "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
     ).all() as any[];
@@ -114,6 +114,15 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
           if (!isMatch) {
             staleRcs.push(rc.rc_id);
             console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} is actually "${t.name}"`);
+          } else if (rc.req_season != null) {
+            const tnSeasonMatch = t.name.toUpperCase().match(/\bS(\d{1,2})\b/);
+            if (tnSeasonMatch) {
+              const torrentSeason = parseInt(tnSeasonMatch[1], 10);
+              if (torrentSeason !== rc.req_season) {
+                staleRcs.push(rc.rc_id);
+                console.log(`[Startup] Stale release_candidate: ${rc.req_title} hash=${rc.torrent_hash} season mismatch (torrent is S${String(torrentSeason).padStart(2, "0")})`);
+              }
+            }
           }
         }
       }

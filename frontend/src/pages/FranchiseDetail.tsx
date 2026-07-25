@@ -1,12 +1,110 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary } from "../api";
 
 const POLL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_SEARCH_ALL || "0") * 1000;
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i > 2 ? 2 : 1)} ${units[i]}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return "0s";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function parseAudioCodec(title: string): string[] {
+  const t = title.replace(/[.\-]/g, " ").toUpperCase();
+  const codecs: string[] = [];
+  if (t.includes("TRUEHD ATMOS") || t.includes("TRUEHDATMOS")) codecs.push("TrueHD Atmos");
+  else if (t.includes("TRUEHD")) codecs.push("TrueHD");
+  if (t.includes("DTS X") || t.includes("DTS-X") || t.includes("DTSX")) codecs.push("DTS:X");
+  else if (t.includes("DTS HD MA") || t.includes("DTS-HD MA") || t.includes("DTSHDMA")) codecs.push("DTS-HD MA");
+  else if (t.includes("DTS HD") || t.includes("DTS-HD") || t.includes("DTSHD")) codecs.push("DTS-HD");
+  else if (t.includes("DTS")) codecs.push("DTS");
+  if (t.includes("ATMOS") && !codecs.some(c => c.includes("Atmos"))) codecs.push("Atmos");
+  if (t.includes("DDP") || t.includes("EAC3") || t.includes("E-AC-3")) codecs.push("DD+");
+  else if (t.includes("DD 5") || t.includes("AC3") || t.includes("AC-3")) codecs.push("DD");
+  if (t.includes("AAC")) codecs.push("AAC");
+  if (t.includes("FLAC")) codecs.push("FLAC");
+  return codecs;
+}
+
+function parseAudioChannels(title: string): string {
+  const m = title.match(/\b(\d\.\d)\b/);
+  return m ? m[1] : "";
+}
+
+function ScoreBar({ value, max, className }: { value: number; max: number; className?: string }) {
+  return (
+    <div className="ed-bar">
+      <div className={`ed-fill ${className || ""}`} style={{ width: `${(value / max) * 100}%` }} />
+    </div>
+  );
+}
+
+function Breakdown({ r }: { r: any }) {
+  const qs = (() => {
+    const q = (r.radarr_quality || "").toUpperCase();
+    if (q.includes("REMUX-2160") || q.includes("REMUX2160")) return 10;
+    if (q.includes("BLURAY-2160")) return 9;
+    if (q.includes("WEB-DL-2160") || q.includes("WEBDL-2160")) return 8;
+    if (q.includes("REMUX-1080") || q.includes("REMUX1080")) return 6;
+    if (q.includes("BLURAY-1080")) return 5;
+    if (q.includes("WEB-DL-1080") || q.includes("WEBDL-1080")) return 4;
+    if (q.includes("1080")) return 4;
+    if (q.includes("720")) return 1;
+    return 0;
+  })();
+  const cf = r.radarr_custom_formats?.length || 0;
+  const cfBonus = Math.min(5, cf);
+  const sizeBonus = r.size_mb >= 1000 && r.size_mb <= 15000 ? 3 : r.size_mb >= 500 && r.size_mb <= 25000 ? 2 : r.size_mb > 0 ? 1 : 0;
+  const rankBonus = r.radarr_rank === 1 ? 2 : r.radarr_rank <= 3 ? 1 : 0;
+
+  const audioCodec = parseAudioCodec(r.title);
+  const audioChannels = parseAudioChannels(r.title);
+
+  return (
+    <div className="expanded-detail">
+      <div className="ed-grid">
+        <div className="ed-item"><span>Quality</span><ScoreBar value={qs} max={10} /><span>{qs}/10</span><span className="ed-sub">{r.radarr_quality}</span></div>
+        <div className="ed-item"><span>CF</span><ScoreBar value={cf} max={5} className="cf-fill" /><span>{cf}</span><span className="ed-sub">+{cfBonus}pts</span></div>
+        <div className="ed-item"><span>Size</span><ScoreBar value={sizeBonus} max={3} className="size-fill" /><span>{formatSize(r.size_mb)}</span><span className="ed-sub">+{sizeBonus}pts</span></div>
+        <div className="ed-item"><span>Rank</span><ScoreBar value={rankBonus} max={2} className="rank-fill" /><span>#{r.radarr_rank || "-"}</span><span className="ed-sub">+{rankBonus}pts</span></div>
+      </div>
+      {(audioCodec.length > 0 || audioChannels || r.edition || r.protocol || r.seeders != null || r.release_group) && (
+        <div className="cf-list stream-info">
+          {audioCodec.map(c => <span key={c} className="format-tag">{c}</span>)}
+          {audioChannels && <span className="format-tag">{audioChannels}</span>}
+          {r.edition && <span className="format-tag">{r.edition}</span>}
+          {r.protocol && <span className="format-tag">{r.protocol === "torrent" ? "Torrent" : "Usenet"}</span>}
+          {r.seeders != null && <span className="format-tag tag-seeders">{r.seeders} Seeders</span>}
+          {r.leechers != null && <span className="format-tag tag-leechers">{r.leechers} Leechers</span>}
+          {r.release_group && <span className="format-tag">{r.release_group}</span>}
+        </div>
+      )}
+      {cf > 0 && r.radarr_custom_formats && (
+        <div className="cf-list">
+          {r.radarr_custom_formats.map((f: string) => <span key={f} className="format-tag">{f}</span>)}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function FranchiseDetail() {
@@ -66,7 +164,7 @@ export default function FranchiseDetail() {
             eventType = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
-            if (data.message) setSearchProgress(data.message);
+            if (data.message && !silent) setSearchProgress(data.message);
             if (eventType === "found" && data.season != null) {
               setFranchise((prev: any) => {
                 if (!prev) return prev;
@@ -89,12 +187,10 @@ export default function FranchiseDetail() {
                 };
               });
             }
-            if (data.totalFound != null) {
+            if (data.totalFound != null && !silent) {
               const msg = `Done — ${data.totalFound} release(s), ${data.seasons || 0} season(s)${data.skipped ? `, ${data.skipped} skipped` : ""}`;
-              if (!silent) {
-                setSearchProgress(msg);
-                setTimeout(() => setSearchProgress(""), 3000);
-              }
+              setSearchProgress(msg);
+              setTimeout(() => setSearchProgress(""), 3000);
             }
           } else if (line.trim() === "") {
             eventType = "";
@@ -195,6 +291,7 @@ function SeasonDetail({ season, franchise, onBack }: {
   onBack: () => void;
 }) {
   const [releases, setReleases] = useState<any[]>([]);
+  const [approvedReleases, setApprovedReleases] = useState<any[]>([]);
   const [request, setRequest] = useState<any>(null);
   const [torrentStatuses, setTorrentStatuses] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -202,30 +299,44 @@ function SeasonDetail({ season, franchise, onBack }: {
   const [searchProgress, setSearchProgress] = useState("");
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"app_score" | "size_mb" | "seeders">("app_score");
+  const [filterEpisode, setFilterEpisode] = useState("");
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [moveResults, setMoveResults] = useState<Record<number, any>>({});
+  const [moving, setMoving] = useState<number | null>(null);
+  const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
 
   const loadData = useCallback(async () => {
     try {
       const data = await fetchReleases(season.request_id);
       setRequest(data);
       setReleases(data.releases || []);
+      setApprovedReleases(data.approved_releases || []);
       setSearchTerm((prev) => prev || data.title || "");
-
-      if (data.status === "DOWNLOADING" || data.status === "SEEDING") {
-        try {
-          const ts = await fetchTorrentStatuses(season.request_id);
-          setTorrentStatuses(Array.isArray(ts) ? ts : []);
-        } catch {
-          setTorrentStatuses([]);
-        }
-      }
     } catch {
       // ignore
     }
   }, [season.request_id]);
 
+  const hasAnyTorrent = approvedReleases.some((r: any) => r.torrent_hash);
+
+  const loadTorrentStatuses = useCallback(async () => {
+    if (!hasAnyTorrent) { setTorrentStatuses([]); return; }
+    try {
+      const ts = await fetchTorrentStatuses(season.request_id);
+      setTorrentStatuses(Array.isArray(ts) ? ts : []);
+    } catch {
+      setTorrentStatuses([]);
+    }
+  }, [season.request_id, hasAnyTorrent]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadTorrentStatuses(); }, [loadTorrentStatuses]);
+
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (!hasAnyTorrent) return;
+    const interval = setInterval(loadTorrentStatuses, 3000);
+    return () => clearInterval(interval);
+  }, [hasAnyTorrent, loadTorrentStatuses]);
 
   const handleSearch = async () => {
     setSearching(true);
@@ -239,6 +350,7 @@ function SeasonDetail({ season, franchise, onBack }: {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let eventType = "";
       while (true) {
         const { done: readerDone, value } = await reader.read();
         if (readerDone) break;
@@ -246,10 +358,11 @@ function SeasonDetail({ season, franchise, onBack }: {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
+          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+          else if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
             if (data.message) setSearchProgress(data.message);
-          }
+          } else if (line.trim() === "") eventType = "";
         }
       }
     } catch {
@@ -270,6 +383,7 @@ function SeasonDetail({ season, franchise, onBack }: {
         const data = await fetchReleases(season.request_id);
         setRequest(data);
         setReleases(data.releases || []);
+        setApprovedReleases(data.approved_releases || []);
         if (attempts >= 10) clearInterval(poll);
       }, 3000);
     } finally {
@@ -277,17 +391,196 @@ function SeasonDetail({ season, franchise, onBack }: {
     }
   };
 
-  const sorted = [...releases].sort((a: any, b: any) => {
-    if (sortBy === "app_score") return (b.app_score || 0) - (a.app_score || 0);
-    if (sortBy === "size_mb") return (b.size_mb || 0) - (a.size_mb || 0);
-    if (sortBy === "seeders") return ((b.seeders ?? 0) - (a.seeders ?? 0));
-    return 0;
-  });
+  const handlePause = async (releaseId?: number) => {
+    await pauseTorrent(season.request_id, releaseId);
+    loadTorrentStatuses();
+  };
 
-  const hasActiveTorrents = request?.status === "DOWNLOADING" || request?.status === "SEEDING";
+  const handleResume = async (releaseId?: number) => {
+    await resumeTorrent(season.request_id, releaseId);
+    loadTorrentStatuses();
+  };
+
+  const handleDismiss = async (releaseId: number) => {
+    await dismissRequest(season.request_id, releaseId);
+    await loadData();
+    setTorrentStatuses([]);
+  };
+
+  const handleCopyPath = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  };
+
+  const handleMoveToLibrary = async (releaseId: number) => {
+    setMoving(releaseId);
+    try {
+      const result = await moveToLibrary(season.request_id);
+      setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
+      if (!result.alreadyExists) loadTorrentStatuses();
+    } catch (err: any) {
+      setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
+    } finally {
+      setMoving(null);
+    }
+  };
+
+  const handleRemoveFromLibrary = async (releaseId: number) => {
+    if (removeConfirmId !== releaseId) { setRemoveConfirmId(releaseId); return; }
+    try {
+      await removeFromLibrary(season.request_id);
+      setRemoveConfirmId(null);
+      setMoveResults((prev) => ({ ...prev, [releaseId]: null }));
+      loadTorrentStatuses();
+    } catch (err: any) {
+      setRemoveConfirmId(null);
+    }
+  };
+
+  const filtered = releases
+    .filter((r: any) => {
+      if (!filterEpisode) return true;
+      if (!r.parsed_episodes) return false;
+      return r.parsed_episodes.toUpperCase().includes(filterEpisode.toUpperCase());
+    })
+    .sort((a: any, b: any) => {
+      if (sortBy === "app_score") return (b.app_score || 0) - (a.app_score || 0);
+      if (sortBy === "size_mb") return (b.size_mb || 0) - (a.size_mb || 0);
+      if (sortBy === "seeders") return ((b.seeders ?? 0) - (a.seeders ?? 0));
+      return 0;
+    });
+
+  const uniqueEpisodes = new Set<string>();
+  for (const r of releases) {
+    if (r.parsed_episodes) {
+      const matches = r.parsed_episodes.match(/E\d{1,3}/g);
+      if (matches) matches.forEach((m: string) => uniqueEpisodes.add(m));
+    }
+  }
+  const episodeOptions = Array.from(uniqueEpisodes).sort();
+
+  const tsByRelease = new Map<number, any>();
+  for (const ts of torrentStatuses) {
+    if (ts.release_id) tsByRelease.set(ts.release_id, ts);
+  }
 
   return (
     <div className="container">
+      {approvedReleases.length > 0 && approvedReleases.map((ar: any) => {
+        const ts = tsByRelease.get(ar.id);
+        const mr = moveResults[ar.id];
+        const isMoving = moving === ar.id;
+        const isRemoveConfirm = removeConfirmId === ar.id;
+
+        if (!ar.torrent_hash) return null;
+        if (ts && !ts.found) return null;
+
+        return (
+          <div key={ar.id} className="torrent-panel">
+            <div className="approved-release-info">
+              <span className="approved-label">Installed</span>
+              <span className="approved-title" title={ar.title}>
+                {ar.info_url ? <a href={ar.info_url} target="_blank" rel="noopener noreferrer">{ar.title}</a> : ar.title}
+              </span>
+              <span className="rtag">{ar.radarr_quality || ar.quality}</span>
+              <span className="rtag">{formatSize(ar.size_mb)}</span>
+              {ts?.found && <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state}</span>}
+            </div>
+            {ts?.found ? (
+              <>
+                <div className="torrent-progress-bar">
+                  <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
+                </div>
+                <div className="torrent-stats-grid">
+                  <div className="ts-item ts-primary">
+                    <span className="ts-value">{ts.progress}%</span>
+                  </div>
+                  {ts.state === "downloading" && (
+                    <div className="ts-item ts-speed">
+                      <span className="ts-icon">↓</span>
+                      <span className="ts-value">{(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>
+                    </div>
+                  )}
+                  {ts.state === "downloading" && ts.eta > 0 && ts.eta < 8640000 && (
+                    <div className="ts-item">
+                      <span className="ts-label">ETA</span>
+                      <span className="ts-value">{formatDuration(ts.eta)}</span>
+                    </div>
+                  )}
+                  <div className="ts-item ts-speed">
+                    <span className="ts-icon">↑</span>
+                    <span className="ts-value">{(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
+                  </div>
+                  <div className="ts-item">
+                    <span className="ts-label">Ratio</span>
+                    <span className="ts-value">{ts.ratio.toFixed(2)}</span>
+                  </div>
+                  <div className="ts-item">
+                    <span className="ts-label">Uploaded</span>
+                    <span className="ts-value">{formatBytes(ts.uploaded || 0)}</span>
+                  </div>
+                  <div className="ts-item">
+                    <span className="ts-label">Peers</span>
+                    <span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span>
+                  </div>
+                  {ts.completion_on > 0 && (ts.state === "uploading" || ts.state === "stalledUP" || ts.state === "forcedUP" || ts.state === "queuedUP" || ts.state === "pausedUP") && (
+                    <div className="ts-item">
+                      <span className="ts-label">Seeding</span>
+                      <span className="ts-value">{formatDuration(ts.seeding_time || 0)}</span>
+                    </div>
+                  )}
+                  {ts.progress === 100 && (
+                    <div className="ts-item ts-actions">
+                      {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" || ts.state === "queuedUP" ? (
+                        <button className="btn btn-secondary btn-tiny" onClick={() => handlePause(ar.id)}>Pause</button>
+                      ) : (
+                        <button className="btn btn-secondary btn-tiny" onClick={() => handleResume(ar.id)}>Resume</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {ts.progress === 100 && (
+                  <div className="torrent-paths">
+                    <div className="torrent-path-row">
+                      <span className="path-label">Source:</span>
+                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.content_path)}>{ts.content_path}</span>
+                      <button className="btn btn-danger btn-tiny" onClick={() => handleDismiss(ar.id)}>Delete</button>
+                    </div>
+                    <div className="torrent-path-row">
+                      <span className="path-label">Library:</span>
+                      {ts.in_library ? (
+                        <>
+                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.library_path)}>{ts.library_path}</span>
+                          <button className={`btn btn-tiny ${isRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={() => handleRemoveFromLibrary(ar.id)}>
+                            {isRemoveConfirm ? "Remove?" : "In Library"}
+                          </button>
+                        </>
+                      ) : mr?.source ? (
+                        <span className="move-result"><span>Hardlinked →</span><span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(mr.destination)}>{mr.destination}</span></span>
+                      ) : mr?.error ? (
+                        <span className="move-error">{mr.error}</span>
+                      ) : (
+                        <button className="btn btn-primary btn-tiny" onClick={() => handleMoveToLibrary(ar.id)} disabled={isMoving}>
+                          {isMoving ? "Moving..." : "Move to Library"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
+            )}
+          </div>
+        );
+      })}
+
       <div className="detail-topbar">
         <button className="btn btn-secondary btn-tiny" onClick={onBack}>&larr; {franchise.title}</button>
         <div className="detail-title">
@@ -314,66 +607,71 @@ function SeasonDetail({ season, franchise, onBack }: {
         </div>
       )}
 
-      {hasActiveTorrents && (
-        <div className="dashboard-section" style={{ marginBottom: 12 }}>
-          <h4>Active Torrents</h4>
-          {torrentStatuses.length > 0 ? (
-            torrentStatuses.map((ts: any) => (
-              <div key={ts.release_id || ts.hash} className="franchise-release">
-                <span className={`status-badge status-badge-sm qb-${ts.state}`}>{ts.state}</span>
-                <span className="fr-release-title">{ts.title || ts.name}</span>
-                <span className="rtag">{ts.progress != null ? `${Math.round(ts.progress)}%` : ""}</span>
-                <span className="rtag">{ts.num_seeds}s / {ts.num_leechs}l</span>
-              </div>
-            ))
-          ) : (
-            <p style={{ opacity: 0.5, fontSize: 13 }}>Checking torrents...</p>
+      <div className="release-toolbar">
+        <div className="toolbar-filters">
+          {episodeOptions.length > 0 && (
+            <select value={filterEpisode} onChange={(e) => setFilterEpisode(e.target.value)}>
+              <option value="">All episodes</option>
+              {episodeOptions.map((ep) => <option key={ep} value={ep}>{ep}</option>)}
+            </select>
           )}
         </div>
-      )}
-
-      <div className="dashboard-section">
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <h4 style={{ margin: 0 }}>Releases — {releases.length}</h4>
-          <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+        <div className="toolbar-right">
+          <span className="release-count">{filtered.length}/{releases.length}</span>
+          <div style={{ display: "flex", gap: 4 }}>
             <button className={`btn btn-tiny ${sortBy === "app_score" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("app_score")}>Score</button>
             <button className={`btn btn-tiny ${sortBy === "size_mb" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("size_mb")}>Size</button>
             <button className={`btn btn-tiny ${sortBy === "seeders" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("seeders")}>Seeders</button>
           </div>
         </div>
-
-        {sorted.length === 0 ? (
-          <p style={{ opacity: 0.5, fontSize: 13 }}>No releases found. Click Search above.</p>
-        ) : (
-          <div className="franchise-releases">
-            {sorted.map((r: any) => (
-              <div key={r.id} className="franchise-release" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {r.approved && <span className="rtag" style={{ background: "#2d6a4f" }}>APPROVED</span>}
-                {r.torrent_hash && !r.approved && <span className="rtag" style={{ background: "#1d6099" }}>DL</span>}
-                <span className="fr-release-title" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {r.info_url ? (
-                    <a href={r.info_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>{r.title}</a>
-                  ) : r.title}
-                </span>
-                <span className="rtag">{r.quality || r.radarr_quality}</span>
-                <span className="rtag">{formatSize(r.size_mb)}</span>
-                {r.seeders != null && <span className="rtag">{r.seeders}s/{r.leechers ?? 0}l</span>}
-                {r.release_group && <span className="rtag">{r.release_group}</span>}
-                <span className="rtag" style={{ fontWeight: 600 }}>{r.app_score}/20</span>
-                {!r.approved && (
-                  <button
-                    className="btn btn-primary btn-tiny"
-                    onClick={(e) => { e.stopPropagation(); handleApprove(r.id); }}
-                    disabled={approvingId !== null}
-                  >
-                    {approvingId === r.id ? "Approving..." : "Approve"}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
       </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state"><p>{releases.length === 0 ? "No releases found. Click Search above." : "No matches for this filter."}</p></div>
+      ) : (
+        <div className="releases-list">
+          {filtered.map((r: any) => {
+            const isExpanded = expandedIds.has(r.id);
+            return (
+              <div key={r.id} className={`release-card ${isExpanded ? "expanded" : ""}`}>
+                <div className="release-row" onClick={() => { const next = new Set(expandedIds); if (next.has(r.id)) next.delete(r.id); else next.add(r.id); setExpandedIds(next); }}>
+                  <div className="release-main">
+                    <div className="release-info">
+                      {r.info_url ? (
+                        <a href={r.info_url} target="_blank" rel="noopener noreferrer" className="release-title" onClick={(e) => e.stopPropagation()} title={r.title}>{r.title}</a>
+                      ) : (
+                        <span className="release-title" title={r.title}>{r.title}</span>
+                      )}
+                      <div className="release-tags">
+                        {r.parsed_episodes && <span className="rtag">{r.parsed_episodes}</span>}
+                        <span className="rtag">{r.quality || r.radarr_quality}</span>
+                        <span className="rtag">{formatSize(r.size_mb)}</span>
+                        {r.seeders != null && <span className="rtag">{r.seeders}s/{r.leechers ?? 0}l</span>}
+                        {r.indexer && <span className="rtag">{r.indexer}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="release-right">
+                    <div className="score-pill">
+                      <span className="score-num">{r.app_score}</span>
+                      <span className="score-of">/20</span>
+                    </div>
+                    {!r.approved && (
+                      <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); handleApprove(r.id); }} disabled={approvingId !== null}>
+                        {approvingId === r.id ? "Approving..." : "Approve"}
+                      </button>
+                    )}
+                    {r.approved && (
+                      <span className="rtag" style={{ background: "#2d6a4f" }}>APPROVED</span>
+                    )}
+                  </div>
+                </div>
+                {isExpanded && <Breakdown r={r} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -24,10 +24,22 @@ function hasSequelAfter(tn: string, matchEnd: number): boolean {
   return /^\d{1,2}[\s.\-_]/.test(after) && !/^(19|20)\d{2}/.test(after);
 }
 
+function extractSeasonFromTitle(title: string): number | null {
+  const norm = normalizeTitle(title);
+  const match = norm.match(/\bs(\d{1,2})\b/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
 function torrentMatchesTitle(torrentName: string, requestTitle: string): boolean {
   const tn = normalizeTitle(torrentName);
   const normTitle = normalizeTitle(requestTitle);
   if (tn === normTitle) return true;
+
+  const torrentSeason = extractSeasonFromTitle(torrentName);
+  const requestSeason = extractSeasonFromTitle(requestTitle);
+  if (torrentSeason !== null && requestSeason !== null && torrentSeason !== requestSeason) {
+    return false;
+  }
 
   const reqWords = titleWords(requestTitle);
   if (reqWords.length === 0) return false;

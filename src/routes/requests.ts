@@ -676,7 +676,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             prowlarr.search(query, [5000]),
             new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
           ]);
-          const mapped = (results as any[]).map(mapProwlarrToRadarrResult);
+          const allMapped = (results as any[]).map(mapProwlarrToRadarrResult);
+          const targetSeason = season.season;
+          const mapped = allMapped.filter((r: RadarrSearchResult) => {
+            const title = (r.title || "").toUpperCase();
+            const sMatch = title.match(/\bS(\d{1,2})\b/);
+            if (sMatch) {
+              return parseInt(sMatch[1], 10) === targetSeason;
+            }
+            return true;
+          });
           mappedCount = mapped.length;
 
           const insertStmt = db.prepare(`
