@@ -264,6 +264,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           FROM media_requests mr
           WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
         ) sub
+        WHERE sub.type = 'series' OR sub.release_count > 0
         ORDER BY sub.title
       `).all() as any[];
 

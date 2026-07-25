@@ -131,11 +131,11 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         const delH = db.prepare("DELETE FROM approval_history WHERE release_id = ?");
         const delR = db.prepare("DELETE FROM release_candidates WHERE id = ?");
         for (const { id, reason } of staleRcIds) {
-          console.log(`[Startup] Stale RC id=${id}: ${reason}`);
           delH.run(id);
           delR.run(id);
         }
-        console.log(`[Startup] Removed ${staleRcIds.length} stale RC(s)`);
+        const reasons = [...new Set(staleRcIds.map((r) => r.reason))];
+        console.log(`[Startup] Removed ${staleRcIds.length} stale RC(s): ${reasons.join("; ")}`);
       }
 
       // Backfill size_mb=0 from qBittorrent
