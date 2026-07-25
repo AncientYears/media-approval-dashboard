@@ -264,6 +264,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           FROM media_requests mr
           WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
         ) sub
+        WHERE sub.release_count > 0
         ORDER BY sub.title
       `).all() as any[];
 
@@ -616,7 +617,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     const sonarrId = Number(req.params.sonarrId);
     const forceAll = !!req.body?.force;
     const SKIP_MINUTES = 5;
-    const cutoff = new Date(Date.now() - SKIP_MINUTES * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - SKIP_MINUTES * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
 
     const allSeasons = db.prepare(
       "SELECT id, season, title, type, last_searched_at FROM media_requests WHERE sonarr_id = ? AND type = 'series' ORDER BY season"
@@ -666,6 +667,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
       }
 
+      let mappedCount = 0;
       try {
         const prowlarrApiKey = process.env.PROWLARR_API_KEY;
         if (prowlarrApiKey && prowlarr) {
@@ -675,6 +677,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
           ]);
           const mapped = (results as any[]).map(mapProwlarrToRadarrResult);
+          mappedCount = mapped.length;
 
           const insertStmt = db.prepare(`
             INSERT INTO release_candidates
@@ -705,7 +708,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
         const data = getSeasonData(season.id);
-        return { season: season.season, found: data.release_count || 0, data };
+        return { season: season.season, found: mappedCount, data };
       } catch (err: any) {
         if (!preserveStatus) {
           db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
@@ -739,7 +742,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     const workers = Array.from({ length: Math.min(CONCURRENCY, seasons.length) }, () => runNext());
     await Promise.all(workers);
 
-    const totalFound = results.reduce((sum, r) => sum + (r.data?.release_count || 0), 0);
+    const totalFound = results.reduce((sum, r) => sum + r.found, 0);
     const totalErrors = results.filter(r => r.error).length;
     send("done", { success: true, totalFound, seasons: results.length, errors: totalErrors, skipped: allSeasons.length - seasons.length });
     console.log(`[SearchAll] sonarrId=${sonarrId}: ${totalFound} releases across ${results.length} seasons (${totalErrors} errors, ${allSeasons.length - seasons.length} skipped)`);
@@ -749,7 +752,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   // POST /api/requests/managed/search-all-movies - Search all wanted movies in parallel (SSE)
   router.post("/managed/search-all-movies", async (req: Request, res: Response) => {
     const SKIP_MINUTES = 5;
-    const cutoff = new Date(Date.now() - SKIP_MINUTES * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - SKIP_MINUTES * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
     const forceAll = !!req.body?.force;
 
     const allMovies = db.prepare(
@@ -795,6 +798,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
       }
 
+      let mappedCount = 0;
       try {
         const prowlarrApiKey = process.env.PROWLARR_API_KEY;
         if (prowlarrApiKey && prowlarr) {
@@ -804,6 +808,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
           ]);
           const mapped = (results as any[]).map(mapProwlarrToRadarrResult);
+          mappedCount = mapped.length;
 
           const insertStmt = db.prepare(`
             INSERT INTO release_candidates
@@ -834,7 +839,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
         const data = getMovieData(movie.id);
-        return { id: movie.id, title: movie.title, found: data.release_count || 0, data };
+        return { id: movie.id, title: movie.title, found: mappedCount, data };
       } catch (err: any) {
         if (!preserveStatus) {
           db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
@@ -863,7 +868,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     const workers = Array.from({ length: Math.min(CONCURRENCY, movies.length) }, () => runNext());
     await Promise.all(workers);
 
-    const totalFound = results.reduce((sum, r) => sum + (r.data?.release_count || 0), 0);
+    const totalFound = results.reduce((sum, r) => sum + r.found, 0);
     const totalErrors = results.filter(r => r.error).length;
     send("done", { success: true, totalFound, movies: results.length, errors: totalErrors, skipped: allMovies.length - movies.length });
     console.log(`[SearchAllMovies] ${totalFound} releases across ${results.length} movies (${totalErrors} errors, ${allMovies.length - movies.length} skipped)`);
@@ -1085,7 +1090,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const releases = db.prepare(
         "SELECT rc.torrent_hash, rc.save_path, rc.title, rc.id as release_id, rc.size_mb FROM release_candidates rc " +
-        "WHERE rc.request_id = ? AND rc.torrent_hash != ''"
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? AND rc.torrent_hash != ''"
       ).all(id) as any[];
 
       // Fetch movie/series info ONCE for all releases
