@@ -1,6 +1,6 @@
 ﻿# Project Implementation Summary
 
-## Current Status: Phase 1-5 Complete (Production Deployed)
+## Current Status: Prowlarr Search Integration Complete
 
 ### What's Built
 
@@ -8,7 +8,7 @@
 - Express server with CORS, body-parser, SPA fallback
 - SQLite database with migrations and auto-repair
 - TypeScript type definitions for all domain objects
-- Service classes: Radarr, Sonarr, QBittorrent, notifications (ntfy)
+- Service classes: Radarr, Sonarr, QBittorrent, **Prowlarr**, notifications (ntfy)
 - Polling jobs: Radarr wanted, Sonarr wanted missing, qBittorrent status
 - Torrent name parser (S01E01, Season packs, multi-episode)
 - Release scoring engine with profiles (balanced/audio/quality/size)
@@ -66,7 +66,7 @@ Move to library (hardlinks to Jellyfin folders)
 | POST | /api/requests/reactivate-all | Re-activate all dismissed requests |
 | GET | /api/db | All tables, columns, rows (DB viewer) |
 | GET | /api/settings | Get settings |
-| POST | /api/test-connections | Test Radarr/Sonarr/qBittorrent connectivity |
+| POST | /api/test-connections | Test Radarr/Sonarr/qBittorrent/Prowlarr connectivity |
 
 ### File Structure
 
@@ -80,13 +80,15 @@ mediaAppThing/
 │   │   ├── radarr.ts            # Radarr API (search, grab, unmonitor, delete, getAll)
 │   │   ├── sonarr.ts            # Sonarr API (search, grab, wanted missing)
 │   │   ├── qbittorrent.ts       # qBittorrent Web API v2
-│   │   └── scoring.ts           # Release scoring engine
+│   │   ├── prowlarr.ts          # Prowlarr API (search indexers directly)
+│   │   ├── scoring.ts           # Release scoring engine
+│   │   └── notifications.ts     # ntfy push notifications
 │   ├── jobs/
 │   │   ├── pollRadarr.ts        # Discovers wanted movies, searches
 │   │   ├── pollSonarr.ts        # Discovers wanted series, searches
 │   │   └── pollStatus.ts        # Tracks torrent status, transitions state
 │   ├── routes/
-│   │   └── requests.ts          # All API endpoints (~1400 lines)
+│   │   └── requests.ts          # All API endpoints (~1560 lines)
 │   └── utils/
 │       └── torrentParser.ts     # Parse S01E01, Season packs, multi-episode
 ├── frontend/
@@ -117,6 +119,7 @@ mediaAppThing/
 
 - **No LIMIT on requests query** — was 100, removed because imports exceeded it
 - **Dismiss = manual only** — no auto-dismiss, permanent delete without file deletion
+- **Dismiss blocked for active downloads** — backend rejects dismiss for DOWNLOADING/SEEDING/COMPLETED statuses
 - **Status preserved on refresh** — DOWNLOADING/SEEDING requests keep status when re-searching
 - **Migration auto-repair** — detects orphaned `media_requests_new` table and restores
 - **SSE for search progress** — streams "querying → indexing → done" to frontend
@@ -139,6 +142,8 @@ settings                - Key-value config storage
 - Server has different DB than local dev — must deploy to test server-side changes
 - `navigator.clipboard` requires HTTPS — textarea fallback handles HTTP
 - DB migration could lose data if interrupted mid-transaction (auto-repair mitigates)
+- Sonarr's `/api/v3/release` ignores `term` parameter — search uses Prowlarr directly
+- Pollers (pollRadarr/pollSonarr) still use Sonarr/Radarr search — could migrate to Prowlarr
 
 ### Commands
 

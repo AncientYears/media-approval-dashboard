@@ -3,11 +3,50 @@ import { Database } from "better-sqlite3";
 import { RadarrService } from "../services/radarr";
 import { SonarrService } from "../services/sonarr";
 import { QBittorrentService } from "../services/qbittorrent";
+import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes } from "../utils/torrentParser";
 import fs from "fs";
 import path from "path";
+
+function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
+  const guid = r.infoHash || r.guid || r.downloadUrl || `prowlarr-${r.indexerId}-${r.title}`;
+  const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
+  const isTorrent = r.protocol === "torrent" || !!r.magnetUri || !!r.infoHash;
+  const infoOrMagnet = r.magnetUri || r.infoUrl || "";
+
+  const titleLower = (r.title || r.fileName || "").toLowerCase();
+  let qualityName = "Unknown";
+  if (titleLower.includes("2160p") || titleLower.includes("4k")) qualityName = "Bluray-2160p";
+  else if (titleLower.includes("1080p")) qualityName = "Bluray-1080p";
+  else if (titleLower.includes("720p")) qualityName = "Bluray-720p";
+  else if (titleLower.includes("480p") || titleLower.includes("dvd")) qualityName = "DVD";
+  else if (titleLower.includes("remux")) qualityName = "Remux-1080p";
+  else if (titleLower.includes("web-dl") || titleLower.includes("webdl")) qualityName = "WEBDL-1080p";
+  else if (titleLower.includes("webrip")) qualityName = "WEBRip-1080p";
+  else if (titleLower.includes("bluray") || titleLower.includes("bdrip")) qualityName = "Bluray-1080p";
+  else if (titleLower.includes("hdtv")) qualityName = "HDTV-1080p";
+  else if (titleLower.includes("cam") || titleLower.includes("ts ") || titleLower.includes("telesync")) qualityName = "CAM";
+
+  return {
+    guid,
+    title: r.title || r.fileName || "",
+    quality: { quality: { name: qualityName, resolution: 0, source: "", modifier: "" } },
+    customFormats: [],
+    customFormatScore: 0,
+    indexer: r.indexer || "",
+    indexerId: r.indexerId,
+    size: r.size || 0,
+    protocol: isTorrent ? "torrent" : "usenet",
+    seeders: r.seeders,
+    leechers: r.leechers,
+    infoUrl: infoOrMagnet,
+    magnetUrl: r.magnetUri || "",
+    infoHash: r.infoHash || "",
+    publishDate: r.publishDate || "",
+  };
+}
 
 function parseReleases(rows: any[]) {
   return rows.map((r: any) => {
@@ -47,7 +86,7 @@ function hardlinkDirRecursive(srcDir: string, destDir: string) {
   }
 }
 
-export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService) {
+export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService, prowlarr: ProwlarrService) {
   const router = Router();
 
   // GET /api/requests - List all pending requests
@@ -922,6 +961,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const { id } = req.params;
       const releaseId = req.query.releaseId as string | undefined;
 
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      if (!releaseId && ["DOWNLOADING", "SEEDING", "COMPLETED"].includes(request.status)) {
+        return res.status(400).json({ error: "Cannot dismiss request with active downloads. Remove files first." });
+      }
+
       if (releaseId) {
         // Delete a single approved release's torrent
         const release = db.prepare(
@@ -930,8 +976,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         if (release?.torrent_hash) {
           try {
-            await qbittorrent.deleteTorrent(release.torrent_hash, true);
-            console.log(`[Dismiss] Deleted torrent ${release.torrent_hash} with files`);
+            await qbittorrent.deleteTorrent(release.torrent_hash, false);
+            console.log(`[Dismiss] Removed torrent ${release.torrent_hash}`);
           } catch (err: any) {
             console.error(`[Dismiss] Failed to delete torrent:`, err.message);
           }
@@ -951,7 +997,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       } else {
         // Delete entire request: delete all torrents, unmonitor, then remove from DB
-        const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
 
         const releases = db.prepare(
           "SELECT rc.id, rc.torrent_hash FROM release_candidates rc " +
@@ -1184,7 +1229,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const service = request.type === "series" ? "Sonarr" : "Radarr";
-      send("progress", { step: "searching", message: `Querying ${service} for releases...` });
+      send("progress", { step: "searching", message: `Querying Prowlarr for releases...` });
 
       let releases: RadarrSearchResult[] = [];
 
@@ -1193,15 +1238,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), ms))
       ]);
 
+      const prowlarrApiKey = process.env.PROWLARR_API_KEY;
+      const useProwlarr = !!prowlarrApiKey;
+
       try {
-        if (request.type === "series" && request.sonarr_id != null && request.season != null) {
-          releases = await searchTimeout(sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined), 60000);
-        } else if (request.radarr_id) {
-          releases = await searchTimeout(radarr.searchReleases(request.radarr_id, searchTerm || undefined), 60000);
+        if (useProwlarr) {
+          const query = searchTerm || request.title;
+          const categories = request.type === "movie" ? [2000] : [5000];
+          send("progress", { step: "searching", message: `Searching Prowlarr: "${query}"...` });
+          const prowlarrResults = await searchTimeout(prowlarr.search(query, categories), 120000);
+          releases = prowlarrResults.map(mapProwlarrToRadarrResult);
+          console.log(`[Search] Prowlarr returned ${releases.length} results for "${query}"`);
         } else {
-          send("error", { error: "No Radarr or Sonarr ID associated with this request" });
-          res.end();
-          return;
+          send("progress", { step: "searching", message: `Querying ${service} for releases...` });
+          if (request.type === "series" && request.sonarr_id != null && request.season != null) {
+            releases = await searchTimeout(sonarr.searchReleases(request.sonarr_id, request.season, searchTerm || undefined), 60000);
+          } else if (request.radarr_id) {
+            releases = await searchTimeout(radarr.searchReleases(request.radarr_id, searchTerm || undefined), 60000);
+          } else {
+            send("error", { error: "No Radarr or Sonarr ID associated with this request" });
+            res.end();
+            return;
+          }
         }
       } catch (searchErr) {
         console.error(`[Search] ${request.title} timed out or failed:`, (searchErr as Error).message);
@@ -1217,8 +1275,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const insertStmt = db.prepare(`
         INSERT INTO release_candidates
-        (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
           title = excluded.title,
           indexer = excluded.indexer,
@@ -1235,7 +1293,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           edition = CASE WHEN excluded.edition != '' THEN excluded.edition ELSE release_candidates.edition END,
           protocol = CASE WHEN excluded.protocol != '' THEN excluded.protocol ELSE release_candidates.protocol END,
           publish_date = CASE WHEN excluded.publish_date != '' THEN excluded.publish_date ELSE release_candidates.publish_date END,
-          radarr_indexer_id = CASE WHEN excluded.radarr_indexer_id != 0 THEN excluded.radarr_indexer_id ELSE release_candidates.radarr_indexer_id END
+          radarr_indexer_id = CASE WHEN excluded.radarr_indexer_id != 0 THEN excluded.radarr_indexer_id ELSE release_candidates.radarr_indexer_id END,
+          torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END
       `);
 
       for (let i = 0; i < releases.length; i++) {
@@ -1247,7 +1306,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const appScore = computeAppScore(qualityName, cfNames, sizeMb, i + 1);
         const language = r.languages?.map((l: any) => l.name).join(", ") || r.language?.name || "";
 
-        insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0);
+        insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "");
 
         if ((i + 1) % 10 === 0 || i === releases.length - 1) {
           send("progress", { step: "indexing", message: `Indexed ${i + 1}/${releases.length}`, current: i + 1, total: releases.length });
@@ -1290,7 +1349,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       `);
       stmt.run(id, releaseId, "web-user", reason || "");
 
-      if (request.radarr_id && release.radarr_release_id) {
+      const hasProwlarrHash = release.torrent_hash && release.torrent_hash.length === 40;
+
+      if (hasProwlarrHash) {
+        const magnetUrl = release.info_url?.includes("magnet") ? release.info_url : "";
+        if (magnetUrl) {
+          try {
+            const savePath = request.type === "movie"
+              ? process.env.MEDIA_MOVIES || "/media/filmy"
+              : process.env.MEDIA_TV || "/media/serialy";
+            await qbittorrent.addTorrent(magnetUrl, savePath);
+            console.log(`[Grab] Added torrent via magnet for ${request.title}: ${release.title}`);
+          } catch (grabErr: any) {
+            console.error(`[Grab] Failed to add torrent for ${request.title}:`, grabErr.message);
+            return res.status(500).json({ error: "Failed to add torrent to qBittorrent", details: String(grabErr) });
+          }
+        } else {
+          console.log(`[Grab] Prowlarr release has infoHash=${release.torrent_hash} but no magnet URL — torrent must be added manually`);
+        }
+      } else if (request.radarr_id && release.radarr_release_id) {
         try {
           console.log(`[Radarr] Refreshing release cache for ${request.title} before grab...`);
           let refreshedReleases: RadarrSearchResult[] = [];

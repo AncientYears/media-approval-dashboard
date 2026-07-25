@@ -138,6 +138,13 @@ export class QBittorrentService {
     await this.post("/api/v2/torrents/delete", `hashes=${hash}&deleteFiles=${deleteFiles}`);
   }
 
+  async addTorrent(urls: string, savePath?: string, category?: string): Promise<void> {
+    let data = `urls=${encodeURIComponent(urls)}`;
+    if (savePath) data += `&savepath=${encodeURIComponent(savePath)}`;
+    if (category) data += `&category=${encodeURIComponent(category)}`;
+    await this.post("/api/v2/torrents/add", data);
+  }
+
   async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
       await this.login();

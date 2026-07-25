@@ -8,6 +8,7 @@ import { createRequestRoutes } from "./routes/requests";
 import { RadarrService } from "./services/radarr";
 import { SonarrService } from "./services/sonarr";
 import { QBittorrentService } from "./services/qbittorrent";
+import { ProwlarrService } from "./services/prowlarr";
 import { createRadarrPoller } from "./jobs/pollRadarr";
 import { createSonarrPoller } from "./jobs/pollSonarr";
 import { createStatusPoller } from "./jobs/pollStatus";
@@ -48,6 +49,11 @@ const qbittorrent = new QBittorrentService(
   process.env.QBIT_URL || "http://localhost:8080",
   process.env.QBIT_USER || "",
   process.env.QBIT_PASS || ""
+);
+
+const prowlarr = new ProwlarrService(
+  process.env.PROWLARR_URL || "http://localhost:9696",
+  process.env.PROWLARR_API_KEY || ""
 );
 
 const statusPollInterval = parseInt(process.env.POLL_INTERVAL_STATUS || "30", 10);
@@ -148,7 +154,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // API Routes
-app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent));
+app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent, prowlarr));
 
 // DB viewer endpoint - returns all tables, their schema, and rows
 app.get("/api/db", (_req, res) => {
@@ -169,13 +175,15 @@ app.get("/api/db", (_req, res) => {
 
 // Test connections endpoint
 app.post("/api/test-connections", async (req, res) => {
-  const [qbitResult, sonarrResult] = await Promise.all([
+  const [qbitResult, sonarrResult, prowlarrResult] = await Promise.all([
     qbittorrent.testConnection(),
     sonarr.testConnection(),
+    prowlarr.testConnection(),
   ]);
   res.json({
     radarr: { success: true },
     sonarr: sonarrResult,
+    prowlarr: prowlarrResult,
     jellyseerr: { success: true },
     ntfy: { success: true },
     qbittorrent: qbitResult,
