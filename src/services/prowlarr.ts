@@ -24,7 +24,7 @@ export class ProwlarrService {
   constructor(baseURL: string, apiKey: string) {
     this.client = axios.create({
       baseURL,
-      timeout: 120000,
+      timeout: 45000,
       headers: {
         "X-Api-Key": apiKey,
         "Content-Type": "application/json",

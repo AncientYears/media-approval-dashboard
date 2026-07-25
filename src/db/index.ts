@@ -185,6 +185,11 @@ export function initializeDatabase(dbPath: string): DBInstance {
       db.exec(`ALTER TABLE release_candidates ADD COLUMN parsed_episodes TEXT DEFAULT ''`);
     }
 
+    // Migration: add last_searched_at to media_requests
+    if (!mrColNames.includes("last_searched_at")) {
+      db.exec(`ALTER TABLE media_requests ADD COLUMN last_searched_at TEXT`);
+    }
+
   return {
     db,
     close: () => db.close(),

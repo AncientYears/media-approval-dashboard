@@ -120,6 +120,11 @@ export async function testConnections() {
   return response.data;
 }
 
+export async function searchAllSeasons(sonarrId: number, searchTerm?: string) {
+  const response = await api.post(`/requests/managed/${sonarrId}/search-all`, { searchTerm });
+  return response.data;
+}
+
 export async function fetchSettings() {
   const response = await api.get("/settings");
   return response.data;

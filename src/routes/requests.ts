@@ -606,6 +606,265 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/managed/:sonarrId/search-all - Search all seasons in parallel (SSE)
+  router.post("/managed/:sonarrId/search-all", async (req: Request, res: Response) => {
+    const sonarrId = Number(req.params.sonarrId);
+    const forceAll = !!req.body?.force;
+    const SKIP_MINUTES = 5;
+    const cutoff = new Date(Date.now() - SKIP_MINUTES * 60 * 1000).toISOString();
+
+    const allSeasons = db.prepare(
+      "SELECT id, season, title, type, last_searched_at FROM media_requests WHERE sonarr_id = ? AND type = 'series' ORDER BY season"
+    ).all(sonarrId) as any[];
+
+    if (allSeasons.length === 0) {
+      return res.status(404).json({ error: "No seasons found for this franchise" });
+    }
+
+    const seasons = forceAll ? allSeasons : allSeasons.filter(
+      (s) => !s.last_searched_at || s.last_searched_at < cutoff
+    );
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "close");
+    res.flushHeaders();
+
+    const send = (event: string, data: any) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    if (seasons.length === 0) {
+      send("done", { success: true, totalFound: 0, seasons: 0, errors: 0, skipped: allSeasons.length });
+      res.end();
+      return;
+    }
+
+    const getSeasonData = (seasonId: number) => {
+      const row = db.prepare(`
+        SELECT mr.status, mr.episode_count,
+          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
+           JOIN approval_history ah2 ON ah2.release_id = rc2.id
+           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+          (SELECT COUNT(*) FROM release_candidates rc3
+           JOIN approval_history ah3 ON ah3.release_id = rc3.id
+           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+        FROM media_requests mr WHERE mr.id = ?
+      `).get(seasonId) as any;
+      return row || {};
+    };
+
+    const searchOneSeason = async (season: any): Promise<{ season: number; found: number; error?: string; data?: any }> => {
+      const prevStatus = db.prepare("SELECT status FROM media_requests WHERE id = ?").get(season.id) as any;
+      const preserveStatus = prevStatus?.status === "DOWNLOADING" || prevStatus?.status === "SEEDING";
+      if (!preserveStatus) {
+        db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
+      }
+
+      try {
+        const prowlarrApiKey = process.env.PROWLARR_API_KEY;
+        if (prowlarrApiKey && prowlarr) {
+          const query = req.body?.searchTerm || season.title;
+          const results = await Promise.race([
+            prowlarr.search(query, [5000]),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
+          ]);
+          const mapped = (results as any[]).map(mapProwlarrToRadarrResult);
+
+          const insertStmt = db.prepare(`
+            INSERT INTO release_candidates
+            (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
+              title = excluded.title, indexer = excluded.indexer, size_mb = excluded.size_mb,
+              radarr_quality = excluded.radarr_quality, app_score = excluded.app_score,
+              seeders = excluded.seeders, leechers = excluded.leechers,
+              torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END,
+              info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END
+          `);
+
+          for (let i = 0; i < mapped.length; i++) {
+            const r = mapped[i];
+            const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
+            const qualityName = r.quality?.quality?.name || "Unknown";
+            const cfNames = r.customFormats?.map((f: any) => f.name) || [];
+            insertStmt.run(season.id, r.guid, r.title, r.indexer, sizeMb, qualityName, JSON.stringify(cfNames), computeAppScore(qualityName, cfNames, sizeMb, i + 1), i + 1, r.languages?.map((l: any) => l.name).join(", ") || "", r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "");
+          }
+
+          if (!preserveStatus) {
+            db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
+          }
+        } else if (!preserveStatus) {
+          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
+        }
+
+        db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
+        const data = getSeasonData(season.id);
+        return { season: season.season, found: data.release_count || 0, data };
+      } catch (err: any) {
+        if (!preserveStatus) {
+          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
+        }
+        db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
+        const data = getSeasonData(season.id);
+        return { season: season.season, found: 0, error: err.message, data };
+      }
+    };
+
+    const CONCURRENCY = 3;
+    const results: { season: number; found: number; error?: string; data?: any }[] = [];
+    let idx = 0;
+
+    const runNext = async (): Promise<void> => {
+      while (idx < seasons.length) {
+        const current = idx++;
+        send("progress", { step: "searching", season: seasons[current].season, message: `Searching S${String(seasons[current].season).padStart(2, "0")}...` });
+        const result = await searchOneSeason(seasons[current]);
+        results.push(result);
+        const label = result.error ? `error: ${result.error}` : `${result.found} releases`;
+        send("found", {
+          season: result.season,
+          message: `S${String(result.season).padStart(2, "0")}: ${label}`,
+          found: result.found,
+          ...result.data,
+        });
+      }
+    };
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, seasons.length) }, () => runNext());
+    await Promise.all(workers);
+
+    const totalFound = results.reduce((sum, r) => sum + (r.data?.release_count || 0), 0);
+    const totalErrors = results.filter(r => r.error).length;
+    send("done", { success: true, totalFound, seasons: results.length, errors: totalErrors, skipped: allSeasons.length - seasons.length });
+    console.log(`[SearchAll] sonarrId=${sonarrId}: ${totalFound} releases across ${results.length} seasons (${totalErrors} errors, ${allSeasons.length - seasons.length} skipped)`);
+    res.end();
+  });
+
+  // POST /api/requests/managed/search-all-movies - Search all wanted movies in parallel (SSE)
+  router.post("/managed/search-all-movies", async (req: Request, res: Response) => {
+    const SKIP_MINUTES = 5;
+    const cutoff = new Date(Date.now() - SKIP_MINUTES * 60 * 1000).toISOString();
+    const forceAll = !!req.body?.force;
+
+    const allMovies = db.prepare(
+      "SELECT id, title, radarr_id, last_searched_at FROM media_requests WHERE type = 'movie' ORDER BY title"
+    ).all() as any[];
+
+    const movies = forceAll ? allMovies : allMovies.filter(
+      (m) => !m.last_searched_at || m.last_searched_at < cutoff
+    );
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "close");
+    res.flushHeaders();
+
+    const send = (event: string, data: any) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    if (movies.length === 0) {
+      send("done", { success: true, totalFound: 0, movies: 0, errors: 0, skipped: allMovies.length });
+      res.end();
+      return;
+    }
+
+    const getMovieData = (movieId: number) => {
+      return db.prepare(`
+        SELECT mr.status,
+          (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
+           JOIN approval_history ah2 ON ah2.release_id = rc2.id
+           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+          (SELECT COUNT(*) FROM release_candidates rc3
+           JOIN approval_history ah3 ON ah3.release_id = rc3.id
+           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+        FROM media_requests mr WHERE mr.id = ?
+      `).get(movieId) as any || {};
+    };
+
+    const searchOneMovie = async (movie: any): Promise<{ id: number; title: string; found: number; error?: string; data?: any }> => {
+      const prevStatus = db.prepare("SELECT status FROM media_requests WHERE id = ?").get(movie.id) as any;
+      const preserveStatus = prevStatus?.status === "DOWNLOADING" || prevStatus?.status === "SEEDING";
+      if (!preserveStatus) {
+        db.prepare("UPDATE media_requests SET status = 'SEARCHING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
+      }
+
+      try {
+        const prowlarrApiKey = process.env.PROWLARR_API_KEY;
+        if (prowlarrApiKey && prowlarr) {
+          const query = req.body?.searchTerm || movie.title;
+          const results = await Promise.race([
+            prowlarr.search(query, [2000]),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
+          ]);
+          const mapped = (results as any[]).map(mapProwlarrToRadarrResult);
+
+          const insertStmt = db.prepare(`
+            INSERT INTO release_candidates
+            (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
+              title = excluded.title, indexer = excluded.indexer, size_mb = excluded.size_mb,
+              radarr_quality = excluded.radarr_quality, app_score = excluded.app_score,
+              seeders = excluded.seeders, leechers = excluded.leechers,
+              torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END,
+              info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END
+          `);
+
+          for (let i = 0; i < mapped.length; i++) {
+            const r = mapped[i];
+            const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
+            const qualityName = r.quality?.quality?.name || "Unknown";
+            const cfNames = r.customFormats?.map((f: any) => f.name) || [];
+            insertStmt.run(movie.id, r.guid, r.title, r.indexer, sizeMb, qualityName, JSON.stringify(cfNames), computeAppScore(qualityName, cfNames, sizeMb, i + 1), i + 1, r.languages?.map((l: any) => l.name).join(", ") || "", r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "");
+          }
+
+          if (!preserveStatus) {
+            db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
+          }
+        } else if (!preserveStatus) {
+          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
+        }
+
+        db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
+        const data = getMovieData(movie.id);
+        return { id: movie.id, title: movie.title, found: data.release_count || 0, data };
+      } catch (err: any) {
+        if (!preserveStatus) {
+          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
+        }
+        db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
+        const data = getMovieData(movie.id);
+        return { id: movie.id, title: movie.title, found: 0, error: err.message, data };
+      }
+    };
+
+    const CONCURRENCY = 3;
+    const results: { id: number; title: string; found: number; error?: string; data?: any }[] = [];
+    let idx = 0;
+
+    const runNext = async (): Promise<void> => {
+      while (idx < movies.length) {
+        const current = idx++;
+        send("progress", { step: "searching", title: movies[current].title, message: `Searching "${movies[current].title}"...` });
+        const result = await searchOneMovie(movies[current]);
+        results.push(result);
+        const label = result.error ? `error: ${result.error}` : `${result.found} releases`;
+        send("found", { id: result.id, title: result.title, message: `"${result.title}": ${label}`, found: result.found, ...result.data });
+      }
+    };
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, movies.length) }, () => runNext());
+    await Promise.all(workers);
+
+    const totalFound = results.reduce((sum, r) => sum + (r.data?.release_count || 0), 0);
+    const totalErrors = results.filter(r => r.error).length;
+    send("done", { success: true, totalFound, movies: results.length, errors: totalErrors, skipped: allMovies.length - movies.length });
+    console.log(`[SearchAllMovies] ${totalFound} releases across ${results.length} movies (${totalErrors} errors, ${allMovies.length - movies.length} skipped)`);
+    res.end();
+  });
+
   // POST /api/requests/:id/reactivate - Re-activate a single DISMISSED request
   router.post("/:id/reactivate", (req: Request, res: Response) => {
     try {
@@ -1253,7 +1512,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const query = searchTerm || request.title;
           const categories = request.type === "movie" ? [2000] : [5000];
           send("progress", { step: "searching", message: `Searching Prowlarr: "${query}"...` });
-          const prowlarrResults = await searchTimeout(prowlarr.search(query, categories), 120000);
+          const prowlarrResults = await searchTimeout(prowlarr.search(query, categories), 45000);
           releases = prowlarrResults.map(mapProwlarrToRadarrResult);
           console.log(`[Search] Prowlarr returned ${releases.length} results for "${query}"`);
         } else {

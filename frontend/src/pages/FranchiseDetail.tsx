@@ -54,47 +54,43 @@ export default function FranchiseDetail() {
     if (!franchise) return;
     setSearchingAll(true);
     setSearchProgress("Starting search across all seasons...");
-    let found = 0;
-    let errors = 0;
 
-    for (const season of franchise.seasons) {
-      setSearchProgress(`Searching S${String(season.season).padStart(2, "0")}...`);
-      try {
-        const resp = await fetch(`/api/requests/${season.request_id}/search`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        const reader = resp.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let streamDone = false;
-        let eventType = "";
-        while (!streamDone) {
-          const { done: readerDone, value } = await reader.read();
-          if (readerDone) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith("data: ")) {
-              const data = JSON.parse(line.slice(6));
-              if (data.releasesFound) found += data.releasesFound;
-              if (eventType === "done") streamDone = true;
-            } else if (line.trim() === "") {
-              eventType = "";
+    try {
+      const resp = await fetch(`/api/requests/managed/${franchise.sonarr_id}/search-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let eventType = "";
+      while (true) {
+        const { done: readerDone, value } = await reader.read();
+        if (readerDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+            if (data.message) setSearchProgress(data.message);
+            if (data.totalFound != null) {
+              setSearchProgress(`Done — ${data.totalFound} release(s) across ${data.seasons} season(s)`);
+              setTimeout(() => setSearchProgress(""), 3000);
             }
+          } else if (line.trim() === "") {
+            eventType = "";
           }
         }
-      } catch {
-        errors++;
       }
+    } catch {
+      setSearchProgress("Search failed");
+      setTimeout(() => setSearchProgress(""), 3000);
     }
 
-    setSearchProgress(`Done — ${found} release(s) found${errors > 0 ? ` (${errors} errors)` : ""}`);
-    setTimeout(() => setSearchProgress(""), 3000);
     await loadFranchise();
     setSearchingAll(false);
   };
