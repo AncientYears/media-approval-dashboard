@@ -120,9 +120,9 @@ export default function FranchiseDetail() {
   const [searchingAll, setSearchingAll] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [franchiseTorrents, setFranchiseTorrents] = useState<any[]>([]);
   const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
   const [seasonEpisodes, setSeasonEpisodes] = useState<Record<number, any[]>>({});
+  const [franchiseTorrents, setFranchiseTorrents] = useState<any[]>([]);
   const autoSearchDone = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -309,6 +309,7 @@ export default function FranchiseDetail() {
           const missingCount = epCount > 0 ? epCount - filledCount : 0;
           const hasTorrents = season.status === "DOWNLOADING" || season.status === "SEEDING";
           const episodes = seasonEpisodes[season.season] || [];
+          const seasonTorrents = franchiseTorrents.filter((t) => t.found && t.season === season.season);
 
           const toggleExpand = async () => {
             const next = new Set(expandedSeasons);
