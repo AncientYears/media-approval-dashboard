@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary } from "../api";
 
@@ -292,7 +292,7 @@ function SeasonDetail({ season, franchise, onBack }: {
 }) {
   const [releases, setReleases] = useState<any[]>([]);
   const [approvedReleases, setApprovedReleases] = useState<any[]>([]);
-  const [request, setRequest] = useState<any>(null);
+
   const [torrentStatuses, setTorrentStatuses] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [searching, setSearching] = useState(false);
@@ -308,7 +308,6 @@ function SeasonDetail({ season, franchise, onBack }: {
   const loadData = useCallback(async () => {
     try {
       const data = await fetchReleases(season.request_id);
-      setRequest(data);
       setReleases(data.releases || []);
       setApprovedReleases(data.approved_releases || []);
       setSearchTerm((prev) => prev || data.title || "");
@@ -350,7 +349,6 @@ function SeasonDetail({ season, franchise, onBack }: {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let eventType = "";
       while (true) {
         const { done: readerDone, value } = await reader.read();
         if (readerDone) break;
@@ -358,11 +356,10 @@ function SeasonDetail({ season, franchise, onBack }: {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
-          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-          else if (line.startsWith("data: ")) {
+          if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
             if (data.message) setSearchProgress(data.message);
-          } else if (line.trim() === "") eventType = "";
+          }
         }
       }
     } catch {
@@ -381,7 +378,6 @@ function SeasonDetail({ season, franchise, onBack }: {
       const poll = setInterval(async () => {
         attempts++;
         const data = await fetchReleases(season.request_id);
-        setRequest(data);
         setReleases(data.releases || []);
         setApprovedReleases(data.approved_releases || []);
         if (attempts >= 10) clearInterval(poll);
