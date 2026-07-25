@@ -67,6 +67,11 @@ export async function moveToLibrary(requestId: number) {
   return response.data;
 }
 
+export async function processToLibrary(requestId: number, options?: { stripAudioTracks?: number[]; keepAudioTracks?: number[]; removeSubtitles?: boolean; audioCodec?: string }) {
+  const response = await api.post(`/requests/${requestId}/process`, options || {});
+  return response.data;
+}
+
 export async function dismissRequest(requestId: number, releaseId?: number) {
   const params = releaseId ? `?releaseId=${releaseId}` : "";
   const response = await api.post(`/requests/${requestId}/dismiss${params}`);

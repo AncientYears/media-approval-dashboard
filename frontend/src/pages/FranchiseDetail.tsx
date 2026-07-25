@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
 
 const POLL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_SEARCH_ALL || "0") * 1000;
 
@@ -305,6 +305,7 @@ function SeasonDetail({ season, franchise, onBack }: {
   const [moving, setMoving] = useState<number | null>(null);
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "list">("table");
+  const [processing, setProcessing] = useState<number | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -425,6 +426,19 @@ function SeasonDetail({ season, franchise, onBack }: {
       setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
     } finally {
       setMoving(null);
+    }
+  };
+
+  const handleProcess = async (releaseId: number) => {
+    setProcessing(releaseId);
+    try {
+      const result = await processToLibrary(season.request_id);
+      setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
+      loadTorrentStatuses();
+    } catch (err: any) {
+      setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
+    } finally {
+      setProcessing(null);
     }
   };
 
@@ -563,9 +577,14 @@ function SeasonDetail({ season, franchise, onBack }: {
                       ) : mr?.error ? (
                         <span className="move-error">{mr.error}</span>
                       ) : (
-                        <button className="btn btn-primary btn-tiny" onClick={() => handleMoveToLibrary(ar.id)} disabled={isMoving}>
-                          {isMoving ? "Moving..." : "Move to Library"}
-                        </button>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button className="btn btn-primary btn-tiny" onClick={() => handleMoveToLibrary(ar.id)} disabled={isMoving}>
+                            {isMoving ? "Moving..." : "Move to Library"}
+                          </button>
+                          <button className="btn btn-secondary btn-tiny" onClick={() => handleProcess(ar.id)} disabled={processing !== null}>
+                            {processing === ar.id ? "Processing..." : "Process"}
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
