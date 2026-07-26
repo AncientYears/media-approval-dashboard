@@ -2429,6 +2429,57 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/:id/move-status - Detect existing hardlinks in processed/workspace
+  router.get("/:id/move-status", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const releases = db.prepare(
+        "SELECT rc.id, rc.torrent_hash FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).all(id) as any[];
+
+      const results: Record<number, { source?: string; destination?: string } | null> = {};
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = type === "movie" ? (process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy") : (process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy");
+      const workspaceBase = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
+
+      for (const rel of releases) {
+        if (!rel.torrent_hash) { results[rel.id] = null; continue; }
+        const torrent = await qbittorrent.getTorrentByHash(rel.torrent_hash);
+        if (!torrent) { results[rel.id] = null; continue; }
+
+        let contentPath = torrent.content_path;
+        if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
+        if (!fs.existsSync(contentPath)) { results[rel.id] = null; continue; }
+
+        const basename = path.basename(contentPath);
+
+        const processedPath = path.join(processedDir, basename);
+        if (fs.existsSync(processedPath)) {
+          results[rel.id] = { source: contentPath, destination: processedPath };
+          continue;
+        }
+
+        const wsDirs = listWorkspaces(request.id, request.title);
+        for (const ws of wsDirs) {
+          const wsInput = path.join(ws.path, "inputs", basename);
+          if (fs.existsSync(wsInput)) {
+            results[rel.id] = { source: contentPath, destination: wsInput };
+            break;
+          }
+        }
+        if (!results[rel.id]) results[rel.id] = null;
+      }
+
+      res.json({ moves: results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // GET /api/requests/:id/workspaces - List existing workspaces for this request
   router.get("/:id/workspaces", async (req: Request, res: Response) => {
     try {

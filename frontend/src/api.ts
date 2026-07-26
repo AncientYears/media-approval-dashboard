@@ -92,6 +92,11 @@ export async function fetchWorkspaces(requestId: number) {
   return response.data;
 }
 
+export async function fetchMoveStatus(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/move-status`);
+  return response.data;
+}
+
 export async function fetchContentInfo(requestId: number, releaseId?: number) {
   const params = releaseId ? `?releaseId=${releaseId}` : '';
   const response = await api.get(`/requests/${requestId}/content-info${params}`);

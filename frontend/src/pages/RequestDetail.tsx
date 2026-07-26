@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 
@@ -204,6 +204,19 @@ export default function RequestDetail() {
       setApprovedReleases(data.approved_releases || []);
       if (initial) setSearchTerm(data.title || "");
       setError(null);
+      try {
+        const moveStatus = await fetchMoveStatus(Number(id));
+        if (moveStatus?.moves) {
+          setMoveResults((prev) => {
+            const next = { ...prev };
+            for (const [relId, move] of Object.entries(moveStatus.moves)) {
+              const rid = Number(relId);
+              if (move && !next[rid]) next[rid] = move;
+            }
+            return next;
+          });
+        }
+      } catch {}
     } catch (err) {
       setError("Failed to load releases");
       console.error(err);
