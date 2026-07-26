@@ -26,6 +26,17 @@ function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Secondary: lookup title appears in torrent, but must be >= 10 chars to avoid false positives
   // like "Dragons" matching "Ninjago Dragons Rising"
   if (lookupNorm.length >= 10 && torrentNorm.includes(lookupNorm)) return true;
+  if (torrentNorm.length >= 10 && lookupNorm.includes(torrentNorm)) return true;
+
+  const shorter = lookupNorm.length <= torrentNorm.length ? lookupNorm : torrentNorm;
+  const longer = lookupNorm.length > torrentNorm.length ? lookupNorm : torrentNorm;
+  const shorterWords = shorter.split(/\s+/).filter((w: string) => w.length >= 3);
+  const longerSet = new Set(longer.split(/\s+/));
+  if (shorterWords.length >= 2) {
+    const matched = shorterWords.filter((w: string) => longerSet.has(w));
+    if (matched.length >= shorterWords.length - 1) return true;
+  }
+
   return false;
 }
 
@@ -1133,12 +1144,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (type === "movie") {
             matchedRadarr = [...existingRadarrByTitle.values()].find((m: any) => {
               const mNorm = normalizeTitleForMatch(m.title);
-              return mNorm === tNorm || tNorm.startsWith(mNorm) || mNorm.startsWith(tNorm);
+              return titlesMatch(mNorm, tNorm);
             });
           } else if (type === "series") {
             matchedSonarr = [...existingSonarrByTitle.values()].find((s: any) => {
               const sNorm = normalizeTitleForMatch(s.title);
-              return sNorm === tNorm || tNorm.startsWith(sNorm) || sNorm.startsWith(tNorm);
+              return titlesMatch(sNorm, tNorm);
             });
           }
 
