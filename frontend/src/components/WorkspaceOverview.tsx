@@ -2,13 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchActiveWorkspaces } from "../api";
 
-function formatSize(bytes: number): string {
-  if (bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i > 2 ? 2 : 1)} ${units[i]}`;
-}
-
 export default function WorkspaceOverview() {
   const [open, setOpen] = useState(false);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
