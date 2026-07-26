@@ -117,6 +117,7 @@ export default function TorrentPanel({
   })() : null;
 
   return (
+    <>
     <div className="torrent-panel">
       <div className="approved-release-info">
         <span className="approved-label">Installed</span>
@@ -399,5 +400,6 @@ export default function TorrentPanel({
         </div>
       </div>
     )}
+    </>
   );
 }
