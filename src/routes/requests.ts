@@ -22,19 +22,30 @@ function normalizeTitleForMatch(s: string): string {
 
 function parseQualityFromName(name: string): string {
   const lower = name.toLowerCase();
-  if (lower.includes("2160p") || lower.includes("4k")) return "Bluray-2160p";
-  if (lower.includes("1080p")) return "Bluray-1080p";
-  if (lower.includes("720p")) return "Bluray-720p";
-  if (lower.includes("480p")) return "DVD";
-  if (lower.includes("remux")) return "Remux-1080p";
-  if (lower.includes("web-dl") || lower.includes("webdl")) return "WEBDL-1080p";
-  if (lower.includes("webrip") || lower.includes("web-rip")) return "WEBRip-1080p";
-  if (lower.includes("bluray") || lower.includes("bdrip")) return "Bluray-1080p";
-  if (lower.includes("hdtv")) return "HDTV-1080p";
-  if (lower.includes("dvdrip")) return "DVD";
-  if (lower.includes("cam") || lower.includes("telesync")) return "CAM";
-  if (lower.includes("scr") || lower.includes("screener")) return "SCR";
-  return "unknown";
+  let source = "";
+  let resolution = "";
+
+  if (lower.includes("remux")) source = "Remux";
+  else if (lower.includes("web-dl") || lower.includes("webdl")) source = "WEBDL";
+  else if (lower.includes("webrip") || lower.includes("web-rip")) source = "WEBRip";
+  else if (lower.includes("bluray") || lower.includes("bdrip") || lower.includes("blu-ray")) source = "Bluray";
+  else if (lower.includes("hdtv") || lower.includes("hdrip") || lower.includes("hd-rip")) source = "HDTV";
+  else if (lower.includes("dvdrip") || lower.includes("dvd-rip")) source = "DVD";
+  else if (lower.includes("hdtv")) source = "HDTV";
+  else if (lower.includes("cam") || lower.includes("telesync")) source = "CAM";
+  else if (lower.includes("scr") || lower.includes("screener")) source = "SCR";
+  else source = "Bluray";
+
+  if (lower.includes("2160p") || lower.includes("4k")) resolution = "2160p";
+  else if (lower.includes("1080p")) resolution = "1080p";
+  else if (lower.includes("720p")) resolution = "720p";
+  else if (lower.includes("480p")) resolution = "480p";
+  else resolution = "1080p";
+
+  if (source === "Remux") return `Remux-${resolution}`;
+  if (source === "CAM" || source === "SCR") return source;
+  if (source === "DVD") return "DVD";
+  return `${source}-${resolution}`;
 }
 
 function isSeasonPackTitle(title: string, season: number): boolean {
@@ -69,25 +80,37 @@ function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
   const infoOrMagnet = r.magnetUri || r.infoUrl || "";
 
   const titleLower = (r.title || r.fileName || "").toLowerCase();
-  let qualityName = "Unknown";
-  if (titleLower.includes("2160p") || titleLower.includes("4k")) qualityName = "Bluray-2160p";
-  else if (titleLower.includes("1080p")) qualityName = "Bluray-1080p";
-  else if (titleLower.includes("720p")) qualityName = "Bluray-720p";
-  else if (titleLower.includes("480p")) qualityName = "DVD";
-  else if (titleLower.includes("dvdremux") || titleLower.includes("dvd remux")) qualityName = "Remux-480p";
-  else if (titleLower.includes("remux")) qualityName = "Remux-1080p";
-  else if (titleLower.includes("web-dl") || titleLower.includes("webdl")) qualityName = "WEBDL-1080p";
-  else if (titleLower.includes("webrip") || titleLower.includes("web-rip")) qualityName = "WEBRip-1080p";
-  else if (titleLower.includes("bluray") || titleLower.includes("bdrip") || titleLower.includes("blu-ray")) qualityName = "Bluray-1080p";
-  else if (titleLower.includes("hdtv")) qualityName = "HDTV-1080p";
-  else if (titleLower.includes("hdrip") || titleLower.includes("hd-rip")) qualityName = "HDTV-720p";
-  else if (titleLower.includes("dvdrip") || titleLower.includes("dvd-rip") || titleLower.includes("dvdr")) qualityName = "DVD";
-  else if (titleLower.includes("tvrip") || titleLower.includes("tv-rip") || titleLower.includes("tv rip")) qualityName = "HDTV-480p";
-  else if (titleLower.includes("vhsrip") || titleLower.includes("vhs-rip")) qualityName = "VHS";
-  else if (titleLower.includes("cam") || titleLower.includes("telesync") || titleLower.includes("telecine") || titleLower.includes("ts ")) qualityName = "CAM";
-  else if (titleLower.includes("scr") || titleLower.includes("screener")) qualityName = "SCR";
-  else if (titleLower.includes("tc ")) qualityName = "TELECINE";
-  else if (titleLower.includes("pal") || titleLower.includes("ntsc")) qualityName = "DVD";
+  let source = "";
+  let resolution = "";
+
+  if (titleLower.includes("dvdremux") || titleLower.includes("dvd remux")) source = "Remux";
+  else if (titleLower.includes("remux")) source = "Remux";
+  else if (titleLower.includes("web-dl") || titleLower.includes("webdl")) source = "WEBDL";
+  else if (titleLower.includes("webrip") || titleLower.includes("web-rip")) source = "WEBRip";
+  else if (titleLower.includes("bluray") || titleLower.includes("bdrip") || titleLower.includes("blu-ray")) source = "Bluray";
+  else if (titleLower.includes("hdtv")) source = "HDTV";
+  else if (titleLower.includes("hdrip") || titleLower.includes("hd-rip")) source = "HDTV";
+  else if (titleLower.includes("dvdrip") || titleLower.includes("dvd-rip") || titleLower.includes("dvdr")) source = "DVD";
+  else if (titleLower.includes("tvrip") || titleLower.includes("tv-rip") || titleLower.includes("tv rip")) source = "HDTV";
+  else if (titleLower.includes("vhsrip") || titleLower.includes("vhs-rip")) source = "VHS";
+  else if (titleLower.includes("cam") || titleLower.includes("telesync") || titleLower.includes("telecine") || titleLower.includes("ts ")) source = "CAM";
+  else if (titleLower.includes("scr") || titleLower.includes("screener")) source = "SCR";
+  else if (titleLower.includes("tc ")) source = "TELECINE";
+  else if (titleLower.includes("pal") || titleLower.includes("ntsc")) source = "DVD";
+  else source = "Bluray";
+
+  if (titleLower.includes("2160p") || titleLower.includes("4k")) resolution = "2160p";
+  else if (titleLower.includes("1080p")) resolution = "1080p";
+  else if (titleLower.includes("720p")) resolution = "720p";
+  else if (titleLower.includes("480p")) resolution = "480p";
+  else resolution = "1080p";
+
+  let qualityName: string;
+  if (source === "Remux") qualityName = titleLower.includes("480p") ? "Remux-480p" : `Remux-${resolution}`;
+  else if (source === "VHS") qualityName = "VHS";
+  else if (source === "CAM" || source === "SCR" || source === "TELECINE") qualityName = source;
+  else if (source === "DVD") qualityName = "DVD";
+  else qualityName = `${source}-${resolution}`;
 
   return {
     guid,
