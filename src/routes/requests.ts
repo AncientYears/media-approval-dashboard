@@ -37,6 +37,11 @@ function parseQualityFromName(name: string): string {
   return "unknown";
 }
 
+function isSeasonPackTitle(title: string, season: number): boolean {
+  const seasonPattern = new RegExp(`\\bS${String(season).padStart(2, "0")}\\b`, "i");
+  return seasonPattern.test(title) && !/\bE\d{1,3}\b/i.test(title);
+}
+
 function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Primary: prefix match (lookup title is start of torrent title or vice versa)
   if (torrentNorm.startsWith(lookupNorm) || lookupNorm.startsWith(torrentNorm)) return true;
@@ -550,21 +555,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           seasons: seasons.map((s: any) => {
             // Get covered episodes from parsed_episodes on approved releases
             const coveredRows = db.prepare(`
-              SELECT rc.parsed_episodes FROM release_candidates rc
+              SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
               JOIN approval_history ah ON ah.release_id = rc.id
-              WHERE ah.request_id = ? AND rc.torrent_hash != '' AND rc.parsed_episodes != ''
+              WHERE ah.request_id = ? AND rc.torrent_hash != ''
             `).all(s.id) as any[];
             const coveredEps = new Set<number>();
             for (const cr of coveredRows) {
-              // parsed_episodes is like "S02E12" or "S02E01E02" or "S02E01-E12"
-              const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
-              if (epMatches) {
-                for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
-              }
-              // Handle range format like "S02E01-12"
-              const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
-              if (rangeMatch) {
-                for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+              if (cr.parsed_episodes) {
+                const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
+                if (epMatches) {
+                  for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+                }
+                const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+                if (rangeMatch) {
+                  for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+                }
+              } else if (s.episode_count && s.season != null && isSeasonPackTitle(cr.title || '', s.season)) {
+                for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
               }
             }
             return {
@@ -687,14 +694,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // Get covered episodes — only from approved releases with torrent_hash (actually have these episodes)
         const coveredEps = new Set<number>();
         for (const r of releases) {
-          if (r.approved_at && r.torrent_hash && r.parsed_episodes) {
-            const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
-            if (epMatches) {
-              for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
-            }
-            const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
-            if (rangeMatch) {
-              for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+          if (r.approved_at && r.torrent_hash) {
+            if (r.parsed_episodes) {
+              const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
+              if (epMatches) {
+                for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+              }
+              const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+              if (rangeMatch) {
+                for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+              }
+            } else if (episodeCount && s.season != null && isSeasonPackTitle(r.title || '', s.season)) {
+              for (let i = 1; i <= episodeCount; i++) coveredEps.add(i);
             }
           }
         }
@@ -747,7 +758,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const seasonNum = Number(req.params.season);
 
       const row = db.prepare(
-        "SELECT id, sonarr_id, title FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?"
+        "SELECT id, sonarr_id, title, season, episode_count FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?"
       ).get(sonarrId, seasonNum) as any;
 
       if (!row) return res.status(404).json({ error: "Season not found" });
@@ -768,34 +779,42 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const coveredEps = new Set<number>();
       const epQuality: Record<number, string> = {};
       const releases = db.prepare(`
-        SELECT rc.parsed_episodes, rc.radarr_quality, ah.approved_at, rc.torrent_hash
+        SELECT rc.parsed_episodes, rc.radarr_quality, rc.title, ah.approved_at, rc.torrent_hash
         FROM release_candidates rc
         LEFT JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = ?
         WHERE rc.request_id = ?
       `).all(row.id, row.id) as any[];
 
+      let hasSeasonPack = false;
       for (const r of releases) {
-        if (r.approved_at && r.torrent_hash && r.parsed_episodes) {
-          const quality = r.radarr_quality || "";
-          const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
-          if (epMatches) {
-            for (const em of epMatches) {
-              const epNum = parseInt(em.slice(1), 10);
-              coveredEps.add(epNum);
-              if (!epQuality[epNum] || quality.toLowerCase().includes("remux")) epQuality[epNum] = quality;
+        if (r.approved_at && r.torrent_hash) {
+          if (r.parsed_episodes) {
+            const quality = r.radarr_quality || "";
+            const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
+            if (epMatches) {
+              for (const em of epMatches) {
+                const epNum = parseInt(em.slice(1), 10);
+                coveredEps.add(epNum);
+                if (!epQuality[epNum] || quality.toLowerCase().includes("remux")) epQuality[epNum] = quality;
+              }
             }
-          }
-          const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
-          if (rangeMatch) {
-            for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) {
-              coveredEps.add(i);
-              if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
+            const rangeMatch = r.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+            if (rangeMatch) {
+              for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) {
+                coveredEps.add(i);
+                if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
+              }
             }
+          } else if (row.season != null && isSeasonPackTitle(r.title || '', row.season)) {
+            hasSeasonPack = true;
           }
         }
       }
 
       if (sonarrEpisodes.length > 0) {
+        if (hasSeasonPack) {
+          for (const e of sonarrEpisodes) coveredEps.add(e.episodeNumber);
+        }
         const episodes = sonarrEpisodes.map((e) => ({
           ...e,
           covered: coveredEps.has(e.episodeNumber),
@@ -804,6 +823,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         res.json({ episodeCount: episodes.length, coveredCount: coveredEps.size, episodes });
       } else {
         const epCount = row.episode_count || 0;
+        if (hasSeasonPack) {
+          for (let i = 1; i <= epCount; i++) coveredEps.add(i);
+        }
         const episodes = Array.from({ length: epCount }, (_, i) => ({
           episodeNumber: i + 1,
           title: `Episode ${i + 1}`,
