@@ -1139,6 +1139,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
         // Sync request statuses — any request with approved RCs in qBittorrent should be DOWNLOADING/SEEDING
+        let staleFixed = 0;
         const staleStatus = db.prepare(
           "SELECT DISTINCT mr.id, mr.status FROM media_requests mr " +
           "JOIN approval_history ah ON ah.request_id = mr.id " +
@@ -1149,13 +1150,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const row of staleStatus) {
           const rcHashes = db.prepare(
             "SELECT rc.torrent_hash FROM release_candidates rc " +
-            "JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = rc.id " +
+            "JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = rc.request_id " +
             "WHERE rc.request_id = ? AND rc.torrent_hash != ''"
           ).all(row.id) as any[];
           const hasInQbit = rcHashes.some((r: any) => qbitHashes.has(r.torrent_hash));
           if (hasInQbit) {
             db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
             console.log(`[ScanDownloads] Fixed status: request ${row.id} ${row.status} -> DOWNLOADING`);
+            staleFixed++;
           }
         }
         if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
@@ -1163,7 +1165,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         // If season mismatches were cleaned, don't return — fall through to import the freed torrents
         if (seasonFixed === 0) {
-          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleStatus.length, seasonFixed });
+          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleFixed, seasonFixed });
         }
         // Season mismatches cleaned — recompute which torrents need importing
         const freshHashes = new Set(
