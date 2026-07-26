@@ -2441,7 +2441,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
       ).all(id) as any[];
 
-      const results: Record<number, { source?: string; destination?: string } | null> = {};
+      const results: Record<number, { source?: string; destination?: string; processedOutputs?: string[] } | null> = {};
       const type = request.type === "series" ? "series" : "movie";
       const processedDir = type === "movie" ? (process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy") : (process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy");
       const workspaceBase = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
@@ -2464,14 +2464,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
 
         const wsDirs = listWorkspaces(request.id, request.title);
+        let foundInWorkspace = false;
         for (const ws of wsDirs) {
           const wsInput = path.join(ws.path, "inputs", basename);
           if (fs.existsSync(wsInput)) {
             results[rel.id] = { source: contentPath, destination: wsInput };
+            foundInWorkspace = true;
             break;
           }
         }
-        if (!results[rel.id]) results[rel.id] = null;
+
+        if (!foundInWorkspace && !results[rel.id]) {
+          const processedOutputs: string[] = [];
+          for (const ws of wsDirs) {
+            if (ws.metadata?.outputPaths) {
+              for (const op of ws.metadata.outputPaths) {
+                if (fs.existsSync(op)) processedOutputs.push(op);
+              }
+            }
+          }
+          if (processedOutputs.length > 0) {
+            results[rel.id] = { source: contentPath, destination: processedOutputs[0], processedOutputs };
+          } else {
+            results[rel.id] = null;
+          }
+        }
       }
 
       res.json({ moves: results });
@@ -2600,7 +2617,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
 
-      const result = moveToWorkspaceSync(contentPath, request.id, request.title, req.body?.workspaceIndex);
+      const result = moveToWorkspaceSync(contentPath, request.id, request.title, req.body?.workspaceIndex, release.id, release.torrent_hash);
       if (!result.success) return res.status(500).json({ error: result.error });
 
       console.log(`[MoveToWorkspace] ${contentPath} → ${result.destination}`);

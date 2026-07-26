@@ -113,9 +113,18 @@ export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"
   return { success: true, destination: dest };
 }
 
-export function moveToWorkspaceSync(sourcePath: string, requestId: number, title: string, jobIndex?: number): { success: boolean; destination?: string; error?: string } {
+export function moveToWorkspaceSync(
+  sourcePath: string,
+  requestId: number,
+  title: string,
+  jobIndex?: number,
+  releaseId?: number,
+  torrentHash?: string,
+): { success: boolean; destination?: string; error?: string } {
   const workspaceDir = createWorkspaceDir(requestId, title, jobIndex);
   const destDir = path.join(workspaceDir, "inputs");
+
+  writeWorkspaceMetadata(workspaceDir, { requestId, releaseId, torrentHash, sourcePath } as any);
 
   const stat = fs.statSync(sourcePath);
   if (stat.isDirectory()) {
@@ -333,6 +342,15 @@ export interface WorkspaceMetadata {
   requestId: number;
   status: "active" | "completed";
   outputPaths?: string[];
+  releaseId?: number;
+  torrentHash?: string;
+  sourcePath?: string;
+}
+
+export interface WorkspaceFile {
+  name: string;
+  size: number;
+  exists: boolean;
 }
 
 export interface WorkspaceInfo {
@@ -342,6 +360,8 @@ export interface WorkspaceInfo {
   path: string;
   inputCount: number;
   outputCount: number;
+  inputFiles: WorkspaceFile[];
+  outputFiles: WorkspaceFile[];
   metadata: WorkspaceMetadata;
 }
 
@@ -362,6 +382,22 @@ export function writeWorkspaceMetadata(wsPath: string, meta: Partial<WorkspaceMe
   fs.writeFileSync(path.join(wsPath, "metadata.json"), JSON.stringify(merged, null, 2));
 }
 
+function readDirFiles(dirPath: string): WorkspaceFile[] {
+  const files: WorkspaceFile[] = [];
+  try {
+    for (const entry of fs.readdirSync(dirPath)) {
+      const fullPath = path.join(dirPath, entry);
+      try {
+        const stat = fs.statSync(fullPath);
+        files.push({ name: entry, size: stat.size, exists: true });
+      } catch {
+        files.push({ name: entry, size: 0, exists: false });
+      }
+    }
+  } catch {}
+  return files;
+}
+
 export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[] {
   const base = `${requestId}-${sanitizeName(title)}`;
   try {
@@ -375,16 +411,24 @@ export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[
       const wsPath = path.join(PROCESSING_WORKSPACE, entry.name);
       const inputsDir = path.join(wsPath, "inputs");
       const outputDir = path.join(wsPath, "output");
-      let inputCount = 0;
-      let outputCount = 0;
-      try { inputCount = fs.readdirSync(inputsDir).length; } catch {}
-      try { outputCount = fs.readdirSync(outputDir).length; } catch {}
+      const inputFiles = readDirFiles(inputsDir);
+      const outputFiles = readDirFiles(outputDir);
       const metadata = readWorkspaceMetadata(wsPath) || {
         createdAt: fs.statSync(wsPath).birthtime.toISOString(),
         requestId,
         status: "active",
       };
-      matches.push({ index, name: entry.name, dirName: entry.name, path: wsPath, inputCount, outputCount, metadata });
+      matches.push({
+        index,
+        name: entry.name,
+        dirName: entry.name,
+        path: wsPath,
+        inputCount: inputFiles.length,
+        outputCount: outputFiles.length,
+        inputFiles,
+        outputFiles,
+        metadata,
+      });
     }
     return matches.sort((a, b) => a.index - b.index);
   } catch {

@@ -367,8 +367,33 @@ export default function TorrentPanel({
                     {ws.metadata.notes}
                   </div>
                 )}
-                {ws.metadata?.outputPaths?.length > 0 && (
+                {ws.inputFiles?.length > 0 && (
                   <div className="ws-manager-outputs">
+                    <div className="ws-manager-section-label">Inputs</div>
+                    {ws.inputFiles.map((f: any, i: number) => (
+                      <div key={i} className="ws-manager-output-path" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)`}>
+                        <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
+                        {f.name}
+                        <span className="ws-file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {ws.outputFiles?.length > 0 && (
+                  <div className="ws-manager-outputs">
+                    <div className="ws-manager-section-label">Outputs</div>
+                    {ws.outputFiles.map((f: any, i: number) => (
+                      <div key={i} className="ws-manager-output-path" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB) - Click to copy`} onClick={() => navigator.clipboard.writeText(f.name)}>
+                        <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
+                        {f.name}
+                        <span className="ws-file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {ws.metadata?.outputPaths?.length > 0 && (
+                  <div className="ws-manager-outputs ws-manager-processed">
+                    <div className="ws-manager-section-label">Processed</div>
                     {ws.metadata.outputPaths.map((p: string, i: number) => (
                       <div key={i} className="ws-manager-output-path" title="Click to copy" onClick={() => navigator.clipboard.writeText(p)}>
                         {p}

@@ -1877,6 +1877,33 @@ body {
   margin-top: 6px;
 }
 
+.ws-manager-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.ws-manager-processed {
+  border-left: 2px solid var(--primary);
+  padding-left: 8px;
+}
+
+.ws-file-exists {
+  font-size: 8px;
+  margin-right: 6px;
+  color: var(--text-secondary);
+}
+
+.ws-file-size {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
 @media (max-width: 768px) {
   .nav-container {
     flex-direction: column;
