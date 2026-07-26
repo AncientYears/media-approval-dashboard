@@ -1,7 +1,8 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest } from "../api";
 import { useToast } from "../components/Toast";
+import TorrentPanel from "../components/TorrentPanel";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -211,6 +212,7 @@ export default function RequestDetail() {
   const [searchTerm, setSearchTerm] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
+  const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
 
   const loadData = async (initial = false) => {
     try {
@@ -357,6 +359,22 @@ export default function RequestDetail() {
     }
   };
 
+  const handleMove = async (releaseId: number) => {
+    setMoving(releaseId);
+    try {
+      const isPreprocess = preprocessingMap[releaseId];
+      const result = isPreprocess
+        ? await moveToWorkspace(Number(id))
+        : await moveToProcessed(Number(id));
+      setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
+      loadData();
+    } catch (err: any) {
+      setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
+    } finally {
+      setMoving(null);
+    }
+  };
+
   const handleDismiss = async (releaseId?: number) => {
     if (!confirm("Permanently delete? This cannot be undone.")) return;
     await dismissRequest(Number(id), releaseId);
@@ -447,124 +465,25 @@ export default function RequestDetail() {
         const mr = moveResults[ar.id];
         const isMoving = moving === ar.id;
         const isRemoveConfirm = removeConfirmId === ar.id;
-        const hasTorrentAr = !!ar.torrent_hash;
-
-        if (!hasTorrentAr) return null;
-
-        // Don't render card if torrent was deleted from qBittorrent (stale hash)
-        const tsEntry = torrentStatuses.find((s: any) => s.release_id === ar.id);
-        if (tsEntry && !tsEntry.found) return null;
 
         return (
-          <div key={ar.id} className="torrent-panel">
-            <div className="approved-release-info">
-              <span className="approved-label">Installed</span>
-              <span className="approved-title" title={ar.title}>
-                {ar.info_url
-                  ? <a href={ar.info_url} target="_blank" rel="noopener noreferrer">{ar.title}</a>
-                  : ar.title}
-              </span>
-              <span className="rtag">{ar.radarr_quality}</span>
-              <span className="rtag">{formatSize(ar.size_mb)}</span>
-              {ts?.found && (
-                <span className={`status-badge status-badge-sm qb-${ts.state}`}>
-                  {ts.state}
-                </span>
-              )}
-            </div>
-            {ts?.found ? (
-              <>
-                <div className="torrent-progress-bar">
-                  <div className="torrent-progress-fill" style={{ width: `${ts.progress}%` }} />
-                </div>
-                <div className="torrent-stats-grid">
-                  <div className="ts-item ts-primary">
-                    <span className="ts-value">{ts.progress}%</span>
-                  </div>
-                  {ts.state === "downloading" && (
-                    <div className="ts-item ts-speed">
-                      <span className="ts-icon">↓</span>
-                      <span className="ts-value">{(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>
-                    </div>
-                  )}
-                  {ts.state === "downloading" && ts.eta > 0 && ts.eta < 8640000 && (
-                    <div className="ts-item">
-                      <span className="ts-label">ETA</span>
-                      <span className="ts-value">{formatDuration(ts.eta)}</span>
-                    </div>
-                  )}
-                  <div className="ts-item ts-speed">
-                    <span className="ts-icon">↑</span>
-                    <span className="ts-value">{(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
-                  </div>
-                  <div className="ts-item">
-                    <span className="ts-label">Ratio</span>
-                    <span className="ts-value">{ts.ratio.toFixed(2)}</span>
-                  </div>
-                  <div className="ts-item">
-                    <span className="ts-label">Uploaded</span>
-                    <span className="ts-value">{formatBytes(ts.uploaded || 0)}</span>
-                  </div>
-                  <div className="ts-item">
-                    <span className="ts-label">Peers</span>
-                    <span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span>
-                  </div>
-                  {ts.completion_on > 0 && (ts.state === "uploading" || ts.state === "stalledUP" || ts.state === "forcedUP" || ts.state === "queuedUP" || ts.state === "pausedUP") && (
-                    <div className="ts-item">
-                      <span className="ts-label">Seeding</span>
-                      <span className="ts-value">{formatDuration(ts.seeding_time || 0)}</span>
-                    </div>
-                  )}
-                  {ts.progress === 100 && (
-                    <div className="ts-item ts-actions">
-                      {ts.state === "stalledUP" || ts.state === "uploading" || ts.state === "forcedUP" || ts.state === "queuedUP" ? (
-                        <button className="btn btn-secondary btn-tiny" onClick={() => handlePause(ar.id)}>Pause</button>
-                      ) : (
-                        <button className="btn btn-secondary btn-tiny" onClick={() => handleResume(ar.id)}>Resume</button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {ts.progress === 100 && (
-                  <div className="torrent-paths">
-                    <div className="torrent-path-row">
-                      <span className="path-label">Source:</span>
-                      <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.content_path)}>
-                        {ts.content_path}
-                      </span>
-                      <button className="btn btn-danger btn-tiny" onClick={() => handleDismiss(ar.id)}>Delete</button>
-                    </div>
-                    <div className="torrent-path-row">
-                      <span className="path-label">Library:</span>
-                      {ts.in_library ? (
-                        <>
-                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(ts.library_path)}>
-                            {ts.library_path}
-                          </span>
-                          <button className={`btn btn-tiny ${isRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={() => handleRemoveFromLibrary(ar.id)}>
-                            {isRemoveConfirm ? "Remove?" : "In Library"}
-                          </button>
-                        </>
-                      ) : mr?.source ? (
-                        <span className="move-result">
-                          <span>Hardlinked →</span>
-                          <span className="torrent-path" title="Click to copy" onClick={() => handleCopyPath(mr.destination)}>{mr.destination}</span>
-                        </span>
-                      ) : mr?.error ? (
-                        <span className="move-error">{mr.error}</span>
-                      ) : (
-                        <button className="btn btn-primary btn-tiny" onClick={() => handleMoveToLibrary(ar.id)} disabled={isMoving}>
-                          {isMoving ? "Moving..." : "Move to Library"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
-            )}
-          </div>
+          <TorrentPanel
+            key={ar.id}
+            approvedRelease={ar}
+            torrentStatus={ts}
+            moveResult={mr}
+            isMoving={isMoving}
+            isRemoveConfirm={isRemoveConfirm}
+            preprocessing={!!preprocessingMap[ar.id]}
+            onTogglePreprocessing={(checked) => setPreprocessingMap((prev) => ({ ...prev, [ar.id]: checked }))}
+            onMove={handleMove}
+            onMoveToLibrary={handleMoveToLibrary}
+            onDismiss={handleDismiss}
+            onRemoveFromLibrary={handleRemoveFromLibrary}
+            onPause={handlePause}
+            onResume={handleResume}
+            onCopyPath={handleCopyPath}
+          />
         );
       })}
 

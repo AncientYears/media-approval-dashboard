@@ -82,6 +82,11 @@ export async function moveToProcessed(requestId: number) {
   return response.data;
 }
 
+export async function moveToWorkspace(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/move-to-workspace`);
+  return response.data;
+}
+
 export async function moveToLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/move-to-library`);
   return response.data;

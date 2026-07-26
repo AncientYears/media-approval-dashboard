@@ -1296,6 +1296,46 @@ body {
   gap: 8px;
 }
 
+.preprocessing-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.preprocessing-toggle input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+}
+
+.preprocessing-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.btn-workspace {
+  background: #7c3aed;
+  color: #fff;
+  border: none;
+}
+
+.btn-workspace:hover {
+  background: #6d28d9;
+}
+
+.btn-workspace:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .dashboard-section {
   margin-bottom: 32px;
 }

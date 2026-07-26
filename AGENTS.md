@@ -75,6 +75,18 @@ qBittorrent
                                                        /Library     │
 ```
 
+### Manual Preprocessing Flow (TorrentPanel UI)
+```
+Download (100% complete)
+     │
+     ├── [checkbox OFF] "Move to Processed" → Processed/{Filmy|Serialy}/{name}/
+     │                                          └── Sonarr/Radarr import
+     │
+     └── [checkbox ON]  "Move to Workspace" → Workspace/{id}-{name}/inputs/
+                                                ├── output/ (pre-created)
+                                                └── Manual mux/merge → Processed
+```
+
 ### Key Principles
 - **Download is immutable**: never modify, never delete while seeding
 - **Workspace is ephemeral**: cleaned up after each processing job
@@ -127,6 +139,7 @@ qBittorrent
 - Auto-triggers search on mount when navigated with `initialSearch`
 - Approve → grab via magnet or Sonarr/Radarr
 - Torrent panel: progress bar, stats grid, source/library paths
+- Preprocessing checkbox + "Move to Processed" / "Move to Workspace" button
 - Move to Library (hardlink) / Process (remux/repack) / Remove from Library
 
 ## Processing Pipeline
@@ -151,6 +164,13 @@ qBittorrent
 2. Hardlinks files from Download to Processed folder
 3. Processed files await Sonarr/Radarr import to Library
 
+### Move to Workspace (POST /:id/move-to-workspace)
+1. Gets content path from qBittorrent
+2. Creates workspace: `{PROCESSING_WORKSPACE}/{request_id}-{sanitized_title}/inputs/` and `output/`
+3. Hardlinks files from Download to workspace `inputs/`
+4. User manually processes files (mux/merge) in workspace
+5. Output can be hardlinked to Processed folder when ready
+
 ### Move to Library (POST /:id/move-to-library)
 1. Hardlinks files from Processed folder to Sonarr/Radarr library path
 2. Falls back to copy on cross-device (EXDEV)
@@ -172,6 +192,7 @@ qBittorrent
 | `src/jobs/pollStatus.ts` | Tracks torrent status, state transitions |
 | `src/db/index.ts` | Schema, migrations, auto-repair |
 | `src/server.ts` | App entry, startup stale RC cleanup |
+| `frontend/src/components/TorrentPanel.tsx` | Shared torrent panel (progress, stats, move actions) |
 | `frontend/src/pages/FranchiseDetail.tsx` | Franchise overview + SeasonDetail |
 | `frontend/src/pages/RequestDetail.tsx` | Single request view (movies) |
 | `frontend/src/pages/Dashboard.tsx` | Requests list + filters + managed media |
@@ -269,5 +290,8 @@ NTFY_TOPIC=
 - [ ] titlesMatch: "Mufasa: The Lion King" does NOT match "The Lion King" torrents
 - [ ] Processing pipeline creates workspace with inputs/output dirs
 - [ ] Move to Processed hardlinks from Download to Processed
+- [ ] Move to Workspace hardlinks from Download to Workspace inputs/ (with output/ pre-created)
 - [ ] Move to Library hardlinks from Processed (not Download)
 - [ ] Workspace cleaned up after processing completes
+- [ ] TorrentPanel checkbox toggles between "Move to Processed" and "Move to Workspace"
+- [ ] TorrentPanel shared component renders correctly in both RequestDetail and FranchiseDetail

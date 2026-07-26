@@ -113,6 +113,25 @@ export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"
   return { success: true, destination: dest };
 }
 
+export function moveToWorkspaceSync(sourcePath: string, requestId: number, title: string): { success: boolean; destination?: string; error?: string } {
+  const workspaceDir = createWorkspaceDir(requestId, title);
+  const destDir = path.join(workspaceDir, "inputs");
+
+  const stat = fs.statSync(sourcePath);
+  if (stat.isDirectory()) {
+    const dest = path.join(destDir, path.basename(sourcePath));
+    hardlinkDirRecursive(sourcePath, dest);
+    return { success: true, destination: dest };
+  }
+
+  const dest = path.join(destDir, path.basename(sourcePath));
+  if (fs.existsSync(dest)) {
+    return { success: true, destination: dest };
+  }
+  hardlinkFile(sourcePath, dest);
+  return { success: true, destination: dest };
+}
+
 export function moveToLibrarySync(sourcePath: string, destDir: string): { success: boolean; destination?: string; method?: string; error?: string } {
   fs.mkdirSync(destDir, { recursive: true });
 

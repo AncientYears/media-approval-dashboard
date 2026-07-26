@@ -7,7 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes } from "../utils/torrentParser";
-import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, getProcessedDir } from "../services/processor";
+import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir } from "../services/processor";
 import fs from "fs";
 import path from "path";
 
@@ -2330,6 +2330,44 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (error: any) {
       console.error("Error moving to processed:", error);
       res.status(500).json({ error: `Failed to move to processed: ${error.message}` });
+    }
+  });
+
+  // POST /api/requests/:id/move-to-workspace - Hardlink files from download folder to workspace for manual preprocessing
+  router.post("/:id/move-to-workspace", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const release = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (!release || !release.torrent_hash) {
+        return res.status(400).json({ error: "No torrent found for this request" });
+      }
+
+      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+
+      let contentPath = torrent.content_path;
+      if (!fs.existsSync(contentPath)) {
+        if (contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
+      }
+      if (!fs.existsSync(contentPath)) {
+        return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
+      }
+
+      const result = moveToWorkspaceSync(contentPath, request.id, request.title);
+      if (!result.success) return res.status(500).json({ error: result.error });
+
+      console.log(`[MoveToWorkspace] ${contentPath} → ${result.destination}`);
+      res.json({ success: true, source: contentPath, destination: result.destination });
+    } catch (error: any) {
+      console.error("Error moving to workspace:", error);
+      res.status(500).json({ error: `Failed to move to workspace: ${error.message}` });
     }
   });
 
