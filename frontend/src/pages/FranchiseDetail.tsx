@@ -404,6 +404,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [searchProgress, setSearchProgress] = useState("");
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"app_score" | "size_mb" | "seeders" | "quality" | "indexer">("app_score");
+  const [sortAsc, setSortAsc] = useState(false);
   const [filterEpisode, setFilterEpisode] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [moveResults, setMoveResults] = useState<Record<number, any>>({});
@@ -575,12 +576,13 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       return r.parsed_episodes.toUpperCase().includes(filterEpisode.toUpperCase());
     })
     .sort((a: any, b: any) => {
-      if (sortBy === "app_score") return (b.app_score || 0) - (a.app_score || 0);
-      if (sortBy === "size_mb") return (b.size_mb || 0) - (a.size_mb || 0);
-      if (sortBy === "seeders") return ((b.seeders ?? 0) - (a.seeders ?? 0));
-      if (sortBy === "quality") return (a.quality || a.radarr_quality || "").localeCompare(b.quality || b.radarr_quality || "");
-      if (sortBy === "indexer") return (a.indexer || "").localeCompare(b.indexer || "");
-      return 0;
+      let cmp = 0;
+      if (sortBy === "app_score") cmp = (b.app_score || 0) - (a.app_score || 0);
+      else if (sortBy === "size_mb") cmp = (b.size_mb || 0) - (a.size_mb || 0);
+      else if (sortBy === "seeders") cmp = (b.seeders ?? 0) - (a.seeders ?? 0);
+      else if (sortBy === "quality") cmp = (a.quality || a.radarr_quality || "").localeCompare(b.quality || b.radarr_quality || "");
+      else if (sortBy === "indexer") cmp = (a.indexer || "").localeCompare(b.indexer || "");
+      return sortAsc ? -cmp : cmp;
     });
 
   const uniqueEpisodes = new Set<string>();
@@ -758,9 +760,9 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
         <div className="toolbar-right">
           <span className="release-count">{filtered.length}/{releases.length}</span>
           <div style={{ display: "flex", gap: 4 }}>
-            <button className={`btn btn-tiny ${sortBy === "app_score" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("app_score")}>Score</button>
-            <button className={`btn btn-tiny ${sortBy === "size_mb" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("size_mb")}>Size</button>
-            <button className={`btn btn-tiny ${sortBy === "seeders" ? "btn-primary" : "btn-secondary"}`} onClick={() => setSortBy("seeders")}>Seeders</button>
+            <button className={`btn btn-tiny ${sortBy === "app_score" ? "btn-primary" : "btn-secondary"}`} onClick={() => { if (sortBy === "app_score") setSortAsc((p) => !p); else { setSortBy("app_score"); setSortAsc(false); } }}>Score</button>
+            <button className={`btn btn-tiny ${sortBy === "size_mb" ? "btn-primary" : "btn-secondary"}`} onClick={() => { if (sortBy === "size_mb") setSortAsc((p) => !p); else { setSortBy("size_mb"); setSortAsc(false); } }}>Size</button>
+            <button className={`btn btn-tiny ${sortBy === "seeders" ? "btn-primary" : "btn-secondary"}`} onClick={() => { if (sortBy === "seeders") setSortAsc((p) => !p); else { setSortBy("seeders"); setSortAsc(false); } }}>Seeders</button>
           </div>
           <div className="view-toggle">
             <button className={`vt-btn ${viewMode === "table" ? "active" : ""}`} onClick={() => setViewMode("table")} title="Table">=</button>
@@ -789,10 +791,13 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                   <th
                     key={col.label + col.cls}
                     className={`${col.cls} ${col.key ? "th-sortable" : ""} ${sortBy === col.key ? "th-active" : ""}`}
-                    onClick={col.key ? () => setSortBy(col.key!) : undefined}
+                    onClick={col.key ? () => {
+                      if (sortBy === col.key) setSortAsc((prev) => !prev);
+                      else { setSortBy(col.key!); setSortAsc(false); }
+                    } : undefined}
                   >
                     {col.label}
-                    {col.key && sortBy === col.key && <span className="sort-arrow">{"\u25B2"}</span>}
+                    {col.key && sortBy === col.key && <span className="sort-arrow">{sortAsc ? "\u25BC" : "\u25B2"}</span>}
                   </th>
                 ))}
               </tr>
