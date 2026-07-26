@@ -809,7 +809,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           } else if (row.season != null && isSeasonPackTitle(r.title || '', row.season)) {
             hasSeasonPack = true;
-            const quality = r.radarr_quality || "";
+            const quality = r.radarr_quality === 'unknown' ? parseQualityFromName(r.title || '') : (r.radarr_quality || "");
             for (let i = 1; i <= (sonarrEpisodes.length || row.episode_count || 0); i++) {
               if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
             }

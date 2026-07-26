@@ -5,8 +5,6 @@ import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisode
 const SEARCH_MODES = ["season", "episodes"] as const;
 type SearchMode = typeof SEARCH_MODES[number];
 
-const POLL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_SEARCH_ALL || "0") * 1000;
-
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
@@ -121,8 +119,6 @@ export default function FranchiseDetail() {
   const [searchTerm, setSearchTerm] = useState("");
   const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
   const [seasonEpisodes, setSeasonEpisodes] = useState<Record<number, any[]>>({});
-  const autoSearchDone = useRef(false);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadFranchise = useCallback(async () => {
     if (!sonarrId) return;
@@ -140,7 +136,6 @@ export default function FranchiseDetail() {
   useEffect(() => {
     setLoading(true);
     setSelectedSeason(null);
-    autoSearchDone.current = false;
     loadFranchise();
   }, [loadFranchise]);
 
@@ -203,19 +198,7 @@ export default function FranchiseDetail() {
     } catch {}
   }, [franchise?.sonarr_id, searchTerm]);
 
-  useEffect(() => {
-    if (loading || !franchise || autoSearchDone.current) return;
-    autoSearchDone.current = true;
-    fireSearchAll();
-  }, [loading, franchise, fireSearchAll]);
-
-  useEffect(() => {
-    if (POLL_MS <= 0) return;
-    pollTimerRef.current = setInterval(() => {
-      fireSearchAll();
-    }, POLL_MS);
-    return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
-  }, [POLL_MS, fireSearchAll]);
+  // Search is only triggered manually via "Search All Seasons" button
 
   if (loading) return <div className="container"><p>Loading...</p></div>;
   if (error) return <div className="container error"><p>{error}</p></div>;
