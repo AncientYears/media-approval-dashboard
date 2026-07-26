@@ -82,8 +82,8 @@ export async function moveToProcessed(requestId: number, releaseId?: number) {
   return response.data;
 }
 
-export async function moveToWorkspace(requestId: number, releaseId?: number, workspaceIndex?: number) {
-  const response = await api.post(`/requests/${requestId}/move-to-workspace`, { releaseId, workspaceIndex });
+export async function moveToWorkspace(requestId: number, releaseId?: number, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) {
+  const response = await api.post(`/requests/${requestId}/move-to-workspace`, { releaseId, workspaceIndex, ...wsConfig });
   return response.data;
 }
 
@@ -130,6 +130,11 @@ export async function fetchContentInfo(requestId: number, releaseId?: number) {
 
 export async function moveToLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/move-to-library`);
+  return response.data;
+}
+
+export async function fetchActiveWorkspaces() {
+  const response = await api.get(`/workspaces/active`);
   return response.data;
 }
 

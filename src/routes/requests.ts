@@ -1755,6 +1755,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     res.end();
   });
 
+  // GET /api/workspaces/active - List all active workspaces across all requests
+  router.get("/workspaces/active", async (req: Request, res: Response) => {
+    try {
+      const requests = db.prepare("SELECT id, title, type FROM media_requests").all() as any[];
+      const allWorkspaces: any[] = [];
+      for (const req2 of requests) {
+        const ws = listWorkspaces(req2.id, req2.title);
+        for (const w of ws) {
+          allWorkspaces.push({
+            ...w,
+            requestId: req2.id,
+            mediaTitle: req2.title,
+            mediaType: req2.type,
+          });
+        }
+      }
+      res.json({ workspaces: allWorkspaces });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // POST /api/requests/:id/reactivate - Re-activate a single DISMISSED request
   router.post("/:id/reactivate", (req: Request, res: Response) => {
     try {
@@ -2629,7 +2651,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.post("/:id/move-to-workspace", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { releaseId } = req.body || {};
+      const { releaseId, workspaceName, workspaceNotes, workspaceScripts } = req.body || {};
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
 
@@ -2659,7 +2681,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
 
-      const result = moveToWorkspaceSync(contentPath, request.id, request.title, req.body?.workspaceIndex, release.id, release.torrent_hash);
+      const wsConfig: any = {};
+      if (workspaceName) wsConfig.name = workspaceName;
+      if (workspaceNotes) wsConfig.notes = workspaceNotes;
+      if (workspaceScripts) wsConfig.scripts = workspaceScripts;
+
+      const result = moveToWorkspaceSync(contentPath, request.id, request.title, req.body?.workspaceIndex, release.id, release.torrent_hash, Object.keys(wsConfig).length > 0 ? wsConfig : undefined);
       if (!result.success) return res.status(500).json({ error: result.error });
 
       console.log(`[MoveToWorkspace] ${contentPath} → ${result.destination}`);

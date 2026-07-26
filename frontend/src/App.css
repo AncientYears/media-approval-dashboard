@@ -85,6 +85,108 @@ body {
   color: var(--primary);
 }
 
+/* Workspace Overview Dropdown */
+.ws-overview-wrapper {
+  position: relative;
+}
+
+.ws-overview-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+
+.ws-overview-toggle:hover {
+  color: var(--text);
+  border-color: var(--primary);
+}
+
+.ws-overview-badge {
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.ws-overview-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 320px;
+  max-width: 420px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+
+.ws-overview-loading,
+.ws-overview-empty {
+  padding: 12px 16px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.ws-overview-group {
+  padding: 4px 0;
+}
+
+.ws-overview-group + .ws-overview-group {
+  border-top: 1px solid var(--border);
+}
+
+.ws-overview-group-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  padding: 6px 12px 2px;
+}
+
+.ws-overview-row {
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.ws-overview-row:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.ws-overview-row-completed {
+  opacity: 0.6;
+}
+
+.ws-overview-row-title {
+  font-size: 0.85rem;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.ws-overview-row-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 /* Main content */
 .main-content {
   flex: 1;
@@ -1700,7 +1802,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;

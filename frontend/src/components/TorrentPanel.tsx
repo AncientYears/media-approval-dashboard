@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, deleteWorkspaceFile, deleteWorkspace } from "../api";
+import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, deleteWorkspaceFile, deleteWorkspace, moveToWorkspace, moveToProcessed } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -25,6 +25,8 @@ function formatDuration(seconds: number): string {
   return `${s}s`;
 }
 
+const SCRIPT_OPTIONS = ["remux", "repack", "extract-subtitles", "convert-audio", "downmix-audio", "hdr-to-sdr", "custom"];
+
 export interface TorrentPanelProps {
   approvedRelease: any;
   torrentStatus: any;
@@ -34,7 +36,7 @@ export interface TorrentPanelProps {
   isRemoveConfirm: boolean;
   preprocessing: boolean;
   onTogglePreprocessing: (checked: boolean) => void;
-  onMove: (releaseId: number, workspaceIndex?: number) => void;
+  onMove: (releaseId: number, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => void;
   onMoveToLibrary: (releaseId: number) => void;
   onDismiss: (releaseId: number) => void;
   onRemoveFromLibrary: (releaseId: number) => void;
@@ -75,6 +77,10 @@ export default function TorrentPanel({
   const wsEditRef = useRef<HTMLInputElement>(null);
   const prevMrRef = useRef<any>(null);
 
+  const [newWsName, setNewWsName] = useState("");
+  const [newWsNotes, setNewWsNotes] = useState("");
+  const [newWsScripts, setNewWsScripts] = useState<string[]>([]);
+
   const loadWorkspaces = () => {
     fetchWorkspaces(requestId).then((data) => {
       const list = data.workspaces || [];
@@ -98,8 +104,7 @@ export default function TorrentPanel({
 
   const openWsManager = () => {
     fetchWorkspaces(requestId).then((data) => {
-      const list = data.workspaces || [];
-      setWsManagerData(list);
+      setWsManagerData(data.workspaces || []);
       setWsManagerOpen(true);
     }).catch(() => {});
   };
@@ -196,7 +201,7 @@ export default function TorrentPanel({
             </div>
             {ts.state === "downloading" && (
               <div className="ts-item ts-speed">
-                <span className="ts-icon">↓</span>
+                <span className="ts-icon">&darr;</span>
                 <span className="ts-value">{(ts.dlspeed / 1024 / 1024).toFixed(1)} MB/s</span>
               </div>
             )}
@@ -207,7 +212,7 @@ export default function TorrentPanel({
               </div>
             )}
             <div className="ts-item ts-speed">
-              <span className="ts-icon">↑</span>
+              <span className="ts-icon">&uarr;</span>
               <span className="ts-value">{(ts.upspeed / 1024 / 1024).toFixed(1)} MB/s</span>
             </div>
             <div className="ts-item">
@@ -288,7 +293,7 @@ export default function TorrentPanel({
                     <span className="preprocessing-label">Needs preprocessing</span>
                   </label>
                   {contentBadge}
-                  {preprocessing && workspaces.length > 0 && (
+                  {preprocessing && (
                     <div className="workspace-picker">
                       {editingWs !== null ? (
                         <div className="workspace-edit-inline">
@@ -319,7 +324,11 @@ export default function TorrentPanel({
                           <select
                             className="workspace-select"
                             value={selectedWorkspace}
-                            onChange={(e) => setSelectedWorkspace(e.target.value === "new" ? "new" : Number(e.target.value))}
+                            onChange={(e) => {
+                              const val = e.target.value === "new" ? "new" : Number(e.target.value);
+                              setSelectedWorkspace(val);
+                              setWsManagerOpen(false);
+                            }}
                           >
                             {workspaces.map((ws) => {
                               const label = ws.metadata?.name || `Job ${ws.index}`;
@@ -350,7 +359,12 @@ export default function TorrentPanel({
                   <div style={{ display: "flex", gap: 4 }}>
                     <button
                       className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
-                      onClick={() => onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined)}
+                      onClick={() => {
+                        const wsConfig = preprocessing && selectedWorkspace === "new" && (newWsName || newWsNotes || newWsScripts.length > 0)
+                          ? { name: newWsName || undefined, notes: newWsNotes || undefined, scripts: newWsScripts.length > 0 ? newWsScripts : undefined }
+                          : undefined;
+                        onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined, wsConfig);
+                      }}
                       disabled={isMoving}
                     >
                       {isMoving ? "Moving..." : preprocessing ? "Move to Workspace" : "Move to Processed"}
@@ -368,6 +382,7 @@ export default function TorrentPanel({
         <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
       )}
     </div>
+
     {wsManagerOpen && managedWs && (
       <div className="modal-overlay" onClick={() => setWsManagerOpen(false)}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -402,9 +417,6 @@ export default function TorrentPanel({
                   {managedWs.metadata?.name || `Job ${managedWs.index}`}
                 </h3>
               )}
-              <span className={`ws-manager-status ${managedWs.metadata?.status === "completed" ? "ws-completed" : "ws-active"}`}>
-                {managedWs.metadata?.status || "active"}
-              </span>
             </div>
             <button className="modal-close" onClick={() => setWsManagerOpen(false)}>&times;</button>
           </div>
@@ -427,32 +439,54 @@ export default function TorrentPanel({
                 await updateWorkspaceMetadata(requestId, managedWs.index, { notes: managedWs.metadata?.notes || "" });
               }}
             />
-            {managedWs.inputFiles?.length > 0 && (
-              <div className="ws-manager-section">
-                <div className="ws-manager-section-label">Inputs</div>
-                {managedWs.inputFiles.map((f: any) => (
+            <div className="ws-manager-section-label">Scripts</div>
+            <div className="ws-scripts-row">
+              {SCRIPT_OPTIONS.map((script) => (
+                <label key={script} className="ws-script-check">
+                  <input
+                    type="checkbox"
+                    checked={managedWs.metadata?.scripts?.includes(script) || false}
+                    onChange={async (e) => {
+                      const current = managedWs.metadata?.scripts || [];
+                      const next = e.target.checked ? [...current, script] : current.filter((s: string) => s !== script);
+                      setWsManagerData((prev) => prev.map((w) => w.index === managedWs.index ? { ...w, metadata: { ...w.metadata, scripts: next } } : w));
+                      await updateWorkspaceMetadata(requestId, managedWs.index, { scripts: next } as any);
+                    }}
+                  />
+                  <span>{script}</span>
+                </label>
+              ))}
+            </div>
+            <div className="ws-manager-section">
+              <div className="ws-manager-section-label">Inputs ({managedWs.inputCount})</div>
+              {managedWs.inputFiles?.length > 0 ? (
+                managedWs.inputFiles.map((f: any) => (
                   <div key={f.name} className="ws-manager-output-path ws-file-row">
                     <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
                     <span className="ws-file-name" title={f.name}>{f.name}</span>
                     <span className="ws-file-size">{formatBytes(f.size)}</span>
                     <button className="btn btn-danger btn-tiny" title="Delete" onClick={() => handleFileDelete(managedWs.index, "inputs", f.name)}>&times;</button>
                   </div>
-                ))}
-              </div>
-            )}
-            {managedWs.outputFiles?.length > 0 && (
-              <div className="ws-manager-section">
-                <div className="ws-manager-section-label">Outputs</div>
-                {managedWs.outputFiles.map((f: any) => (
+                ))
+              ) : (
+                <div className="ws-manager-empty">No input files</div>
+              )}
+            </div>
+            <div className="ws-manager-section">
+              <div className="ws-manager-section-label">Outputs ({managedWs.outputCount})</div>
+              {managedWs.outputFiles?.length > 0 ? (
+                managedWs.outputFiles.map((f: any) => (
                   <div key={f.name} className="ws-manager-output-path ws-file-row">
                     <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
                     <span className="ws-file-name" title={`${f.name} - Click to copy`} onClick={() => navigator.clipboard.writeText(f.name)}>{f.name}</span>
                     <span className="ws-file-size">{formatBytes(f.size)}</span>
                     <button className="btn btn-danger btn-tiny" title="Delete" onClick={() => handleFileDelete(managedWs.index, "output", f.name)}>&times;</button>
                   </div>
-                ))}
-              </div>
-            )}
+                ))
+              ) : (
+                <div className="ws-manager-empty">Place processed files in workspace/output/</div>
+              )}
+            </div>
             {managedWs.metadata?.outputPaths?.length > 0 && (
               <div className="ws-manager-section ws-manager-processed">
                 <div className="ws-manager-section-label">Processed</div>
@@ -464,16 +498,71 @@ export default function TorrentPanel({
               </div>
             )}
             <div className="ws-manager-actions">
-              {managedWs.metadata?.status !== "completed" && managedWs.outputCount > 0 && (
-                <button className="btn btn-primary btn-tiny" onClick={() => {
+              <button
+                className={`btn btn-tiny ${managedWs.outputCount > 0 ? "btn-primary" : "btn-secondary btn-disabled"}`}
+                disabled={managedWs.outputCount === 0 || managedWs.metadata?.status === "completed"}
+                title={managedWs.outputCount === 0 ? "Add output files to enable" : ""}
+                onClick={() => {
                   if (!confirm(`Complete "${managedWs.metadata?.name || `Job ${managedWs.index}`}"? Inputs will be deleted, outputs moved to /Processed. Radarr/Sonarr will scan and import.`)) return;
                   handleComplete(managedWs.index);
-                }}>Complete &amp; Import</button>
-              )}
+                }}
+              >
+                {managedWs.metadata?.status === "completed" ? "Completed" : "Complete & Import"}
+              </button>
               <button className="btn btn-danger btn-tiny" onClick={() => {
                 if (!confirm(`Delete workspace "${managedWs.metadata?.name || `Job ${managedWs.index}`}"? This cannot be undone.`)) return;
                 handleDeleteJob(managedWs.index);
               }}>Delete Job</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {wsManagerOpen && selectedWorkspace === "new" && (
+      <div className="modal-overlay" onClick={() => setWsManagerOpen(false)}>
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h3 style={{ margin: 0 }}>New Workspace</h3>
+            <button className="modal-close" onClick={() => setWsManagerOpen(false)}>&times;</button>
+          </div>
+          <div className="modal-body">
+            <div className="ws-manager-section-label">Name</div>
+            <input
+              className="ws-manager-notes-input"
+              placeholder="Workspace name (optional)"
+              value={newWsName}
+              onChange={(e) => setNewWsName(e.target.value)}
+            />
+            <div className="ws-manager-section-label">Notes</div>
+            <textarea
+              className="ws-manager-notes-input"
+              rows={2}
+              placeholder="Add notes about this workspace..."
+              value={newWsNotes}
+              onChange={(e) => setNewWsNotes(e.target.value)}
+            />
+            <div className="ws-manager-section-label">Scripts</div>
+            <div className="ws-scripts-row">
+              {SCRIPT_OPTIONS.map((script) => (
+                <label key={script} className="ws-script-check">
+                  <input
+                    type="checkbox"
+                    checked={newWsScripts.includes(script)}
+                    onChange={(e) => {
+                      setNewWsScripts((prev) => e.target.checked ? [...prev, script] : prev.filter((s) => s !== script));
+                    }}
+                  />
+                  <span>{script}</span>
+                </label>
+              ))}
+            </div>
+            <div className="ws-manager-section">
+              <div className="ws-manager-section-label">Outputs</div>
+              <div className="ws-manager-empty">Place processed files in workspace/output/</div>
+            </div>
+            <div className="ws-manager-actions">
+              <button className="btn btn-primary btn-tiny" onClick={() => setWsManagerOpen(false)}>Done</button>
             </div>
           </div>
         </div>

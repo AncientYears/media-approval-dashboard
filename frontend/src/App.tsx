@@ -6,6 +6,7 @@ import FranchiseDetail from "./pages/FranchiseDetail";
 import Settings from "./pages/Settings";
 import DatabaseViewer from "./pages/DatabaseViewer";
 import { ToastProvider } from "./components/Toast";
+import WorkspaceOverview from "./components/WorkspaceOverview";
 
 function App() {
   return (
@@ -18,6 +19,9 @@ function App() {
               <Link to="/"><h1>Media Dashboard</h1></Link>
             </div>
             <ul className="nav-links">
+              <li>
+                <WorkspaceOverview />
+              </li>
               <li>
                 <Link to="/">Dashboard</Link>
               </li>

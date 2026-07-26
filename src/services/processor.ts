@@ -120,11 +120,16 @@ export function moveToWorkspaceSync(
   jobIndex?: number,
   releaseId?: number,
   torrentHash?: string,
+  wsConfig?: { name?: string; notes?: string; scripts?: string[] },
 ): { success: boolean; destination?: string; error?: string } {
   const workspaceDir = createWorkspaceDir(requestId, title, jobIndex);
   const destDir = path.join(workspaceDir, "inputs");
 
-  writeWorkspaceMetadata(workspaceDir, { requestId, releaseId, torrentHash, sourcePath } as any);
+  const meta: any = { requestId, releaseId, torrentHash, sourcePath };
+  if (wsConfig?.name) meta.name = wsConfig.name;
+  if (wsConfig?.notes) meta.notes = wsConfig.notes;
+  if (wsConfig?.scripts) meta.scripts = wsConfig.scripts;
+  writeWorkspaceMetadata(workspaceDir, meta);
 
   const stat = fs.statSync(sourcePath);
   if (stat.isDirectory()) {
@@ -318,8 +323,9 @@ export function sanitizeName(name: string): string {
 }
 
 export function createWorkspaceDir(requestId: number, title: string, jobIndex?: number): string {
+  const index = jobIndex || getNextWorkspaceIndex(requestId, title);
   const base = `${requestId}-${sanitizeName(title)}`;
-  const dirName = jobIndex && jobIndex > 1 ? `${base}-${jobIndex}` : base;
+  const dirName = index > 1 ? `${base}-${index}` : base;
   const workspaceDir = path.join(PROCESSING_WORKSPACE, dirName);
   fs.mkdirSync(path.join(workspaceDir, "inputs"), { recursive: true });
   fs.mkdirSync(path.join(workspaceDir, "output"), { recursive: true });
@@ -345,6 +351,7 @@ export interface WorkspaceMetadata {
   releaseId?: number;
   torrentHash?: string;
   sourcePath?: string;
+  scripts?: string[];
 }
 
 export interface WorkspaceFile {
