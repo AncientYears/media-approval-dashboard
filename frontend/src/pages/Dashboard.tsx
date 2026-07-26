@@ -234,6 +234,7 @@ export default function Dashboard() {
             if (result.staleRemoved > 0) lines.push(`Removed ${result.staleRemoved} stale approval(s).`);
             if (result.statusFixed > 0) lines.push(`Fixed ${result.statusFixed} request status(es).`);
             if (result.seasonFixed > 0) lines.push(`Removed ${result.seasonFixed} season-mismatched RC(s) — re-run to import.`);
+            if (result.rcFixed > 0) lines.push(`Fixed ${result.rcFixed} RC title/quality.`);
             if (result.results && result.results.length > 0) {
               lines.push("");
               for (const r of result.results) {
