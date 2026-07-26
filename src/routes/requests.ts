@@ -836,6 +836,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sonarrProfileId = sonarrProfiles[0]?.id;
       const sonarrRootPath = sonarrRootFolders[0]?.path;
 
+      // Pre-fetch all existing media to avoid duplicate imports within the same batch
+      const allRadarrMovies = await radarr.getAllMovies().catch(() => [] as any[]);
+      const allSonarrSeries = await sonarr.getAllSeries().catch(() => [] as any[]);
+
+      // Build lookup maps by normalized title
+      const existingRadarrByTitle = new Map<string, any>();
+      for (const m of allRadarrMovies) {
+        existingRadarrByTitle.set(m.title.toLowerCase(), m);
+      }
+      const existingSonarrByTitle = new Map<string, any>();
+      for (const s of allSonarrSeries) {
+        existingSonarrByTitle.set(s.title.toLowerCase(), s);
+      }
+
+      // Also pre-populate existingTitles with all known media (Radarr + Sonarr + DB)
+      for (const m of allRadarrMovies) existingTitles.add(m.title.toLowerCase());
+      for (const s of allSonarrSeries) existingTitles.add(s.title.toLowerCase());
+
       for (const torrent of newTorrents) {
         const parsed = parseTorrentName(torrent.name);
         const savePath = (torrent.save_path || "").toLowerCase();
@@ -872,15 +890,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const lookup = await radarr.lookupMovie(titleClean);
             if (lookup.length > 0) {
               const found = lookup[0];
-              const alreadyExists = await radarr.getAllMovies().then((movies) =>
-                movies.some((m: any) => m.title.toLowerCase() === found.title.toLowerCase())
-              );
+              const existingByTitle = existingRadarrByTitle.get(found.title.toLowerCase());
 
               let radarrId: number;
-              if (alreadyExists) {
-                const existing = await radarr.getAllMovies();
-                const match = existing.find((m: any) => m.title.toLowerCase() === found.title.toLowerCase());
-                radarrId = match!.id;
+              if (existingByTitle) {
+                radarrId = existingByTitle.id;
+                console.log(`[ScanDownloads] Movie already in Radarr: ${found.title} (radarr_id=${radarrId})`);
               } else {
                 const added = await radarr.addMovie({
                   ...found,
@@ -890,6 +905,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                   addOptions: { searchForMovie: false },
                 });
                 radarrId = added.id;
+              }
+
+              // Skip if already imported in this batch (title match from existingTitles)
+              if (existingTitles.has(found.title.toLowerCase())) {
+                // Still create RC if request exists but no RC for this torrent hash
+                const existingReq = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ?").get(radarrId) as any;
+                if (existingReq) {
+                  const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
+                  if (!existingRc) {
+                    db.prepare(
+                      "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
+                    ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+                    console.log(`[ScanDownloads] Added RC for existing movie: ${found.title} (hash=${torrent.hash.slice(0, 12)})`);
+                  }
+                }
+                results.push({ title: found.title, status: "skipped", type: "movie", error: "Already imported" });
+                continue;
               }
 
               const result = db.prepare(
@@ -911,11 +943,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const lookup = await sonarr.lookupSeries(titleClean);
             if (lookup.length > 0) {
               const found = lookup[0];
-              const existingSeries = await sonarr.getSeries(found.id).catch(() => null);
+              const existingByTitle = existingSonarrByTitle.get(found.title.toLowerCase());
 
               let sonarrId: number;
-              if (existingSeries) {
-                sonarrId = existingSeries.id;
+              if (existingByTitle) {
+                sonarrId = existingByTitle.id;
+                console.log(`[ScanDownloads] Series already in Sonarr: ${found.title} (sonarr_id=${sonarrId})`);
               } else {
                 const added = await sonarr.addSeries({
                   ...found,
@@ -930,12 +963,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               }
 
               const season = parsed.season || 1;
+              const epStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
+
+              // Skip if already imported in this batch (title match from existingTitles)
+              if (existingTitles.has(found.title.toLowerCase())) {
+                // Still create RC if request exists but no RC for this torrent hash
+                const existingReq = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ?").get(sonarrId) as any;
+                if (existingReq) {
+                  const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
+                  if (!existingRc) {
+                    db.prepare(
+                      "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
+                    ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+                    console.log(`[ScanDownloads] Added RC for existing series: ${found.title} (hash=${torrent.hash.slice(0, 12)})`);
+                  }
+                }
+                results.push({ title: found.title, status: "skipped", type: "series", error: "Already imported" });
+                continue;
+              }
+
               const result = db.prepare(
                 "INSERT INTO media_requests (title, type, sonarr_id, status, season, requested_by) VALUES (?, 'series', ?, 'DOWNLOADING', ?, '[]')"
               ).run(found.title, sonarrId, season);
               const requestId = result.lastInsertRowid as number;
-
-              const epStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
 
               db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"

@@ -104,6 +104,16 @@ export class SonarrService {
     }
   }
 
+  async getAllSeries() {
+    try {
+      const response = await this.client.get("/api/v3/series");
+      return response.data;
+    } catch (error) {
+      console.error("Sonarr: Failed to fetch all series", error);
+      throw error;
+    }
+  }
+
   async unmonitorSeason(seriesId: number, seasonNumber: number) {
     try {
       const series = await this.getSeries(seriesId);
