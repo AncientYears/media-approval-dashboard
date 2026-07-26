@@ -19,7 +19,7 @@ export function parseTorrentName(name: string): ParsedTorrent {
   const upper = name.toUpperCase();
 
   // Pattern: S02E12E13E14 or S02E12, E13, E14
-  const seasonMatch = upper.match(/\bS(\d{1,2})\b/);
+  const seasonMatch = upper.match(/\bS(\d{1,2})(?:\b|E\d)/);
   if (seasonMatch) {
     result.season = parseInt(seasonMatch[1], 10);
   }
