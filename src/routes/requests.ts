@@ -57,7 +57,6 @@ function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   if (shorterWords.length >= 2) {
     const matched = shorterWords.filter((w: string) => longerSet.has(w));
     if (matched.length === shorterWords.length) return true;
-    if (shorterWords.length >= 4 && matched.length >= shorterWords.length - 1) return true;
   }
 
   return false;
@@ -789,10 +788,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       let hasSeasonPack = false;
       for (const r of releases) {
-        if (r.approved_at && r.torrent_hash) {
-          if (r.parsed_episodes) {
-            const quality = r.radarr_quality || "";
-            const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
+          if (r.approved_at && r.torrent_hash) {
+            if (r.parsed_episodes) {
+              const quality = r.radarr_quality === 'unknown' ? parseQualityFromName(r.title || '') : (r.radarr_quality || "");
+              const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
             if (epMatches) {
               for (const em of epMatches) {
                 const epNum = parseInt(em.slice(1), 10);
