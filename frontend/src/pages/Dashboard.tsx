@@ -241,8 +241,6 @@ export default function Dashboard() {
             loadData();
           }}>Scan Downloads</button>
           <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
-            if (cleanupRunning.current) return;
-            cleanupRunning.current = true;
             setModal({ title: "Cleanup Duplicates", lines: ["Checking for duplicates..."] });
             try {
               const dryResult = await cleanupDuplicates(true);
@@ -260,8 +258,6 @@ export default function Dashboard() {
               }
             } catch (err: any) {
               setModal({ title: "Cleanup Duplicates", lines: [`Error: ${err.message}`] });
-            } finally {
-              cleanupRunning.current = false;
             }
           }}>Cleanup Duplicates</button>
         </div>
