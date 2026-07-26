@@ -1091,7 +1091,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .all().map((r: any) => r.torrent_hash)
       );
 
-      const newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
+      let newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
 
       if (newTorrents.length === 0) {
         const qbitHashes = new Set(allTorrents.map((t: any) => t.hash));
@@ -1118,6 +1118,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           db.prepare(`DELETE FROM approval_history WHERE release_id IN (${removeIds.map(() => "?").join(",")})`).run(...removeIds);
           console.log(`[ScanDownloads] Removed ${toRemove.length} stale approval(s) for RCs not in qBittorrent`);
         }
+        // Fix season mismatches: RCs attached to wrong-season requests
+        const allRcWithReq = db.prepare(
+          "SELECT rc.id as rc_id, rc.request_id, rc.torrent_hash, rc.title as rc_title, mr.season as req_season, mr.sonarr_id, mr.type " +
+          "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
+          "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL AND mr.type = 'series'"
+        ).all() as any[];
+        let seasonFixed = 0;
+        for (const rc of allRcWithReq) {
+          if (!qbitHashes.has(rc.torrent_hash)) continue;
+          const torrent = allTorrents.find((t: any) => t.hash === rc.torrent_hash);
+          if (!torrent) continue;
+          const parsed = parseTorrentName(torrent.name);
+          const torrentSeason = parsed.season || 1;
+          if (rc.req_season != null && torrentSeason !== rc.req_season) {
+            db.prepare("DELETE FROM approval_history WHERE release_id = ?").run(rc.rc_id);
+            db.prepare("DELETE FROM release_candidates WHERE id = ?").run(rc.rc_id);
+            console.log(`[ScanDownloads] Season mismatch: RC ${rc.rc_id} (S${rc.req_season}) <- torrent S${torrentSeason} "${torrent.name.slice(0, 60)}"`);
+            seasonFixed++;
+          }
+        }
         // Sync request statuses — any request with approved RCs in qBittorrent should be DOWNLOADING/SEEDING
         const staleStatus = db.prepare(
           "SELECT DISTINCT mr.id, mr.status FROM media_requests mr " +
@@ -1139,7 +1159,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
         if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
-        return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleStatus.length });
+        if (seasonFixed > 0) console.log(`[ScanDownloads] Removed ${seasonFixed} season-mismatched RC(s) — re-importing...`);
+
+        // If season mismatches were cleaned, don't return — fall through to import the freed torrents
+        if (seasonFixed === 0) {
+          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleStatus.length, seasonFixed });
+        }
+        // Season mismatches cleaned — recompute which torrents need importing
+        const freshHashes = new Set(
+          db.prepare("SELECT torrent_hash FROM release_candidates WHERE torrent_hash != ''")
+            .all().map((r: any) => r.torrent_hash)
+        );
+        newTorrents = allTorrents.filter((t: any) => !freshHashes.has(t.hash));
+      }
+
+      if (newTorrents.length === 0) {
+        return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [] });
       }
 
       const results: Array<{ title: string; status: string; type?: string; request_id?: number; error?: string }> = [];
