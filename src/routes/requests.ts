@@ -1118,8 +1118,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           db.prepare(`DELETE FROM approval_history WHERE release_id IN (${removeIds.map(() => "?").join(",")})`).run(...removeIds);
           console.log(`[ScanDownloads] Removed ${toRemove.length} stale approval(s) for RCs not in qBittorrent`);
         }
+        // Sync request statuses — any request with approved RCs in qBittorrent should be DOWNLOADING/SEEDING
+        const staleStatus = db.prepare(
+          "SELECT DISTINCT mr.id, mr.status FROM media_requests mr " +
+          "JOIN approval_history ah ON ah.request_id = mr.id " +
+          "JOIN release_candidates rc ON rc.id = ah.release_id AND rc.request_id = mr.id " +
+          "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL " +
+          "AND mr.status NOT IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')"
+        ).all() as any[];
+        for (const row of staleStatus) {
+          const rcHashes = db.prepare(
+            "SELECT rc.torrent_hash FROM release_candidates rc " +
+            "JOIN approval_history ah ON ah.release_id = rc.id AND ah.request_id = rc.id " +
+            "WHERE rc.request_id = ? AND rc.torrent_hash != ''"
+          ).all(row.id) as any[];
+          const hasInQbit = rcHashes.some((r: any) => qbitHashes.has(r.torrent_hash));
+          if (hasInQbit) {
+            db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
+            console.log(`[ScanDownloads] Fixed status: request ${row.id} ${row.status} -> DOWNLOADING`);
+          }
+        }
         if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
-        return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [] });
+        return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleStatus.length });
       }
 
       const results: Array<{ title: string; status: string; type?: string; request_id?: number; error?: string }> = [];

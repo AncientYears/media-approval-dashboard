@@ -230,6 +230,9 @@ export default function Dashboard() {
               `No match: ${result.noMatch}.`,
               `Errors: ${result.errors}.`,
             ];
+            if (result.backfilled > 0) lines.push(`Backfilled ${result.backfilled} approval(s).`);
+            if (result.staleRemoved > 0) lines.push(`Removed ${result.staleRemoved} stale approval(s).`);
+            if (result.statusFixed > 0) lines.push(`Fixed ${result.statusFixed} request status(es).`);
             if (result.results && result.results.length > 0) {
               lines.push("");
               for (const r of result.results) {
