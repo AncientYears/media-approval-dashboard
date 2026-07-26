@@ -1383,7 +1383,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
                 db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
               }
-              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
+              const existingRc = db.prepare("SELECT id, title, radarr_quality FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
               if (!existingRc) {
                 const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
@@ -1391,6 +1391,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for movie: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               } else {
+                const correctQuality = parseQualityFromName(torrent.name);
+                if (existingRc.title !== torrent.name || existingRc.radarr_quality?.toLowerCase() === 'unknown') {
+                  db.prepare("UPDATE release_candidates SET title = ?, radarr_quality = ? WHERE id = ?").run(torrent.name, correctQuality, existingRc.id);
+                  console.log(`[ScanDownloads] Fixed RC ${existingRc.id}: title="${torrent.name}", quality="${correctQuality}"`);
+                }
                 const hasApproval = db.prepare("SELECT 1 FROM approval_history WHERE release_id = ? AND request_id = ?").get(existingRc.id, existingReq.id);
                 if (!hasApproval) {
                   db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(existingRc.id, existingReq.id);
@@ -1418,7 +1423,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
                 db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
               }
-              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
+              const existingRc = db.prepare("SELECT id, title, radarr_quality FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
               if (!existingRc) {
                 const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
@@ -1426,6 +1431,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for series: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               } else {
+                const correctQuality = parseQualityFromName(torrent.name);
+                if (existingRc.title !== torrent.name || existingRc.radarr_quality?.toLowerCase() === 'unknown') {
+                  db.prepare("UPDATE release_candidates SET title = ?, radarr_quality = ? WHERE id = ?").run(torrent.name, correctQuality, existingRc.id);
+                  console.log(`[ScanDownloads] Fixed RC ${existingRc.id}: title="${torrent.name}", quality="${correctQuality}"`);
+                }
                 const hasApproval = db.prepare("SELECT 1 FROM approval_history WHERE release_id = ? AND request_id = ?").get(existingRc.id, existingReq.id);
                 if (!hasApproval) {
                   db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(existingRc.id, existingReq.id);
@@ -2131,13 +2141,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const videoFiles: { name: string; size: number; path: string }[] = [];
       let hasBdmv = false;
 
-      function scanDir(dir: string) {
+      function scanDir(dir: string, depth: number = 0) {
+        if (depth > 3) return;
         const entries = fs.readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
-            if (entry.name === "BDMV" || entry.name === "CERTIFICATE") hasBdmv = true;
-            if (entry.name !== "CERTIFICATE") scanDir(fullPath);
+            if (entry.name === "BDMV") {
+              const subEntries = fs.readdirSync(fullPath, { withFileTypes: true });
+              if (subEntries.some((e: any) => e.isDirectory() && e.name === "STREAM")) hasBdmv = true;
+            }
+            if (entry.name !== "CERTIFICATE" && entry.name !== "BDMV") scanDir(fullPath, depth + 1);
           } else {
             const ext = path.extname(entry.name).toLowerCase();
             if (VIDEO_EXTS.has(ext)) {

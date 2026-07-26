@@ -92,7 +92,6 @@ export default function TorrentPanel({
         </span>
         <span className="rtag">{ar.radarr_quality || ar.quality}</span>
         <span className="rtag">{formatSize(ar.size_mb)}</span>
-        {contentBadge}
         {ts?.found && (
           <span className={`status-badge status-badge-sm qb-${ts.state}`}>
             {ts.state}
@@ -196,6 +195,7 @@ export default function TorrentPanel({
                     />
                     <span className="preprocessing-label">Needs preprocessing</span>
                   </label>
+                  {contentBadge}
                   <div style={{ display: "flex", gap: 4 }}>
                     <button
                       className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
