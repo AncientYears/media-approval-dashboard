@@ -128,6 +128,16 @@ export async function scanDownloads() {
   return response.data;
 }
 
+export async function deleteRequest(id: number) {
+  const response = await api.delete(`/requests/${id}`);
+  return response.data;
+}
+
+export async function deleteFranchise(sonarrId: number) {
+  const response = await api.delete(`/requests/managed/${sonarrId}`);
+  return response.data;
+}
+
 export async function removeFromLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/remove-from-library`);
   return response.data;

@@ -11,6 +11,15 @@ import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, mov
 import fs from "fs";
 import path from "path";
 
+function normalizeTitleForMatch(s: string): string {
+  return s.toLowerCase()
+    .replace(/[&]/g, "and")
+    .replace(/[:']/g, " ")
+    .replace(/[.\-_\[\](){}!@#$%^+=|;<>?/\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
   const guid = r.infoHash || r.guid || r.downloadUrl || `prowlarr-${r.indexerId}-${r.title}`;
   const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
@@ -530,6 +539,36 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // DELETE /api/requests/managed/:sonarrId - Delete entire franchise (all seasons + Sonarr entry)
+  router.delete("/managed/:sonarrId", async (req: Request, res: Response) => {
+    try {
+      const sonarrId = Number(req.params.sonarrId);
+      const rows = db.prepare("SELECT id, title FROM media_requests WHERE sonarr_id = ?").all(sonarrId) as any[];
+      if (rows.length === 0) return res.status(404).json({ error: "No requests found for this series" });
+
+      const sUrl = process.env.SONARR_URL || "";
+      const sKey = process.env.SONARR_API_KEY || "";
+
+      // Delete from Sonarr
+      if (sUrl) {
+        try { await fetch(`${sUrl}/api/v3/series/${sonarrId}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
+      }
+
+      // Delete all requests + RCs + approval history
+      for (const row of rows) {
+        db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(row.id);
+        db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(row.id);
+        db.prepare("DELETE FROM media_requests WHERE id = ?").run(row.id);
+      }
+
+      console.log(`[Delete] Deleted franchise sonarr_id=${sonarrId}: ${rows[0].title} (${rows.length} requests)`);
+      res.json({ success: true, deleted: rows.length, title: rows[0].title });
+    } catch (error: any) {
+      console.error("Error deleting franchise:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // GET /api/requests/managed/:sonarrId - Franchise detail: all seasons + all releases
   router.get("/managed/:sonarrId", async (req: Request, res: Response) => {
     try {
@@ -983,10 +1022,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .all().map((r: any) => r.torrent_hash)
       );
 
-      const existingTitles = new Set(
-        db.prepare("SELECT LOWER(title) as t FROM media_requests").all().map((r: any) => r.t)
-      );
-
       const newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
 
       if (newTorrents.length === 0) {
@@ -1024,10 +1059,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         existingSonarrByTitle.set(s.title.toLowerCase(), s);
       }
 
-      // Also pre-populate existingTitles with all known media (Radarr + Sonarr + DB)
-      for (const m of allRadarrMovies) existingTitles.add(m.title.toLowerCase());
-      for (const s of allSonarrSeries) existingTitles.add(s.title.toLowerCase());
-
       for (const torrent of newTorrents) {
         const parsed = parseTorrentName(torrent.name);
         const savePath = (torrent.save_path || "").toLowerCase();
@@ -1052,138 +1083,138 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .replace(/\s+/g, " ")
           .trim();
 
-        const normTitle = titleClean.toLowerCase();
-
-        if (existingTitles.has(normTitle)) {
-          results.push({ title: torrent.name, status: "skipped", error: "Already in DB" });
-          continue;
-        }
-
         try {
-          if (type === "movie" && radarrProfileId) {
-            const lookup = await radarr.lookupMovie(titleClean);
-            if (lookup.length > 0) {
-              const found = lookup[0];
-              const existingByTitle = existingRadarrByTitle.get(found.title.toLowerCase());
+          const season = parsed.season || 1;
+          const epStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
+          const tNorm = normalizeTitleForMatch(titleClean);
 
-              let radarrId: number;
-              if (existingByTitle) {
-                radarrId = existingByTitle.id;
-                console.log(`[ScanDownloads] Movie already in Radarr: ${found.title} (radarr_id=${radarrId})`);
-              } else {
-                const added = await radarr.addMovie({
-                  ...found,
-                  qualityProfileId: radarrProfileId,
-                  rootFolderPath: radarrRootPath,
-                  monitored: true,
-                  addOptions: { searchForMovie: false },
-                });
-                radarrId = added.id;
-              }
+          // Step 1: Try to match against existing Radarr/Sonarr entries
+          let matchedRadarr: any = null;
+          let matchedSonarr: any = null;
 
-              // Skip if already imported in this batch (title match from existingTitles)
-              if (existingTitles.has(found.title.toLowerCase())) {
-                // Still create RC if request exists but no RC for this torrent hash
-                const existingReq = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ?").get(radarrId) as any;
-                if (existingReq) {
-                  const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
-                  if (!existingRc) {
-                    db.prepare(
-                      "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
-                    ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
-                    console.log(`[ScanDownloads] Added RC for existing movie: ${found.title} (hash=${torrent.hash.slice(0, 12)})`);
-                  }
+          if (type === "movie") {
+            matchedRadarr = [...existingRadarrByTitle.values()].find((m: any) => {
+              const mNorm = normalizeTitleForMatch(m.title);
+              return mNorm === tNorm || tNorm.startsWith(mNorm) || mNorm.startsWith(tNorm);
+            });
+          } else if (type === "series") {
+            matchedSonarr = [...existingSonarrByTitle.values()].find((s: any) => {
+              const sNorm = normalizeTitleForMatch(s.title);
+              return sNorm === tNorm || tNorm.startsWith(sNorm) || sNorm.startsWith(tNorm);
+            });
+          }
+
+          // Step 2: If no local match, use Sonarr/Radarr lookup but validate substring match
+          let radarrId: number | null = null;
+          let sonarrId: number | null = null;
+          let matchedTitle = "";
+
+          if (type === "movie" && !matchedRadarr && radarrProfileId) {
+            try {
+              const lookup = await radarr.lookupMovie(titleClean);
+              if (lookup.length > 0) {
+                const found = lookup[0];
+                const foundNorm = normalizeTitleForMatch(found.title);
+                // Validate: lookup title must contain the torrent title or vice versa
+                if (foundNorm.includes(tNorm) || tNorm.includes(foundNorm)) {
+                  const added = await radarr.addMovie({
+                    ...found,
+                    qualityProfileId: radarrProfileId,
+                    rootFolderPath: radarrRootPath,
+                    monitored: true,
+                    addOptions: { searchForMovie: false },
+                  });
+                  radarrId = added.id;
+                  matchedTitle = found.title;
+                  existingRadarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
+                  console.log(`[ScanDownloads] Created Radarr: ${found.title} (radarr_id=${added.id})`);
+                } else {
+                  console.log(`[ScanDownloads] Lookup rejected: "${found.title}" vs "${titleClean}" (no substring match)`);
                 }
-                results.push({ title: found.title, status: "skipped", type: "movie", error: "Already imported" });
-                continue;
               }
+            } catch (err: any) {
+              console.error(`[ScanDownloads] Radarr lookup failed for "${titleClean}": ${err.message}`);
+            }
+          } else if (type === "series" && !matchedSonarr && sonarrProfileId) {
+            try {
+              const lookup = await sonarr.lookupSeries(titleClean);
+              if (lookup.length > 0) {
+                const found = lookup[0];
+                const foundNorm = normalizeTitleForMatch(found.title);
+                if (foundNorm.includes(tNorm) || tNorm.includes(foundNorm)) {
+                  const added = await sonarr.addSeries({
+                    ...found,
+                    qualityProfileId: sonarrProfileId,
+                    path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
+                    monitored: true,
+                    seasonFolder: true,
+                    addOptions: { searchForMissingEpisodes: false },
+                    seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
+                  });
+                  sonarrId = added.id;
+                  matchedTitle = found.title;
+                  existingSonarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
+                  console.log(`[ScanDownloads] Created Sonarr: ${found.title} (sonarr_id=${added.id})`);
+                } else {
+                  console.log(`[ScanDownloads] Lookup rejected: "${found.title}" vs "${titleClean}" (no substring match)`);
+                }
+              }
+            } catch (err: any) {
+              console.error(`[ScanDownloads] Sonarr lookup failed for "${titleClean}": ${err.message}`);
+            }
+          }
 
+          // Step 3: Create request + RC using matched entry
+          if (type === "movie" && (matchedRadarr || radarrId)) {
+            const finalRadarrId = matchedRadarr?.id || radarrId!;
+            const title = matchedRadarr?.title || matchedTitle;
+            const existingReq = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ?").get(finalRadarrId) as any;
+            if (!existingReq) {
               const result = db.prepare(
                 "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
-              ).run(found.title, radarrId);
+              ).run(title, finalRadarrId);
               const requestId = result.lastInsertRowid as number;
-
               db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
               ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
-
-              existingTitles.add(found.title.toLowerCase());
-              results.push({ title: found.title, status: "imported", type: "movie", request_id: Number(requestId) });
-              console.log(`[ScanDownloads] Movie: ${found.title} (radarr_id=${radarrId})`);
+              results.push({ title, status: "imported", type: "movie", request_id: Number(requestId) });
+              console.log(`[ScanDownloads] Movie: ${title} (radarr_id=${finalRadarrId})`);
             } else {
-              results.push({ title: torrent.name, status: "no_match", type: "movie" });
+              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
+              if (!existingRc) {
+                db.prepare(
+                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+                console.log(`[ScanDownloads] Added RC for movie: ${title} (hash=${torrent.hash.slice(0, 12)})`);
+              }
+              results.push({ title, status: "skipped", type: "movie", error: "Already imported" });
             }
-          } else if (type === "series" && sonarrProfileId) {
-            const lookup = await sonarr.lookupSeries(titleClean);
-            if (lookup.length > 0) {
-              const found = lookup[0];
-
-              // Sanity check: lookup result title must share significant words with torrent name
-              const foundWords = found.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w: string) => w.length > 2 && !["the", "and", "for"].includes(w));
-              const torrentWords = torrent.name.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/);
-              const sharedWords = foundWords.filter((w: string) => torrentWords.some((tw: string) => tw.includes(w) || w.includes(tw)));
-              const matchRatio = foundWords.length > 0 ? sharedWords.length / foundWords.length : 0;
-              if (matchRatio < 0.5) {
-                results.push({ title: torrent.name, status: "no_match", type: "series", error: `Lookup mismatch: "${found.title}" (only ${Math.round(matchRatio * 100)}% word overlap)` });
-                continue;
-              }
-
-              const existingByTitle = existingSonarrByTitle.get(found.title.toLowerCase());
-
-              let sonarrId: number;
-              if (existingByTitle) {
-                sonarrId = existingByTitle.id;
-                console.log(`[ScanDownloads] Series already in Sonarr: ${found.title} (sonarr_id=${sonarrId})`);
-              } else {
-                const added = await sonarr.addSeries({
-                  ...found,
-                  qualityProfileId: sonarrProfileId,
-                  path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
-                  monitored: true,
-                  seasonFolder: true,
-                  addOptions: { searchForMissingEpisodes: false },
-                  seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
-                });
-                sonarrId = added.id;
-              }
-
-              const season = parsed.season || 1;
-              const epStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
-
-              // Skip if already imported in this batch (title match from existingTitles)
-              if (existingTitles.has(found.title.toLowerCase())) {
-                // Still create RC if request exists but no RC for this torrent hash
-                const existingReq = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ?").get(sonarrId) as any;
-                if (existingReq) {
-                  const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
-                  if (!existingRc) {
-                    db.prepare(
-                      "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
-                    ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
-                    console.log(`[ScanDownloads] Added RC for existing series: ${found.title} (hash=${torrent.hash.slice(0, 12)})`);
-                  }
-                }
-                results.push({ title: found.title, status: "skipped", type: "series", error: "Already imported" });
-                continue;
-              }
-
+          } else if (type === "series" && (matchedSonarr || sonarrId)) {
+            const finalSonarrId = matchedSonarr?.id || sonarrId!;
+            const title = matchedSonarr?.title || matchedTitle;
+            const existingReq = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND season = ?").get(finalSonarrId, season) as any;
+            if (!existingReq) {
               const result = db.prepare(
                 "INSERT INTO media_requests (title, type, sonarr_id, status, season, requested_by) VALUES (?, 'series', ?, 'DOWNLOADING', ?, '[]')"
-              ).run(found.title, sonarrId, season);
+              ).run(title, finalSonarrId, season);
               const requestId = result.lastInsertRowid as number;
-
               db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
               ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
-
-              existingTitles.add(found.title.toLowerCase());
-              results.push({ title: found.title, status: "imported", type: "series", request_id: Number(requestId) });
-              console.log(`[ScanDownloads] Series: ${found.title} (sonarr_id=${sonarrId})`);
+              results.push({ title, status: "imported", type: "series", request_id: Number(requestId) });
+              console.log(`[ScanDownloads] Series: ${title} (sonarr_id=${finalSonarrId}, S${String(season).padStart(2, "0")})`);
             } else {
-              results.push({ title: torrent.name, status: "no_match", type: "series" });
+              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
+              if (!existingRc) {
+                db.prepare(
+                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+                console.log(`[ScanDownloads] Added RC for series: ${title} (hash=${torrent.hash.slice(0, 12)})`);
+              }
+              results.push({ title, status: "skipped", type: "series", error: "Already imported" });
             }
           } else {
-            results.push({ title: torrent.name, status: "error", error: "No Radarr/Sonarr configured or no quality profile" });
+            results.push({ title: torrent.name, status: "no_match", type });
           }
         } catch (err: any) {
           console.error(`[ScanDownloads] Error processing ${torrent.name}:`, err.message);
@@ -1528,15 +1559,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   });
 
   // DELETE /api/requests/:id - Delete a single request and its releases
-  router.delete("/:id", (req: Request, res: Response) => {
+  router.delete("/:id", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
+
+      // Delete from Sonarr/Radarr
+      const sUrl = process.env.SONARR_URL || "";
+      const sKey = process.env.SONARR_API_KEY || "";
+      const rUrl = process.env.RADARR_URL || "";
+      const rKey = process.env.RADARR_API_KEY || "";
+      if (request.sonarr_id && sUrl) {
+        try { await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
+      }
+      if (request.radarr_id && rUrl) {
+        try { await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": rKey } }); } catch {}
+      }
+
       db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
-      console.log(`[Delete] Deleted request #${id}: ${request.title}`);
+      console.log(`[Delete] Deleted request #${id}: ${request.title} (sonarr=${request.sonarr_id}, radarr=${request.radarr_id})`);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting request:", error);

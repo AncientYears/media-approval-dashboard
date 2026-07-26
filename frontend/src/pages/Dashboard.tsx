@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates } from "../api";
+import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -132,12 +132,16 @@ export default function Dashboard() {
       )}
       {confirmCleanup && (
         <ConfirmModal
-          message={`Delete ${confirmCleanup.dryResult.duplicates} duplicate(s)? This will remove entries from DB + Sonarr/Radarr.`}
+          message={`Delete ${confirmCleanup.dryResult.duplicates} duplicate(s) from DB and Sonarr/Radarr? This cannot be undone.`}
           onConfirm={async () => {
             try {
               const result = await cleanupDuplicates(false);
               setConfirmCleanup(null);
-              setModal({ title: "Cleanup Complete", lines: [`Cleaned up ${result.duplicates} duplicate(s).`] });
+              const lines = [`Cleaned up ${result.duplicates} duplicate(s):`];
+              for (const r of result.results) {
+                lines.push(`  "${r.title}": deleted ${r.deleted}, moved ${r.movedRcs} RCs`);
+              }
+              setModal({ title: "Cleanup Complete", lines });
               loadData();
             } catch (err: any) {
               setConfirmCleanup(null);
@@ -243,13 +247,7 @@ export default function Dashboard() {
               if (dryResult.duplicates === 0) {
                 setModal({ title: "Cleanup Duplicates", lines: ["No duplicates found!"] });
               } else {
-                const lines: string[] = [`Found ${dryResult.duplicates} duplicate title(s):`];
-                for (const r of dryResult.results) {
-                  lines.push(`  "${r.title}": keeping id=${r.kept}, deleting ${r.deleted}, moving ${r.movedRcs} RCs`);
-                  if (r.sonarrDeleted.length) lines.push(`    Sonarr IDs to delete: ${r.sonarrDeleted.join(", ")}`);
-                  if (r.radarrDeleted.length) lines.push(`    Radarr IDs to delete: ${r.radarrDeleted.join(", ")}`);
-                }
-                setModal({ title: "Cleanup Duplicates", lines });
+                setModal(null);
                 setConfirmCleanup({ dryResult });
               }
             } catch (err: any) {
@@ -320,6 +318,11 @@ export default function Dashboard() {
                   <div className="managed-footer">
                     <span className="rtag">{item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
+                    <button className="btn btn-danger btn-tiny" onClick={() => {
+                      if (window.confirm(`Delete "${item.title}" from DB + Sonarr?`)) {
+                        deleteFranchise(item.sonarr_id).then(() => loadData());
+                      }
+                    }}>Delete</button>
                   </div>
                 </div>
               ) : (
@@ -328,6 +331,11 @@ export default function Dashboard() {
                   <div className="managed-footer">
                     <span className="rtag">{item.release_count} version{item.release_count !== 1 ? "s" : ""} · {formatSize(item.total_size_mb)}</span>
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
+                    <button className="btn btn-danger btn-tiny" onClick={() => {
+                      if (window.confirm(`Delete "${item.title}" from DB + Radarr?`)) {
+                        deleteRequest(item.request_id).then(() => loadData());
+                      }
+                    }}>Delete</button>
                   </div>
                 </div>
               )
