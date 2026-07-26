@@ -69,6 +69,7 @@ export default function Dashboard() {
   const [sortBy, setSortBy] = useState("status_asc");
   const [modal, setModal] = useState<{ title?: string; lines: string[] } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState<{ dryResult: any } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -127,6 +128,23 @@ export default function Dashboard() {
             loadData();
           }}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+      {confirmCleanup && (
+        <ConfirmModal
+          message={`Delete ${confirmCleanup.dryResult.duplicates} duplicate(s)? This will remove entries from DB + Sonarr/Radarr.`}
+          onConfirm={async () => {
+            try {
+              const result = await cleanupDuplicates(false);
+              setConfirmCleanup(null);
+              setModal({ title: "Cleanup Complete", lines: [`Cleaned up ${result.duplicates} duplicate(s).`] });
+              loadData();
+            } catch (err: any) {
+              setConfirmCleanup(null);
+              setModal({ title: "Cleanup Error", lines: [err.message] });
+            }
+          }}
+          onCancel={() => setConfirmCleanup(null)}
         />
       )}
 
@@ -222,27 +240,18 @@ export default function Dashboard() {
             setModal({ title: "Cleanup Duplicates", lines: ["Checking for duplicates..."] });
             try {
               const dryResult = await cleanupDuplicates(true);
-              const lines: string[] = [];
               if (dryResult.duplicates === 0) {
-                lines.push("No duplicates found!");
+                setModal({ title: "Cleanup Duplicates", lines: ["No duplicates found!"] });
               } else {
-                lines.push(`Found ${dryResult.duplicates} duplicate title(s):`);
+                const lines: string[] = [`Found ${dryResult.duplicates} duplicate title(s):`];
                 for (const r of dryResult.results) {
                   lines.push(`  "${r.title}": keeping id=${r.kept}, deleting ${r.deleted}, moving ${r.movedRcs} RCs`);
                   if (r.sonarrDeleted.length) lines.push(`    Sonarr IDs to delete: ${r.sonarrDeleted.join(", ")}`);
                   if (r.radarrDeleted.length) lines.push(`    Radarr IDs to delete: ${r.radarrDeleted.join(", ")}`);
                 }
-                lines.push("");
-                const confirmed = window.confirm(`Found ${dryResult.duplicates} duplicates. Delete them?`);
-                if (confirmed) {
-                  const result = await cleanupDuplicates(false);
-                  lines.push(`Cleaned up ${result.duplicates} duplicate(s).`);
-                } else {
-                  lines.push("Cancelled.");
-                }
+                setModal({ title: "Cleanup Duplicates", lines });
+                setConfirmCleanup({ dryResult });
               }
-              setModal({ title: "Cleanup Duplicates", lines });
-              loadData();
             } catch (err: any) {
               setModal({ title: "Cleanup Duplicates", lines: [`Error: ${err.message}`] });
             }

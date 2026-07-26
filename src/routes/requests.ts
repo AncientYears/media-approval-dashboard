@@ -174,9 +174,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         if (!dryRun) {
           for (const del of deleteRows) {
-            // Move orphaned RCs to the kept request
-            const rcCount = db.prepare("UPDATE release_candidates SET request_id = ? WHERE request_id = ?").run(keep.id, del.id);
-            movedRcs += rcCount.changes;
+            // Move RCs from deleted request to kept request, skip conflicts
+            const orphanRcs = db.prepare("SELECT * FROM release_candidates WHERE request_id = ?").all(del.id) as any[];
+            for (const rc of orphanRcs) {
+              const conflict = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND radarr_release_id = ?").get(keep.id, rc.radarr_release_id);
+              if (conflict) {
+                // Duplicate RC — delete instead of move
+                db.prepare("DELETE FROM approval_history WHERE release_id = ?").run(rc.id);
+                db.prepare("DELETE FROM release_candidates WHERE id = ?").run(rc.id);
+              } else {
+                db.prepare("UPDATE release_candidates SET request_id = ? WHERE id = ?").run(keep.id, rc.id);
+                movedRcs++;
+              }
+            }
             db.prepare("DELETE FROM media_requests WHERE id = ?").run(del.id);
             if (del.sonarr_id) sonarrIdsToDelete.push(del.sonarr_id);
             if (del.radarr_id) radarrIdsToDelete.push(del.radarr_id);
@@ -1107,6 +1117,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const lookup = await sonarr.lookupSeries(titleClean);
             if (lookup.length > 0) {
               const found = lookup[0];
+
+              // Sanity check: lookup result title must share significant words with torrent name
+              const foundWords = found.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w: string) => w.length > 2 && !["the", "and", "for"].includes(w));
+              const torrentWords = torrent.name.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/);
+              const sharedWords = foundWords.filter((w: string) => torrentWords.some((tw: string) => tw.includes(w) || w.includes(tw)));
+              const matchRatio = foundWords.length > 0 ? sharedWords.length / foundWords.length : 0;
+              if (matchRatio < 0.5) {
+                results.push({ title: torrent.name, status: "no_match", type: "series", error: `Lookup mismatch: "${found.title}" (only ${Math.round(matchRatio * 100)}% word overlap)` });
+                continue;
+              }
+
               const existingByTitle = existingSonarrByTitle.get(found.title.toLowerCase());
 
               let sonarrId: number;
