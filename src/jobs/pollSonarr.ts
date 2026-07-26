@@ -63,9 +63,17 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
 
     try {
       const wantedSeasons = await sonarr.getWantedMissing();
-      const wantedKeys = new Set(wantedSeasons.map((w) => `${w.seriesId}-${w.seasonNumber}`));
 
-      console.log(`[Sonarr] Found ${wantedSeasons.length} wanted seasons`);
+      const validSeries = await sonarr.getAllSeries();
+      const validIds = new Set(validSeries.map((s: any) => s.id));
+      const filtered = wantedSeasons.filter((w) => validIds.has(w.seriesId));
+      if (filtered.length < wantedSeasons.length) {
+        console.log(`[Sonarr] Filtered ${wantedSeasons.length - filtered.length} wanted seasons for deleted series`);
+      }
+
+      const wantedKeys = new Set(filtered.map((w) => `${w.seriesId}-${w.seasonNumber}`));
+
+      console.log(`[Sonarr] Found ${filtered.length} wanted seasons`);
 
       const existingStmt = db.prepare(
         `SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ? AND type = 'series'`
@@ -109,7 +117,7 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
       // Phase 1: Synchronous DB work — create/update all request rows
       const searchesToRun: Array<{ requestId: number; seriesId: number; seasonNumber: number; title: string }> = [];
 
-      for (const season of wantedSeasons) {
+      for (const season of filtered) {
         const existing = existingStmt.get(season.seriesId, season.seasonNumber) as any;
         const requestTitle = season.seasonNumber === 0
           ? `${season.title} - Specials`

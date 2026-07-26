@@ -154,6 +154,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/cleanup - Reset stale SEARCHING requests, clean up orphaned RCs
+  router.post("/cleanup", (req: Request, res: Response) => {
+    try {
+      const stuck = db.prepare(
+        `UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP
+         WHERE status = 'SEARCHING'`
+      ).run();
+      const orphaned = db.prepare(
+        `DELETE FROM release_candidates WHERE request_id NOT IN (SELECT id FROM media_requests)`
+      ).run();
+      res.json({ reset: stuck.changes, orphanedRcs: orphaned.changes });
+    } catch (error) {
+      console.error("Error cleaning up:", error);
+      res.status(500).json({ error: "Failed to cleanup" });
+    }
+  });
+
   // POST /api/requests/cleanup-duplicates - Remove duplicate media_requests by title, keep best one
   router.post("/cleanup-duplicates", async (req: Request, res: Response) => {
     try {
@@ -553,7 +570,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     try {
       const sonarrId = Number(req.params.sonarrId);
       const rows = db.prepare("SELECT id, title FROM media_requests WHERE sonarr_id = ?").all(sonarrId) as any[];
-      if (rows.length === 0) return res.status(404).json({ error: "No requests found for this series" });
+      if (rows.length === 0) return res.json({ success: true, deleted: 0, title: null });
 
       const sUrl = process.env.SONARR_URL || "";
       const sKey = process.env.SONARR_API_KEY || "";
@@ -1055,8 +1072,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sonarrRootPath = sonarrRootFolders[0]?.path;
 
       // Pre-fetch all existing media to avoid duplicate imports within the same batch
-      const allRadarrMovies = await radarr.getAllMovies().catch(() => [] as any[]);
-      const allSonarrSeries = await sonarr.getAllSeries().catch(() => [] as any[]);
+      const allRadarrMovies = await radarr.getAllMovies().catch((e) => { console.error(`[ScanDownloads] getAllMovies failed: ${e.message}`); return [] as any[]; });
+      const allSonarrSeries = await sonarr.getAllSeries().catch((e) => { console.error(`[ScanDownloads] getAllSeries failed: ${e.message}`); return [] as any[]; });
+
+      console.log(`[ScanDownloads] Fetched ${allRadarrMovies.length} Radarr movies, ${allSonarrSeries.length} Sonarr series`);
 
       // Build lookup maps by normalized title
       const existingRadarrByTitle = new Map<string, any>();
@@ -1092,6 +1111,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .replace(/\s+/g, " ")
           .trim();
 
+        const lookupTitle = torrent.name
+          .replace(/\bS\d{1,2}(?:E\d{1,3}(?:[-–]\d{1,3})?)?\b/gi, "")
+          .replace(/\bSeason\s*\d+\b/gi, "")
+          .replace(/\b(?:1080p|2160p|720p|480p|BluRay|WEB-?DL|WEB-?RIP|HDRip|DVDRip|REMUX|x264|x265|HEVC|AAC|FLAC|DTS|AC3|DDP?\.?5\.?1|ATMOS|EAC3|DOLBY|DUBBED|DUBBING|DUB|MULTI|NF|HDR10\+?|DV|10bit|H\.?26[45]|AV1|60fps|23\.976|25fps|DDP|DD)\b/gi, "")
+          .replace(/\[.*?\]/g, " ")
+          .replace(/[-–/\\]+/g, " ")
+          .replace(/[._]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
         try {
           const season = parsed.season || 1;
           const epStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
@@ -1120,7 +1149,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
           if (type === "movie" && !matchedRadarr && radarrProfileId) {
             try {
-              const lookup = await radarr.lookupMovie(titleClean);
+              const lookup = await radarr.lookupMovie(lookupTitle);
               for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
                 if (titlesMatch(foundNorm, tNorm)) {
@@ -1143,14 +1172,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
               }
               if (!radarrId) {
-                console.log(`[ScanDownloads] No valid Radarr match for "${titleClean}" (${lookup.length} results checked)`);
+                const topTitles = lookup.slice(0, 3).map((f: any) => `${f.title} [${normalizeTitleForMatch(f.title)}]`).join(", ");
+                console.log(`[ScanDownloads] No valid Radarr match for "${lookupTitle}" (tNorm="${tNorm}") (${lookup.length} results: ${topTitles})`);
               }
             } catch (err: any) {
-              console.error(`[ScanDownloads] Radarr lookup failed for "${titleClean}": ${err.message}`);
+              console.error(`[ScanDownloads] Radarr lookup failed for "${lookupTitle}": ${err.message}`);
             }
           } else if (type === "series" && !matchedSonarr && sonarrProfileId) {
             try {
-              const lookup = await sonarr.lookupSeries(titleClean);
+              const lookup = await sonarr.lookupSeries(lookupTitle);
               for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
                 if (titlesMatch(foundNorm, tNorm)) {
@@ -1175,10 +1205,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
               }
               if (!sonarrId) {
-                console.log(`[ScanDownloads] No valid Sonarr match for "${titleClean}" (${lookup.length} results checked)`);
+                const topTitles = lookup.slice(0, 5).map((f: any) => `${f.title} [${normalizeTitleForMatch(f.title)}]`).join(", ");
+                console.log(`[ScanDownloads] No valid Sonarr match for "${lookupTitle}" (tNorm="${tNorm}") (${lookup.length} results: ${topTitles})`);
               }
             } catch (err: any) {
-              console.error(`[ScanDownloads] Sonarr lookup failed for "${titleClean}": ${err.message}`);
+              console.error(`[ScanDownloads] Sonarr lookup failed for "${lookupTitle}": ${err.message}`);
             }
           }
 
@@ -1581,7 +1612,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     try {
       const { id } = req.params;
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
-      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (!request) return res.json({ success: true });
 
       // Delete from Sonarr/Radarr
       const sUrl = process.env.SONARR_URL || "";
