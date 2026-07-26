@@ -403,7 +403,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [approvingId, setApprovingId] = useState<number | null>(null);
-  const [sortBy, setSortBy] = useState<"app_score" | "size_mb" | "seeders">("app_score");
+  const [sortBy, setSortBy] = useState<"app_score" | "size_mb" | "seeders" | "quality" | "indexer">("app_score");
   const [filterEpisode, setFilterEpisode] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [moveResults, setMoveResults] = useState<Record<number, any>>({});
@@ -578,6 +578,8 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       if (sortBy === "app_score") return (b.app_score || 0) - (a.app_score || 0);
       if (sortBy === "size_mb") return (b.size_mb || 0) - (a.size_mb || 0);
       if (sortBy === "seeders") return ((b.seeders ?? 0) - (a.seeders ?? 0));
+      if (sortBy === "quality") return (a.quality || a.radarr_quality || "").localeCompare(b.quality || b.radarr_quality || "");
+      if (sortBy === "indexer") return (a.indexer || "").localeCompare(b.indexer || "");
       return 0;
     });
 
@@ -777,9 +779,9 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                 {([
                   { key: null, label: "Ep", cls: "" },
                   { key: null, label: "Title", cls: "" },
-                  { key: null, label: "Q", cls: "" },
-                  { key: null, label: "Size", cls: "" },
-                  { key: null, label: "Indexer", cls: "" },
+                  { key: "quality" as const, label: "Q", cls: "" },
+                  { key: "size_mb" as const, label: "Size", cls: "" },
+                  { key: "indexer" as const, label: "Indexer", cls: "" },
                   { key: "seeders" as const, label: "S/L", cls: "th-sl" },
                   { key: "app_score" as const, label: "Score", cls: "th-score" },
                   { key: null, label: "", cls: "th-act" },
