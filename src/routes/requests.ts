@@ -20,6 +20,15 @@ function normalizeTitleForMatch(s: string): string {
     .trim();
 }
 
+function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
+  // Primary: prefix match (lookup title is start of torrent title or vice versa)
+  if (torrentNorm.startsWith(lookupNorm) || lookupNorm.startsWith(torrentNorm)) return true;
+  // Secondary: lookup title appears in torrent, but must be >= 10 chars to avoid false positives
+  // like "Dragons" matching "Ninjago Dragons Rising"
+  if (lookupNorm.length >= 10 && torrentNorm.includes(lookupNorm)) return true;
+  return false;
+}
+
 function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
   const guid = r.infoHash || r.guid || r.downloadUrl || `prowlarr-${r.indexerId}-${r.title}`;
   const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
@@ -1114,7 +1123,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const lookup = await radarr.lookupMovie(titleClean);
               for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
-                if (foundNorm.includes(tNorm) || tNorm.includes(foundNorm)) {
+                if (titlesMatch(foundNorm, tNorm)) {
                   try {
                     const added = await radarr.addMovie({
                       ...found,
@@ -1144,7 +1153,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const lookup = await sonarr.lookupSeries(titleClean);
               for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
-                if (foundNorm.includes(tNorm) || tNorm.includes(foundNorm)) {
+                if (titlesMatch(foundNorm, tNorm)) {
                   try {
                     const added = await sonarr.addSeries({
                       ...found,
