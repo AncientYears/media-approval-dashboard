@@ -1229,7 +1229,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (type === "movie" && (matchedRadarr || radarrId)) {
             const finalRadarrId = matchedRadarr?.id || radarrId!;
             const title = matchedRadarr?.title || matchedTitle;
-            const existingReq = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ?").get(finalRadarrId) as any;
+            const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ?").get(finalRadarrId) as any;
             if (!existingReq) {
               const result = db.prepare(
                 "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
@@ -1241,6 +1241,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               results.push({ title, status: "imported", type: "movie", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Movie: ${title} (radarr_id=${finalRadarrId})`);
             } else {
+              if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+                db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
+              }
               const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
               if (!existingRc) {
                 db.prepare(
@@ -1253,7 +1256,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           } else if (type === "series" && (matchedSonarr || sonarrId)) {
             const finalSonarrId = matchedSonarr?.id || sonarrId!;
             const title = matchedSonarr?.title || matchedTitle;
-            const existingReq = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND season = ?").get(finalSonarrId, season) as any;
+            const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(finalSonarrId, season) as any;
             if (!existingReq) {
               const result = db.prepare(
                 "INSERT INTO media_requests (title, type, sonarr_id, status, season, requested_by) VALUES (?, 'series', ?, 'DOWNLOADING', ?, '[]')"
@@ -1265,6 +1268,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               results.push({ title, status: "imported", type: "series", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Series: ${title} (sonarr_id=${finalSonarrId}, S${String(season).padStart(2, "0")})`);
             } else {
+              if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+                db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
+              }
               const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
               if (!existingRc) {
                 db.prepare(

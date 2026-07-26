@@ -110,7 +110,21 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         if (!t) continue;
         const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
         const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-        const isMatch = tn === req || tn.startsWith(req + " ") || tn.startsWith(req + ".") || (tn.startsWith(req) && tn.length > req.length && /[e\d]/.test(tn[req.length]));
+        const isPrefix = tn.startsWith(req) || req.startsWith(tn);
+        const isIncluded = (req.length >= 10 && tn.includes(req)) || (tn.length >= 10 && req.includes(tn));
+        let isWordMatch = false;
+        if (!isPrefix && !isIncluded) {
+          const shorter = req.length <= tn.length ? req : tn;
+          const longer = req.length > tn.length ? req : tn;
+          const shortWords = shorter.split(/\s+/).filter((w: string) => w.length >= 3);
+          const longSet = new Set(longer.split(/\s+/));
+          if (shortWords.length >= 2) {
+            const matched = shortWords.filter((w: string) => longSet.has(w));
+            if (matched.length === shortWords.length) isWordMatch = true;
+            if (shortWords.length >= 4 && matched.length >= shortWords.length - 1) isWordMatch = true;
+          }
+        }
+        const isMatch = isPrefix || isIncluded || isWordMatch;
         let reason = "";
         if (!isMatch) {
           reason = `title mismatch (is "${t.name}")`;
