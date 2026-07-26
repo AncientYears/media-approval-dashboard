@@ -1235,9 +1235,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
               ).run(title, finalRadarrId);
               const requestId = result.lastInsertRowid as number;
-              db.prepare(
+              const rcResult = db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
               ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+              db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
               results.push({ title, status: "imported", type: "movie", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Movie: ${title} (radarr_id=${finalRadarrId})`);
             } else {
@@ -1246,9 +1247,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               }
               const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
               if (!existingRc) {
-                db.prepare(
+                const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
                 ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+                db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for movie: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               }
               results.push({ title, status: "skipped", type: "movie", error: "Already imported" });
@@ -1262,9 +1264,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 "INSERT INTO media_requests (title, type, sonarr_id, status, season, requested_by) VALUES (?, 'series', ?, 'DOWNLOADING', ?, '[]')"
               ).run(title, finalSonarrId, season);
               const requestId = result.lastInsertRowid as number;
-              db.prepare(
+              const rcResult = db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
               ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+              db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
               results.push({ title, status: "imported", type: "series", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Series: ${title} (sonarr_id=${finalSonarrId}, S${String(season).padStart(2, "0")})`);
             } else {
@@ -1273,9 +1276,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               }
               const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
               if (!existingRc) {
-                db.prepare(
+                const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
                 ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+                db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for series: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               }
               results.push({ title, status: "skipped", type: "series", error: "Already imported" });
@@ -1593,6 +1597,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       res.status(500).json({ error: "Failed to reactivate request" });
     }
   });
+
+  // GET /api/requests/db/:table - View raw table data for debugging
+  router.get("/db/:table", (req: Request, res: Response) => {
+    const table = req.params.table;
+    const allowed = ["media_requests", "release_candidates", "approval_history"];
+    if (!allowed.includes(table)) {
+      return res.status(400).json({ error: `Invalid table. Allowed: ${allowed.join(", ")}` });
+    }
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+      const offset = parseInt(req.query.offset as string) || 0;
+      let query = `SELECT * FROM ${table} ORDER BY id DESC LIMIT ? OFFSET ?`;
+      const rows = db.prepare(query).all(limit, offset) as any[];
+      const total = db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as any;
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      res.json({ table, columns, rows, total: total.c, limit, offset });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.get("/:id", (req: Request, res: Response) => {
     try {
       const { id } = req.params;

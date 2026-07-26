@@ -128,6 +128,11 @@ export async function scanDownloads() {
   return response.data;
 }
 
+export async function viewDbTable(table: string, limit = 100, offset = 0) {
+  const response = await api.get(`/requests/db/${table}?limit=${limit}&offset=${offset}`);
+  return response.data;
+}
+
 export async function deleteFranchise(sonarrId: number) {
   const response = await api.delete(`/requests/managed/${sonarrId}`);
   return response.data;
