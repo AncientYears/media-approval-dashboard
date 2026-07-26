@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads } from "../api";
+import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -218,6 +218,35 @@ export default function Dashboard() {
             setModal({ title: "Scan Downloads", lines });
             loadData();
           }}>Scan Downloads</button>
+          <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
+            setModal({ title: "Cleanup Duplicates", lines: ["Checking for duplicates..."] });
+            try {
+              const dryResult = await cleanupDuplicates(true);
+              const lines: string[] = [];
+              if (dryResult.duplicates === 0) {
+                lines.push("No duplicates found!");
+              } else {
+                lines.push(`Found ${dryResult.duplicates} duplicate title(s):`);
+                for (const r of dryResult.results) {
+                  lines.push(`  "${r.title}": keeping id=${r.kept}, deleting ${r.deleted}, moving ${r.movedRcs} RCs`);
+                  if (r.sonarrDeleted.length) lines.push(`    Sonarr IDs to delete: ${r.sonarrDeleted.join(", ")}`);
+                  if (r.radarrDeleted.length) lines.push(`    Radarr IDs to delete: ${r.radarrDeleted.join(", ")}`);
+                }
+                lines.push("");
+                const confirmed = window.confirm(`Found ${dryResult.duplicates} duplicates. Delete them?`);
+                if (confirmed) {
+                  const result = await cleanupDuplicates(false);
+                  lines.push(`Cleaned up ${result.duplicates} duplicate(s).`);
+                } else {
+                  lines.push("Cancelled.");
+                }
+              }
+              setModal({ title: "Cleanup Duplicates", lines });
+              loadData();
+            } catch (err: any) {
+              setModal({ title: "Cleanup Duplicates", lines: [`Error: ${err.message}`] });
+            }
+          }}>Cleanup Duplicates</button>
         </div>
       </div>
 

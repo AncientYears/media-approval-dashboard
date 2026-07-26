@@ -47,6 +47,16 @@ export async function cleanupStaleRequests() {
   return response.data;
 }
 
+export async function cleanupDuplicates(dryRun = false) {
+  const response = await api.post("/requests/cleanup-duplicates", { dryRun });
+  return response.data;
+}
+
+export async function removeTitles(titles: string[]) {
+  const response = await api.post("/requests/remove-titles", { titles });
+  return response.data;
+}
+
 export async function importMissingRequests() {
   const response = await api.post("/requests/import-missing");
   return response.data;

@@ -136,9 +136,173 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/cleanup - No-op (auto-dismiss removed, dismiss is manual only)
-  router.post("/cleanup", (req: Request, res: Response) => {
-    res.json({ success: true, dismissed: 0 });
+  // POST /api/requests/cleanup-duplicates - Remove duplicate media_requests by title, keep best one
+  router.post("/cleanup-duplicates", async (req: Request, res: Response) => {
+    try {
+      const dryRun = !!req.body?.dryRun;
+      const results: Array<{ title: string; kept: number; deleted: number; movedRcs: number; sonarrDeleted: number[]; radarrDeleted: number[] }> = [];
+
+      // Find duplicates by normalized title + type
+      const dupes = db.prepare(`
+        SELECT title, type, COUNT(*) as cnt
+        FROM media_requests
+        GROUP BY LOWER(title), type
+        HAVING cnt > 1
+      `).all() as any[];
+
+      const sonarrIdsToDelete: number[] = [];
+      const radarrIdsToDelete: number[] = [];
+
+      for (const dupe of dupes) {
+        const rows = db.prepare(`
+          SELECT mr.*,
+            (SELECT COUNT(*) FROM release_candidates rc WHERE rc.request_id = mr.id) as rc_count
+          FROM media_requests mr
+          WHERE LOWER(mr.title) = LOWER(?) AND mr.type = ?
+          ORDER BY mr.id ASC
+        `).all(dupe.title, dupe.type) as any[];
+
+        // Keep the one with most RCs, or earliest ID
+        const keep = rows.reduce((best: any, cur: any) => {
+          if (cur.rc_count > best.rc_count) return cur;
+          if (cur.rc_count === best.rc_count && cur.id < best.id) return cur;
+          return best;
+        }, rows[0]);
+
+        const deleteRows = rows.filter((r: any) => r.id !== keep.id);
+        let movedRcs = 0;
+
+        if (!dryRun) {
+          for (const del of deleteRows) {
+            // Move orphaned RCs to the kept request
+            const rcCount = db.prepare("UPDATE release_candidates SET request_id = ? WHERE request_id = ?").run(keep.id, del.id);
+            movedRcs += rcCount.changes;
+            db.prepare("DELETE FROM media_requests WHERE id = ?").run(del.id);
+            if (del.sonarr_id) sonarrIdsToDelete.push(del.sonarr_id);
+            if (del.radarr_id) radarrIdsToDelete.push(del.radarr_id);
+          }
+        } else {
+          movedRcs = deleteRows.reduce((sum: number, del: any) => {
+            return sum + (db.prepare("SELECT COUNT(*) as c FROM release_candidates WHERE request_id = ?").get(del.id) as any).c;
+          }, 0);
+          for (const del of deleteRows) {
+            if (del.sonarr_id) sonarrIdsToDelete.push(del.sonarr_id);
+            if (del.radarr_id) radarrIdsToDelete.push(del.radarr_id);
+          }
+        }
+
+        results.push({
+          title: dupe.title,
+          kept: keep.id,
+          deleted: deleteRows.length,
+          movedRcs,
+          sonarrDeleted: deleteRows.map((d: any) => d.sonarr_id).filter(Boolean),
+          radarrDeleted: deleteRows.map((d: any) => d.radarr_id).filter(Boolean),
+        });
+      }
+
+      // Delete duplicate Sonarr/Radarr entries
+      if (!dryRun) {
+        const sUrl = process.env.SONARR_URL || "";
+        const sKey = process.env.SONARR_API_KEY || "";
+        const rUrl = process.env.RADARR_URL || "";
+        const rKey = process.env.RADARR_API_KEY || "";
+        for (const sid of [...new Set(sonarrIdsToDelete)]) {
+          try {
+            await fetch(`${sUrl}/api/v3/series/${sid}?deleteFiles=false`, {
+              method: "DELETE",
+              headers: { "X-Api-Key": sKey },
+            });
+          } catch {}
+        }
+        for (const rid of [...new Set(radarrIdsToDelete)]) {
+          try {
+            await fetch(`${rUrl}/api/v3/movie/${rid}?deleteFiles=false&addImportListExclusion=true`, {
+              method: "DELETE",
+              headers: { "X-Api-Key": rKey },
+            });
+          } catch {}
+        }
+      }
+
+      // Cleanup orphaned RCs
+      if (!dryRun) {
+        const orphaned = db.prepare(`
+          SELECT rc.id FROM release_candidates rc
+          LEFT JOIN media_requests mr ON mr.id = rc.request_id
+          WHERE mr.id IS NULL
+        `).all() as any[];
+        if (orphaned.length > 0) {
+          db.prepare(`DELETE FROM release_candidates WHERE id IN (${orphaned.map((r: any) => r.id).join(",")})`).run();
+        }
+      }
+
+      const totalDeleted = results.reduce((s, r) => s + r.deleted, 0);
+      console.log(`[Cleanup] ${dryRun ? "DRY RUN: " : ""}Removed ${totalDeleted} duplicate request(s), moved RCs, deleted ${sonarrIdsToDelete.length} Sonarr + ${radarrIdsToDelete.length} Radarr entries`);
+
+      res.json({ success: true, dryRun, duplicates: results.length, results });
+    } catch (error: any) {
+      console.error("Error cleaning up duplicates:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/remove-titles - Remove specific entries by title (wrong matches from scan-downloads)
+  router.post("/remove-titles", async (req: Request, res: Response) => {
+    try {
+      const titles: string[] = req.body?.titles || [];
+      if (!titles.length) return res.status(400).json({ error: "No titles provided" });
+
+      const removed: Array<{ title: string; id: number; sonarr_id?: number; radarr_id?: number }> = [];
+      const sUrl = process.env.SONARR_URL || "";
+      const sKey = process.env.SONARR_API_KEY || "";
+      const rUrl = process.env.RADARR_URL || "";
+      const rKey = process.env.RADARR_API_KEY || "";
+
+      for (const title of titles) {
+        const rows = db.prepare("SELECT * FROM media_requests WHERE LOWER(title) = LOWER(?)").all(title) as any[];
+        for (const row of rows) {
+          db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(row.id);
+          db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(row.id);
+          db.prepare("DELETE FROM media_requests WHERE id = ?").run(row.id);
+
+          if (row.sonarr_id && sUrl) {
+            try {
+              await fetch(`${sUrl}/api/v3/series/${row.sonarr_id}?deleteFiles=false`, {
+                method: "DELETE",
+                headers: { "X-Api-Key": sKey },
+              });
+            } catch {}
+          }
+          if (row.radarr_id && rUrl) {
+            try {
+              await fetch(`${rUrl}/api/v3/movie/${row.radarr_id}?deleteFiles=false`, {
+                method: "DELETE",
+                headers: { "X-Api-Key": rKey },
+              });
+            } catch {}
+          }
+
+          removed.push({ title: row.title, id: row.id, sonarr_id: row.sonarr_id, radarr_id: row.radarr_id });
+          console.log(`[RemoveTitles] Removed: ${row.title} (id=${row.id}, sonarr=${row.sonarr_id}, radarr=${row.radarr_id})`);
+        }
+      }
+
+      // Cleanup orphaned RCs
+      const orphaned = db.prepare(`
+        SELECT rc.id FROM release_candidates rc
+        LEFT JOIN media_requests mr ON mr.id = rc.request_id
+        WHERE mr.id IS NULL
+      `).all() as any[];
+      if (orphaned.length > 0) {
+        db.prepare(`DELETE FROM release_candidates WHERE id IN (${orphaned.map((r: any) => r.id).join(",")})`).run();
+      }
+
+      res.json({ success: true, removed: removed.length, results: removed });
+    } catch (error: any) {
+      console.error("Error removing titles:", error);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // POST /api/requests/import-missing - Import movies/series from Radarr/Sonarr that have no request in DB
