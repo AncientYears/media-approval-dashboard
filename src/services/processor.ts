@@ -113,8 +113,8 @@ export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"
   return { success: true, destination: dest };
 }
 
-export function moveToWorkspaceSync(sourcePath: string, requestId: number, title: string): { success: boolean; destination?: string; error?: string } {
-  const workspaceDir = createWorkspaceDir(requestId, title);
+export function moveToWorkspaceSync(sourcePath: string, requestId: number, title: string, jobIndex?: number): { success: boolean; destination?: string; error?: string } {
+  const workspaceDir = createWorkspaceDir(requestId, title, jobIndex);
   const destDir = path.join(workspaceDir, "inputs");
 
   const stat = fs.statSync(sourcePath);
@@ -308,8 +308,9 @@ export function sanitizeName(name: string): string {
   return name.replace(/[<>:"/\\|?*]/g, ".").replace(/\.+/g, ".").replace(/^[.\s]+|[.\s]+$/g, "");
 }
 
-export function createWorkspaceDir(requestId: number, title: string): string {
-  const dirName = `${requestId}-${sanitizeName(title)}`;
+export function createWorkspaceDir(requestId: number, title: string, jobIndex?: number): string {
+  const base = `${requestId}-${sanitizeName(title)}`;
+  const dirName = jobIndex && jobIndex > 1 ? `${base}-${jobIndex}` : base;
   const workspaceDir = path.join(PROCESSING_WORKSPACE, dirName);
   fs.mkdirSync(path.join(workspaceDir, "inputs"), { recursive: true });
   fs.mkdirSync(path.join(workspaceDir, "output"), { recursive: true });
@@ -322,6 +323,41 @@ export function cleanupWorkspace(requestId: number, title: string): void {
   try {
     fs.rmSync(workspaceDir, { recursive: true, force: true });
   } catch {}
+}
+
+export interface WorkspaceInfo {
+  index: number;
+  name: string;
+  path: string;
+  inputCount: number;
+}
+
+export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[] {
+  const base = `${requestId}-${sanitizeName(title)}`;
+  try {
+    const entries = fs.readdirSync(PROCESSING_WORKSPACE, { withFileTypes: true });
+    const matches: WorkspaceInfo[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const m = entry.name.match(new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-(\\d+))?$`));
+      if (!m) continue;
+      const index = m[1] ? parseInt(m[1]) : 1;
+      const wsPath = path.join(PROCESSING_WORKSPACE, entry.name);
+      const inputsDir = path.join(wsPath, "inputs");
+      let inputCount = 0;
+      try { inputCount = fs.readdirSync(inputsDir).length; } catch {}
+      matches.push({ index, name: entry.name, path: wsPath, inputCount });
+    }
+    return matches.sort((a, b) => a.index - b.index);
+  } catch {
+    return [];
+  }
+}
+
+export function getNextWorkspaceIndex(requestId: number, title: string): number {
+  const existing = listWorkspaces(requestId, title);
+  if (existing.length === 0) return 1;
+  return Math.max(...existing.map((w) => w.index)) + 1;
 }
 
 export async function processToLibrary(

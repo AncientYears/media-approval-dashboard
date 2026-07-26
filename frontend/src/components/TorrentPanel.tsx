@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchContentInfo } from "../api";
+import { fetchContentInfo, fetchWorkspaces } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -34,7 +34,7 @@ export interface TorrentPanelProps {
   isRemoveConfirm: boolean;
   preprocessing: boolean;
   onTogglePreprocessing: (checked: boolean) => void;
-  onMove: (releaseId: number) => void;
+  onMove: (releaseId: number, workspaceIndex?: number) => void;
   onMoveToLibrary: (releaseId: number) => void;
   onDismiss: (releaseId: number) => void;
   onRemoveFromLibrary: (releaseId: number) => void;
@@ -61,11 +61,17 @@ export default function TorrentPanel({
   onCopyPath,
 }: TorrentPanelProps) {
   const [contentInfo, setContentInfo] = useState<any>(null);
+  const [workspaces, setWorkspaces] = useState<any[]>([]);
+  const [selectedWorkspace, setSelectedWorkspace] = useState<number | "new">("new");
 
   useEffect(() => {
     if (ts?.progress === 100 && ts?.found) {
       setContentInfo(null);
       fetchContentInfo(requestId, ar.id).then(setContentInfo).catch(() => {});
+      fetchWorkspaces(requestId).then((data) => {
+        setWorkspaces(data.workspaces || []);
+        if (data.workspaces?.length > 0) setSelectedWorkspace(data.workspaces[0].index);
+      }).catch(() => {});
     }
   }, [ts?.progress, ts?.found, requestId, ar.id]);
 
@@ -197,10 +203,24 @@ export default function TorrentPanel({
                     <span className="preprocessing-label">Needs preprocessing</span>
                   </label>
                   {contentBadge}
+                  {preprocessing && workspaces.length > 0 && (
+                    <select
+                      className="workspace-select"
+                      value={selectedWorkspace}
+                      onChange={(e) => setSelectedWorkspace(e.target.value === "new" ? "new" : Number(e.target.value))}
+                    >
+                      {workspaces.map((ws) => (
+                        <option key={ws.index} value={ws.index}>
+                          Job {ws.index} ({ws.inputCount} file{ws.inputCount !== 1 ? "s" : ""})
+                        </option>
+                      ))}
+                      <option value="new">+ New workspace</option>
+                    </select>
+                  )}
                   <div style={{ display: "flex", gap: 4 }}>
                     <button
                       className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
-                      onClick={() => onMove(ar.id)}
+                      onClick={() => onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined)}
                       disabled={isMoving}
                     >
                       {isMoving ? "Moving..." : preprocessing ? "Move to Workspace" : "Move to Processed"}

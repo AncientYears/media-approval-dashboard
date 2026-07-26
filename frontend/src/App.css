@@ -1336,6 +1336,17 @@ body {
   user-select: none;
 }
 
+.workspace-select {
+  font-size: 10px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 .btn-workspace {
   background: #7c3aed;
   color: #fff;

@@ -77,13 +77,18 @@ export async function fetchFranchiseTorrentStatuses(sonarrId: number) {
   return response.data;
 }
 
-export async function moveToProcessed(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/move-to-processed`);
+export async function moveToProcessed(requestId: number, releaseId?: number) {
+  const response = await api.post(`/requests/${requestId}/move-to-processed`, { releaseId });
   return response.data;
 }
 
-export async function moveToWorkspace(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/move-to-workspace`);
+export async function moveToWorkspace(requestId: number, releaseId?: number, workspaceIndex?: number) {
+  const response = await api.post(`/requests/${requestId}/move-to-workspace`, { releaseId, workspaceIndex });
+  return response.data;
+}
+
+export async function fetchWorkspaces(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/workspaces`);
   return response.data;
 }
 

@@ -509,13 +509,13 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
     }
   };
 
-  const handleMove = async (releaseId: number) => {
+  const handleMove = async (releaseId: number, workspaceIndex?: number) => {
     setMoving(releaseId);
     try {
       const isPreprocess = preprocessingMap[releaseId];
       const result = isPreprocess
-        ? await moveToWorkspace(season.request_id)
-        : await moveToProcessed(season.request_id);
+        ? await moveToWorkspace(season.request_id, releaseId, workspaceIndex)
+        : await moveToProcessed(season.request_id, releaseId);
       setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
       loadTorrentStatuses();
     } catch (err: any) {

@@ -340,13 +340,13 @@ export default function RequestDetail() {
     }
   };
 
-  const handleMove = async (releaseId: number) => {
+  const handleMove = async (releaseId: number, workspaceIndex?: number) => {
     setMoving(releaseId);
     try {
       const isPreprocess = preprocessingMap[releaseId];
       const result = isPreprocess
-        ? await moveToWorkspace(Number(id))
-        : await moveToProcessed(Number(id));
+        ? await moveToWorkspace(Number(id), releaseId, workspaceIndex)
+        : await moveToProcessed(Number(id), releaseId);
       setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
       loadData();
     } catch (err: any) {
