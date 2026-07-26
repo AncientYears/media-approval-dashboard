@@ -207,4 +207,26 @@ export class SonarrService {
       return { success: false, error: String(error) };
     }
   }
+
+  async scanDownloadedEpisodes(path?: string, seriesId?: number) {
+    try {
+      const body: any = { name: "DownloadedEpisodesScan" };
+      if (path) body.downloadClientTvPath = path;
+      if (seriesId) body.seriesId = seriesId;
+      await this.client.post("/api/v3/command", body);
+      return { success: true };
+    } catch (error) {
+      console.error("Sonarr: scanDownloadedEpisodes failed", error);
+      return { success: false, error: String(error) };
+    }
+  }
+
+  async refreshSeries(seriesId: number) {
+    try {
+      await this.client.post("/api/v3/command", { name: "RefreshSeries", seriesIds: [seriesId] });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
 }

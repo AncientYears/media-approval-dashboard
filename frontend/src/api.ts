@@ -97,6 +97,16 @@ export async function updateWorkspaceMetadata(requestId: number, workspaceIndex:
   return response.data;
 }
 
+export async function completeWorkspace(requestId: number, workspaceIndex: number) {
+  const response = await api.post(`/requests/${requestId}/workspaces/${workspaceIndex}/complete`);
+  return response.data;
+}
+
+export async function cleanWorkspaceInputs(requestId: number, workspaceIndex: number) {
+  const response = await api.post(`/requests/${requestId}/workspaces/${workspaceIndex}/clean`);
+  return response.data;
+}
+
 export async function fetchMoveStatus(requestId: number) {
   const response = await api.get(`/requests/${requestId}/move-status`);
   return response.data;

@@ -136,4 +136,26 @@ export class RadarrService {
       return { success: false, error: String(error) };
     }
   }
+
+  async scanDownloadedMovie(path?: string, movieId?: number) {
+    try {
+      const body: any = { name: "DownloadedMoviesScan" };
+      if (path) body.downloadClientMoviePath = path;
+      if (movieId) body.movieId = movieId;
+      await this.client.post("/api/v3/command", body);
+      return { success: true };
+    } catch (error) {
+      console.error("Radarr: scanDownloadedMovie failed", error);
+      return { success: false, error: String(error) };
+    }
+  }
+
+  async refreshMovie(movieId: number) {
+    try {
+      await this.client.post("/api/v3/command", { name: "RefreshMovie", movieIds: [movieId] });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata } from "../api";
+import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, cleanWorkspaceInputs } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -66,11 +66,24 @@ export default function TorrentPanel({
   const [editingWs, setEditingWs] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const editInputRef = useRef<HTMLInputElement>(null);
+  const [wsManagerOpen, setWsManagerOpen] = useState(false);
+  const [wsManagerData, setWsManagerData] = useState<any[]>([]);
+  const [wsEditIdx, setWsEditIdx] = useState<number | null>(null);
+  const [wsEditField, setWsEditField] = useState<"name" | "notes">("name");
+  const [wsEditValue, setWsEditValue] = useState("");
+  const wsEditRef = useRef<HTMLInputElement>(null);
 
   const loadWorkspaces = () => {
     fetchWorkspaces(requestId).then((data) => {
       setWorkspaces(data.workspaces || []);
       if (data.workspaces?.length > 0 && selectedWorkspace === "new") setSelectedWorkspace(data.workspaces[0].index);
+    }).catch(() => {});
+  };
+
+  const openWsManager = () => {
+    fetchWorkspaces(requestId).then((data) => {
+      setWsManagerData(data.workspaces || []);
+      setWsManagerOpen(true);
     }).catch(() => {});
   };
 
@@ -85,6 +98,10 @@ export default function TorrentPanel({
   useEffect(() => {
     if (editingWs !== null && editInputRef.current) editInputRef.current.focus();
   }, [editingWs]);
+
+  useEffect(() => {
+    if (wsEditIdx !== null && wsEditRef.current) wsEditRef.current.focus();
+  }, [wsEditIdx]);
 
   if (!ar.torrent_hash) return null;
   if (ts && !ts.found) return null;
@@ -268,6 +285,7 @@ export default function TorrentPanel({
                               }}
                             >&#9998;</button>
                           )}
+                          <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
                         </>
                       )}
                     </div>
@@ -293,5 +311,93 @@ export default function TorrentPanel({
         <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
       )}
     </div>
+    {wsManagerOpen && (
+      <div className="modal-overlay" onClick={() => setWsManagerOpen(false)}>
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h3>Workspaces</h3>
+            <button className="modal-close" onClick={() => setWsManagerOpen(false)}>&times;</button>
+          </div>
+          <div className="modal-body">
+            {wsManagerData.length === 0 && <p style={{ color: "var(--text-secondary)", fontSize: 12 }}>No workspaces yet.</p>}
+            {wsManagerData.map((ws: any) => (
+              <div key={ws.index} className="ws-manager-row">
+                <div className="ws-manager-header">
+                  {wsEditIdx === ws.index ? (
+                    <input
+                      ref={wsEditRef}
+                      className="workspace-edit-input"
+                      value={wsEditValue}
+                      onChange={(e) => setWsEditValue(e.target.value)}
+                      onBlur={async () => {
+                        if (wsEditValue.trim()) {
+                          await updateWorkspaceMetadata(requestId, ws.index, { [wsEditField]: wsEditValue.trim() });
+                          loadWorkspaces();
+                          openWsManager();
+                        }
+                        setWsEditIdx(null);
+                      }}
+                      onKeyDown={async (e) => {
+                        if (e.key === "Enter" && wsEditValue.trim()) {
+                          await updateWorkspaceMetadata(requestId, ws.index, { [wsEditField]: wsEditValue.trim() });
+                          loadWorkspaces();
+                          openWsManager();
+                          setWsEditIdx(null);
+                        }
+                        if (e.key === "Escape") setWsEditIdx(null);
+                      }}
+                    />
+                  ) : (
+                    <span className="ws-manager-name" onClick={() => { setWsEditField("name"); setWsEditValue(ws.metadata?.name || `Job ${ws.index}`); setWsEditIdx(ws.index); }}>
+                      {ws.metadata?.name || `Job ${ws.index}`}
+                    </span>
+                  )}
+                  <span className={`ws-manager-status ${ws.metadata?.status === "completed" ? "ws-completed" : "ws-active"}`}>
+                    {ws.metadata?.status || "active"}
+                  </span>
+                </div>
+                <div className="ws-manager-meta">
+                  <span>{ws.inputCount} input{ws.inputCount !== 1 ? "s" : ""}</span>
+                  <span>{ws.outputCount} output{ws.outputCount !== 1 ? "s" : ""}</span>
+                  <span className="ws-manager-date">{new Date(ws.metadata?.createdAt).toLocaleDateString()}</span>
+                </div>
+                {ws.metadata?.notes && (
+                  <div className="ws-manager-notes" onClick={() => { setWsEditField("notes"); setWsEditValue(ws.metadata.notes); setWsEditIdx(ws.index); }}>
+                    {ws.metadata.notes}
+                  </div>
+                )}
+                {ws.metadata?.outputPaths?.length > 0 && (
+                  <div className="ws-manager-outputs">
+                    {ws.metadata.outputPaths.map((p: string, i: number) => (
+                      <div key={i} className="ws-manager-output-path" title="Click to copy" onClick={() => navigator.clipboard.writeText(p)}>
+                        {p}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="ws-manager-actions">
+                  {ws.metadata?.status !== "completed" && ws.outputCount > 0 && (
+                    <button className="btn btn-primary btn-tiny" onClick={async () => {
+                      if (!confirm(`Complete "${ws.metadata?.name || `Job ${ws.index}`}"? Inputs will be deleted, outputs moved to processed.`)) return;
+                      await completeWorkspace(requestId, ws.index);
+                      loadWorkspaces();
+                      openWsManager();
+                    }}>Complete</button>
+                  )}
+                  {ws.inputCount > 0 && (
+                    <button className="btn btn-secondary btn-tiny" onClick={async () => {
+                      if (!confirm(`Delete ${ws.inputCount} input file(s)? This removes the hardlinks only.`)) return;
+                      await cleanWorkspaceInputs(requestId, ws.index);
+                      loadWorkspaces();
+                      openWsManager();
+                    }}>Clean inputs</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )}
   );
 }

@@ -332,6 +332,7 @@ export interface WorkspaceMetadata {
   createdAt: string;
   requestId: number;
   status: "active" | "completed";
+  outputPaths?: string[];
 }
 
 export interface WorkspaceInfo {
@@ -395,6 +396,61 @@ export function getNextWorkspaceIndex(requestId: number, title: string): number 
   const existing = listWorkspaces(requestId, title);
   if (existing.length === 0) return 1;
   return Math.max(...existing.map((w) => w.index)) + 1;
+}
+
+function removeDirRecursive(dir: string) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {}
+}
+
+export function deleteWorkspaceInputs(wsPath: string): number {
+  const inputsDir = path.join(wsPath, "inputs");
+  let count = 0;
+  try {
+    for (const entry of fs.readdirSync(inputsDir, { withFileTypes: true })) {
+      removeDirRecursive(path.join(inputsDir, entry.name));
+      count++;
+    }
+  } catch {}
+  return count;
+}
+
+export function completeWorkspace(wsPath: string, type: "movie" | "series"): { success: boolean; processedPaths: string[]; error?: string } {
+  const outputDir = path.join(wsPath, "output");
+  const processedDir = getProcessedDir(type);
+  fs.mkdirSync(processedDir, { recursive: true });
+
+  const processedPaths: string[] = [];
+
+  try {
+    const outputEntries = fs.readdirSync(outputDir, { withFileTypes: true });
+    if (outputEntries.length === 0) {
+      return { success: false, processedPaths: [], error: "No output files to process" };
+    }
+
+    for (const entry of outputEntries) {
+      const src = path.join(outputDir, entry.name);
+      const dest = path.join(processedDir, entry.name);
+      if (entry.isDirectory()) {
+        hardlinkDirRecursive(src, dest);
+      } else {
+        if (fs.existsSync(dest)) {
+          processedPaths.push(dest);
+          continue;
+        }
+        hardlinkFile(src, dest);
+      }
+      processedPaths.push(dest);
+    }
+  } catch (err: any) {
+    return { success: false, processedPaths: [], error: `Failed to move outputs: ${err.message}` };
+  }
+
+  deleteWorkspaceInputs(wsPath);
+  writeWorkspaceMetadata(wsPath, { status: "completed", outputPaths: processedPaths } as any);
+
+  return { success: true, processedPaths };
 }
 
 export async function processToLibrary(

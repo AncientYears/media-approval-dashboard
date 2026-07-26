@@ -7,7 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
-import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata } from "../services/processor";
+import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs } from "../services/processor";
 import fs from "fs";
 import path from "path";
 
@@ -2513,6 +2513,54 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       writeWorkspaceMetadata(ws.path, updates);
       const updated = readWorkspaceMetadata(ws.path);
       res.json({ success: true, metadata: updated });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/workspaces/:index/complete - Complete workspace: delete inputs, move outputs to processed
+  router.post("/:id/workspaces/:index/complete", async (req: Request, res: Response) => {
+    try {
+      const { id, index } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const workspaces = listWorkspaces(request.id, request.title);
+      const ws = workspaces.find((w) => w.index === Number(index));
+      if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+      const type = request.type === "series" ? "series" : "movie";
+      const result = completeWorkspace(ws.path, type);
+      if (!result.success) return res.status(400).json({ error: result.error });
+
+      const processedDir = getProcessedDir(type);
+      if (type === "movie" && request.radarr_id) {
+        radarr.scanDownloadedMovie(processedDir, request.radarr_id).catch(() => {});
+      } else if (type === "series" && request.sonarr_id) {
+        sonarr.scanDownloadedEpisodes(processedDir, request.sonarr_id).catch(() => {});
+      }
+
+      console.log(`[Workspace] Completed ${ws.dirName}: inputs removed, ${result.processedPaths.length} output(s) moved to processed`);
+      res.json({ success: true, processedPaths: result.processedPaths });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/workspaces/:index/clean - Delete inputs only (keep outputs)
+  router.post("/:id/workspaces/:index/clean", async (req: Request, res: Response) => {
+    try {
+      const { id, index } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const workspaces = listWorkspaces(request.id, request.title);
+      const ws = workspaces.find((w) => w.index === Number(index));
+      if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+      const count = deleteWorkspaceInputs(ws.path);
+      console.log(`[Workspace] Cleaned ${count} input(s) from ${ws.dirName}`);
+      res.json({ success: true, deleted: count });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
