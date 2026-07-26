@@ -7,7 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
-import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs } from "../services/processor";
+import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile } from "../services/processor";
 import fs from "fs";
 import path from "path";
 
@@ -2578,6 +2578,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const count = deleteWorkspaceInputs(ws.path);
       console.log(`[Workspace] Cleaned ${count} input(s) from ${ws.dirName}`);
       res.json({ success: true, deleted: count });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // DELETE /api/requests/:id/workspaces/:index/file/:subDir/:fileName - Delete a single file from workspace
+  router.delete("/:id/workspaces/:index/file/:subDir/:fileName", async (req: Request, res: Response) => {
+    try {
+      const { id, index, subDir, fileName } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      if (subDir !== "inputs" && subDir !== "output") return res.status(400).json({ error: "subDir must be 'inputs' or 'output'" });
+
+      const workspaces = listWorkspaces(request.id, request.title);
+      const ws = workspaces.find((w) => w.index === Number(index));
+      if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+      const deleted = deleteWorkspaceFile(ws.path, subDir, decodeURIComponent(fileName));
+      if (!deleted) return res.status(404).json({ error: "File not found" });
+
+      console.log(`[Workspace] Deleted ${subDir}/${decodeURIComponent(fileName)} from ${ws.dirName}`);
+      res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

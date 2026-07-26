@@ -195,6 +195,22 @@ export default function RequestDetail() {
   const [searchProgress, setSearchProgress] = useState("");
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
 
+  const refreshMoveStatus = async () => {
+    try {
+      const moveStatus = await fetchMoveStatus(Number(id));
+      if (moveStatus?.moves) {
+        setMoveResults((prev) => {
+          const next = { ...prev };
+          for (const [relId, move] of Object.entries(moveStatus.moves)) {
+            const rid = Number(relId);
+            next[rid] = move;
+          }
+          return next;
+        });
+      }
+    } catch {}
+  };
+
   const loadData = async (initial = false) => {
     try {
       if (initial) setLoading(true);
@@ -478,6 +494,7 @@ export default function RequestDetail() {
             onPause={handlePause}
             onResume={handleResume}
             onCopyPath={handleCopyPath}
+            onRefreshMoveStatus={refreshMoveStatus}
           />
         );
       })}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, cleanWorkspaceInputs } from "../api";
+import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, cleanWorkspaceInputs, deleteWorkspaceFile } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -41,6 +41,7 @@ export interface TorrentPanelProps {
   onPause: (releaseId: number) => void;
   onResume: (releaseId: number) => void;
   onCopyPath: (text: string) => void;
+  onRefreshMoveStatus?: () => void;
 }
 
 export default function TorrentPanel({
@@ -59,6 +60,7 @@ export default function TorrentPanel({
   onPause,
   onResume,
   onCopyPath,
+  onRefreshMoveStatus,
 }: TorrentPanelProps) {
   const [contentInfo, setContentInfo] = useState<any>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
@@ -75,9 +77,20 @@ export default function TorrentPanel({
 
   const loadWorkspaces = () => {
     fetchWorkspaces(requestId).then((data) => {
-      setWorkspaces(data.workspaces || []);
-      if (data.workspaces?.length > 0 && selectedWorkspace === "new") setSelectedWorkspace(data.workspaces[0].index);
+      const list = data.workspaces || [];
+      setWorkspaces(list);
+      if (selectedWorkspace !== "new") {
+        const stillExists = list.some((w: any) => w.index === selectedWorkspace);
+        if (!stillExists) setSelectedWorkspace(list.length > 0 ? list[0].index : "new");
+      } else if (list.length > 0) {
+        setSelectedWorkspace(list[0].index);
+      }
     }).catch(() => {});
+  };
+
+  const refreshAll = () => {
+    loadWorkspaces();
+    if (onRefreshMoveStatus) onRefreshMoveStatus();
   };
 
   const openWsManager = () => {
@@ -258,14 +271,14 @@ export default function TorrentPanel({
                             onBlur={async () => {
                               if (editName.trim()) {
                                 await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
-                                loadWorkspaces();
+                                refreshAll();
                               }
                               setEditingWs(null);
                             }}
                             onKeyDown={async (e) => {
                               if (e.key === "Enter" && editName.trim()) {
                                 await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
-                                loadWorkspaces();
+                                refreshAll();
                                 setEditingWs(null);
                               }
                               if (e.key === "Escape") setEditingWs(null);
@@ -347,7 +360,7 @@ export default function TorrentPanel({
                       onBlur={async () => {
                         if (wsEditValue.trim()) {
                           await updateWorkspaceMetadata(requestId, ws.index, { [wsEditField]: wsEditValue.trim() });
-                          loadWorkspaces();
+                          refreshAll();
                           openWsManager();
                         }
                         setWsEditIdx(null);
@@ -355,7 +368,7 @@ export default function TorrentPanel({
                       onKeyDown={async (e) => {
                         if (e.key === "Enter" && wsEditValue.trim()) {
                           await updateWorkspaceMetadata(requestId, ws.index, { [wsEditField]: wsEditValue.trim() });
-                          loadWorkspaces();
+                          refreshAll();
                           openWsManager();
                           setWsEditIdx(null);
                         }
@@ -384,11 +397,19 @@ export default function TorrentPanel({
                 {ws.inputFiles?.length > 0 && (
                   <div className="ws-manager-outputs">
                     <div className="ws-manager-section-label">Inputs</div>
-                    {ws.inputFiles.map((f: any, i: number) => (
-                      <div key={i} className="ws-manager-output-path" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)`}>
+                    {ws.inputFiles.map((f: any) => (
+                      <div key={f.name} className="ws-manager-output-path ws-file-row">
                         <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
-                        {f.name}
+                        <span className="ws-file-name" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)`}>
+                          {f.name}
+                        </span>
                         <span className="ws-file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                        <button className="btn btn-danger btn-tiny" title="Delete this file" onClick={async () => {
+                          if (!confirm(`Delete "${f.name}"?`)) return;
+                          await deleteWorkspaceFile(requestId, ws.index, "inputs", f.name);
+                          refreshAll();
+                          openWsManager();
+                        }}>&times;</button>
                       </div>
                     ))}
                   </div>
@@ -396,11 +417,19 @@ export default function TorrentPanel({
                 {ws.outputFiles?.length > 0 && (
                   <div className="ws-manager-outputs">
                     <div className="ws-manager-section-label">Outputs</div>
-                    {ws.outputFiles.map((f: any, i: number) => (
-                      <div key={i} className="ws-manager-output-path" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB) - Click to copy`} onClick={() => navigator.clipboard.writeText(f.name)}>
+                    {ws.outputFiles.map((f: any) => (
+                      <div key={f.name} className="ws-manager-output-path ws-file-row">
                         <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
-                        {f.name}
+                        <span className="ws-file-name" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB) - Click to copy`} onClick={() => navigator.clipboard.writeText(f.name)}>
+                          {f.name}
+                        </span>
                         <span className="ws-file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                        <button className="btn btn-danger btn-tiny" title="Delete this file" onClick={async () => {
+                          if (!confirm(`Delete "${f.name}"?`)) return;
+                          await deleteWorkspaceFile(requestId, ws.index, "output", f.name);
+                          refreshAll();
+                          openWsManager();
+                        }}>&times;</button>
                       </div>
                     ))}
                   </div>
@@ -420,17 +449,20 @@ export default function TorrentPanel({
                     <button className="btn btn-primary btn-tiny" onClick={async () => {
                       if (!confirm(`Complete "${ws.metadata?.name || `Job ${ws.index}`}"? Inputs will be deleted, outputs moved to processed.`)) return;
                       await completeWorkspace(requestId, ws.index);
-                      loadWorkspaces();
+                      refreshAll();
                       openWsManager();
                     }}>Complete</button>
                   )}
                   {ws.inputCount > 0 && (
                     <button className="btn btn-secondary btn-tiny" onClick={async () => {
-                      if (!confirm(`Delete ${ws.inputCount} input file(s)? This removes the hardlinks only.`)) return;
+                      if (!confirm(`Delete all ${ws.inputCount} input file(s)? This removes the hardlinks only.`)) return;
                       await cleanWorkspaceInputs(requestId, ws.index);
-                      loadWorkspaces();
+                      refreshAll();
+                      const refreshed = await fetchWorkspaces(requestId);
+                      const list = refreshed.workspaces || [];
+                      if (list.length === 0) { setWsManagerOpen(false); return; }
                       openWsManager();
-                    }}>Clean inputs</button>
+                    }}>Clean all inputs</button>
                   )}
                 </div>
               </div>

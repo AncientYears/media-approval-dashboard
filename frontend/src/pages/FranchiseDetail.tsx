@@ -379,6 +379,22 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [searchMode, setSearchMode] = useState<SearchMode>(initialSearch?.mode || "season");
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
 
+  const refreshMoveStatus = useCallback(async () => {
+    try {
+      const moveStatus = await fetchMoveStatus(season.request_id);
+      if (moveStatus?.moves) {
+        setMoveResults((prev) => {
+          const next = { ...prev };
+          for (const [relId, move] of Object.entries(moveStatus.moves)) {
+            const rid = Number(relId);
+            next[rid] = move;
+          }
+          return next;
+        });
+      }
+    } catch {}
+  }, [season.request_id]);
+
   const loadData = useCallback(async () => {
     try {
       const data = await fetchReleases(season.request_id);
@@ -607,6 +623,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             onPause={(releaseId) => handlePause(releaseId)}
             onResume={(releaseId) => handleResume(releaseId)}
             onCopyPath={handleCopyPath}
+            onRefreshMoveStatus={refreshMoveStatus}
           />
         );
       })}

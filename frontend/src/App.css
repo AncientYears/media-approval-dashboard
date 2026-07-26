@@ -1904,6 +1904,19 @@ body {
   white-space: nowrap;
 }
 
+.ws-file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ws-file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 768px) {
   .nav-container {
     flex-direction: column;

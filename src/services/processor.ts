@@ -460,6 +460,22 @@ export function deleteWorkspaceInputs(wsPath: string): number {
   return count;
 }
 
+export function deleteWorkspaceFile(wsPath: string, subDir: "inputs" | "output", fileName: string): boolean {
+  const filePath = path.join(wsPath, subDir, fileName);
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) {
+      fs.rmSync(filePath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(filePath);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function completeWorkspace(wsPath: string, type: "movie" | "series"): { success: boolean; processedPaths: string[]; error?: string } {
   const outputDir = path.join(wsPath, "output");
   const processedDir = getProcessedDir(type);
