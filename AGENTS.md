@@ -166,9 +166,9 @@ qBittorrent
 | `src/services/qbittorrent.ts` | qBittorrent Web API v2 (torrents, auth) |
 | `src/services/scoring.ts` | Release scoring engine |
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
-| `src/routes/requests.ts` | All API endpoints (~1940 lines) |
+| `src/routes/requests.ts` | All API endpoints (~2860 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
-| `src/jobs/pollSonarr.ts` | Discovers wanted series, searches |
+| `src/jobs/pollSonarr.ts` | Discovers wanted series (no auto-search) |
 | `src/jobs/pollStatus.ts` | Tracks torrent status, state transitions |
 | `src/db/index.ts` | Schema, migrations, auto-repair |
 | `src/server.ts` | App entry, startup stale RC cleanup |
@@ -247,7 +247,7 @@ NTFY_TOPIC=
 ## Testing Checklist
 
 - [ ] Prowlarr search returns results with custom terms
-- [ ] Quality parsing from release titles works (1080p, 2160p, etc.)
+- [ ] Quality parsing checks source (WEBDL/WEBRip/Bluray) before resolution
 - [ ] Approve grabs torrent via magnet URL
 - [ ] Status poller detects Prowlarr-grabbed torrents by infoHash
 - [ ] Dismiss blocked for active downloads
@@ -261,6 +261,12 @@ NTFY_TOPIC=
 - [ ] Per-episode Search includes episode name in query
 - [ ] "Search All Seasons" fires background search + navigates to first season
 - [ ] SeasonDetail search mode toggle (Season | Episodes) works
+- [ ] Season packs (S## without E##) cover all episodes in coverage display
+- [ ] Season pack quality parsed from torrent title (not hardcoded "unknown")
+- [ ] Scan Downloads: status fix JOIN uses `ah.request_id = rc.request_id`
+- [ ] Scan Downloads: season mismatches detected and re-imported
+- [ ] Scan Downloads: stale approvals cleaned (torrent gone from qBittorrent)
+- [ ] titlesMatch: "Mufasa: The Lion King" does NOT match "The Lion King" torrents
 - [ ] Processing pipeline creates workspace with inputs/output dirs
 - [ ] Move to Processed hardlinks from Download to Processed
 - [ ] Move to Library hardlinks from Processed (not Download)
