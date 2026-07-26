@@ -127,9 +127,6 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
           }
         }
         const isMatch = isPrefix || isIncluded || isWordMatch;
-        if (!isMatch) {
-          console.log(`[Startup] DEBUG: req="${req}" tn="${tn}" prefix=${isPrefix} incl=${isIncluded} word=${isWordMatch}`);
-        }
         let reason = "";
         if (!isMatch) {
           reason = `title mismatch (is "${t.name}")`;
