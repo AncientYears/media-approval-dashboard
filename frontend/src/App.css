@@ -748,6 +748,21 @@ body {
   color: var(--primary);
 }
 
+.rtag-content-ok {
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.rtag-content-warn {
+  border-color: #eab308;
+  color: #eab308;
+}
+
+.rtag-content-err {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
 .release-right {
   display: flex;
   align-items: center;

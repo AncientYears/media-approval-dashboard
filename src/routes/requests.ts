@@ -433,9 +433,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
             });
             if (match) {
+              const quality = parseQualityFromName(match.name);
               db.prepare(
-                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, 'unknown')"
-              ).run(requestId, `imported-${movie.id}`, movie.title, match.hash, match.save_path);
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, ?)"
+              ).run(requestId, `imported-${movie.id}`, match.name, match.hash, match.save_path, quality);
               db.prepare(
                 "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
               ).run(requestId, requestId);
@@ -785,7 +786,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       for (const r of releases) {
           if (r.approved_at && r.torrent_hash) {
             if (r.parsed_episodes) {
-              const quality = r.radarr_quality === 'unknown' ? parseQualityFromName(r.title || '') : (r.radarr_quality || "");
+              const quality = r.radarr_quality?.toLowerCase() === 'unknown' ? parseQualityFromName(r.title || '') : (r.radarr_quality || "");
               const epMatches = r.parsed_episodes.match(/E(\d{1,3})/g);
             if (epMatches) {
               for (const em of epMatches) {
@@ -803,7 +804,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           } else if (row.season != null && isSeasonPackTitle(r.title || '', row.season)) {
             hasSeasonPack = true;
-            const quality = r.radarr_quality === 'unknown' ? parseQualityFromName(r.title || '') : (r.radarr_quality || "");
+            const quality = r.radarr_quality?.toLowerCase() === 'unknown' ? parseQualityFromName(r.title || '') : (r.radarr_quality || "");
             for (let i = 1; i <= (sonarrEpisodes.length || row.episode_count || 0); i++) {
               if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
             }
@@ -1072,10 +1073,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             continue;
           }
 
+          const quality = parseQualityFromName(match.name);
+
           const rcResult = db.prepare(
             "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, torrent_hash, save_path, parsed_episodes) " +
-            "VALUES (?, ?, ?, 'manual', ?, 'Unknown', ?, ?, ?)"
-          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, match.name, sizeMb, match.hash, match.save_path, episodeStr);
+            "VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?)"
+          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, match.name, sizeMb, quality, match.hash, match.save_path, episodeStr);
 
           db.prepare(
             "INSERT INTO approval_history (request_id, release_id) VALUES (?, ?)"
