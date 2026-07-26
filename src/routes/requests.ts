@@ -471,7 +471,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   });
 
   // GET /api/requests/managed - Grouped managed media (series by franchise, movies individual)
-  router.get("/managed", (req: Request, res: Response) => {
+  router.get("/managed", async (req: Request, res: Response) => {
     try {
       // All requests with active torrents
       const rows = db.prepare(`
@@ -509,6 +509,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Build franchise cards for series
       for (const [sonarrId, seasons] of seriesGroups) {
+        // Backfill episode_count from Sonarr for any seasons missing it
+        const seriesObj = await sonarr.getSeries(sonarrId).catch(() => null);
+        if (seriesObj) {
+          for (const s of seasons) {
+            if (!s.episode_count) {
+              const sn = (seriesObj.seasons || []).find((x: any) => x.seasonNumber === s.season);
+              if (sn?.statistics?.episodeCount) {
+                s.episode_count = sn.statistics.episodeCount;
+                db.prepare("UPDATE media_requests SET episode_count = ? WHERE id = ?").run(sn.statistics.episodeCount, s.id);
+              }
+            }
+          }
+        }
+
         const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         const firstRequestId = seasons[0].id;
         managed.push({
