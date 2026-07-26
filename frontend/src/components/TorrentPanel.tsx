@@ -139,14 +139,16 @@ export default function TorrentPanel({
               </div>
               <div className="torrent-path-row">
                 <span className="path-label">Move:</span>
-                <label className="preprocessing-toggle">
-                  <input
-                    type="checkbox"
-                    checked={preprocessing}
-                    onChange={(e) => onTogglePreprocessing(e.target.checked)}
-                  />
-                  <span className="preprocessing-label">Needs preprocessing</span>
-                </label>
+                {!ts.in_library && !mr?.source && !mr?.error && (
+                  <label className="preprocessing-toggle">
+                    <input
+                      type="checkbox"
+                      checked={preprocessing}
+                      onChange={(e) => onTogglePreprocessing(e.target.checked)}
+                    />
+                    <span className="preprocessing-label">Needs preprocessing</span>
+                  </label>
+                )}
                 {ts.in_library ? (
                   <>
                     <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(ts.library_path)}>
