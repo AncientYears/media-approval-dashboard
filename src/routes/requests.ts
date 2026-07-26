@@ -794,6 +794,181 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/scan-downloads - Scan all qBittorrent torrents, import into Radarr/Sonarr + DB
+  router.post("/scan-downloads", async (req: Request, res: Response) => {
+    try {
+      let allTorrents: any[] = [];
+      try {
+        allTorrents = await qbittorrent.getTorrents();
+      } catch {
+        return res.status(500).json({ error: "qBittorrent unavailable" });
+      }
+
+      const existingHashes = new Set(
+        db.prepare("SELECT torrent_hash FROM release_candidates WHERE torrent_hash != ''")
+          .all().map((r: any) => r.torrent_hash)
+      );
+
+      const existingTitles = new Set(
+        db.prepare("SELECT LOWER(title) as t FROM media_requests").all().map((r: any) => r.t)
+      );
+
+      const newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
+
+      if (newTorrents.length === 0) {
+        return res.json({ success: true, imported: 0, skipped: 0, total: allTorrents.length, results: [] });
+      }
+
+      const results: Array<{ title: string; status: string; type?: string; request_id?: number; error?: string }> = [];
+
+      let radarrProfiles: any[] = [];
+      let radarrRootFolders: any[] = [];
+      let sonarrProfiles: any[] = [];
+      let sonarrRootFolders: any[] = [];
+
+      try { radarrProfiles = await radarr.getQualityProfiles(); } catch {}
+      try { radarrRootFolders = await radarr.getRootFolders(); } catch {}
+      try { sonarrProfiles = await sonarr.getQualityProfiles(); } catch {}
+      try { sonarrRootFolders = await sonarr.getRootFolders(); } catch {}
+
+      const radarrProfileId = radarrProfiles[0]?.id;
+      const radarrRootPath = radarrRootFolders[0]?.path;
+      const sonarrProfileId = sonarrProfiles[0]?.id;
+      const sonarrRootPath = sonarrRootFolders[0]?.path;
+
+      for (const torrent of newTorrents) {
+        const parsed = parseTorrentName(torrent.name);
+        const savePath = (torrent.save_path || "").toLowerCase();
+
+        let type: "movie" | "series" = "movie";
+        if (parsed.season !== null || /\bS\d{1,2}\b/.test(torrent.name) || /season/i.test(torrent.name)) {
+          type = "series";
+        } else if (/serial|season|episode|ep\d/i.test(torrent.name)) {
+          type = "series";
+        } else if (savePath.includes("serial") || savePath.includes("series") || savePath.includes("tv")) {
+          type = "series";
+        } else if (savePath.includes("film") || savePath.includes("movie")) {
+          type = "movie";
+        }
+
+        const titleClean = torrent.name
+          .replace(/\bS\d{1,2}(?:E\d{1,3}(?:[-–]\d{1,3})?)?\b/gi, "")
+          .replace(/\bSeason\s*\d+\b/gi, "")
+          .replace(/\b(?:1080p|2160p|720p|480p|BluRay|WEB-?DL|WEB-?RIP|HDRip|DVDRip|REMUX|x264|x265|HEVC|AAC|FLAC|DTS|AC3|\.mkv|\.mp4|\.avi)\b/gi, "")
+          .replace(/[\[\]()]/g, " ")
+          .replace(/[._-]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        const normTitle = titleClean.toLowerCase();
+
+        if (existingTitles.has(normTitle)) {
+          results.push({ title: torrent.name, status: "skipped", error: "Already in DB" });
+          continue;
+        }
+
+        try {
+          if (type === "movie" && radarrProfileId) {
+            const lookup = await radarr.lookupMovie(titleClean);
+            if (lookup.length > 0) {
+              const found = lookup[0];
+              const alreadyExists = await radarr.getAllMovies().then((movies) =>
+                movies.some((m: any) => m.title.toLowerCase() === found.title.toLowerCase())
+              );
+
+              let radarrId: number;
+              if (alreadyExists) {
+                const existing = await radarr.getAllMovies();
+                const match = existing.find((m: any) => m.title.toLowerCase() === found.title.toLowerCase());
+                radarrId = match!.id;
+              } else {
+                const added = await radarr.addMovie({
+                  ...found,
+                  qualityProfileId: radarrProfileId,
+                  rootFolderPath: radarrRootPath,
+                  monitored: true,
+                  addOptions: { searchForMovie: false },
+                });
+                radarrId = added.id;
+              }
+
+              const result = db.prepare(
+                "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
+              ).run(found.title, radarrId);
+              const requestId = result.lastInsertRowid as number;
+
+              db.prepare(
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
+              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+
+              existingTitles.add(found.title.toLowerCase());
+              results.push({ title: found.title, status: "imported", type: "movie", request_id: Number(requestId) });
+              console.log(`[ScanDownloads] Movie: ${found.title} (radarr_id=${radarrId})`);
+            } else {
+              results.push({ title: torrent.name, status: "no_match", type: "movie" });
+            }
+          } else if (type === "series" && sonarrProfileId) {
+            const lookup = await sonarr.lookupSeries(titleClean);
+            if (lookup.length > 0) {
+              const found = lookup[0];
+              const existingSeries = await sonarr.getSeries(found.id).catch(() => null);
+
+              let sonarrId: number;
+              if (existingSeries) {
+                sonarrId = existingSeries.id;
+              } else {
+                const added = await sonarr.addSeries({
+                  ...found,
+                  qualityProfileId: sonarrProfileId,
+                  path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
+                  monitored: true,
+                  seasonFolder: true,
+                  addOptions: { searchForMissingEpisodes: false },
+                  seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
+                });
+                sonarrId = added.id;
+              }
+
+              const season = parsed.season || 1;
+              const result = db.prepare(
+                "INSERT INTO media_requests (title, type, sonarr_id, status, season, requested_by) VALUES (?, 'series', ?, 'DOWNLOADING', ?, '[]')"
+              ).run(found.title, sonarrId, season);
+              const requestId = result.lastInsertRowid as number;
+
+              const epStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : '';
+
+              db.prepare(
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
+              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+
+              existingTitles.add(found.title.toLowerCase());
+              results.push({ title: found.title, status: "imported", type: "series", request_id: Number(requestId) });
+              console.log(`[ScanDownloads] Series: ${found.title} (sonarr_id=${sonarrId})`);
+            } else {
+              results.push({ title: torrent.name, status: "no_match", type: "series" });
+            }
+          } else {
+            results.push({ title: torrent.name, status: "error", error: "No Radarr/Sonarr configured or no quality profile" });
+          }
+        } catch (err: any) {
+          console.error(`[ScanDownloads] Error processing ${torrent.name}:`, err.message);
+          results.push({ title: torrent.name, status: "error", error: err.message });
+        }
+      }
+
+      const imported = results.filter((r) => r.status === "imported").length;
+      const skipped = results.filter((r) => r.status === "skipped").length;
+      const noMatch = results.filter((r) => r.status === "no_match").length;
+      const errors = results.filter((r) => r.status === "error").length;
+      console.log(`[ScanDownloads] Done: ${imported} imported, ${skipped} skipped, ${noMatch} no match, ${errors} errors (${allTorrents.length} total)`);
+
+      res.json({ success: true, imported, skipped, noMatch, errors, total: allTorrents.length, results });
+    } catch (error: any) {
+      console.error("Error scanning downloads:", error);
+      res.status(500).json({ error: `Failed to scan downloads: ${error.message}` });
+    }
+  });
+
   // POST /api/requests/managed/:sonarrId/search-all - Search all seasons in parallel (SSE)
   router.post("/managed/:sonarrId/search-all", async (req: Request, res: Response) => {
     const sonarrId = Number(req.params.sonarrId);

@@ -113,6 +113,11 @@ export async function detectTorrents() {
   return response.data;
 }
 
+export async function scanDownloads() {
+  const response = await api.post("/requests/scan-downloads");
+  return response.data;
+}
+
 export async function removeFromLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/remove-from-library`);
   return response.data;

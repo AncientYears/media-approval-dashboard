@@ -65,6 +65,28 @@ export class RadarrService {
     }
   }
 
+  async getQualityProfiles() {
+    const response = await this.client.get("/api/v3/qualityprofile");
+    return response.data as Array<{ id: number; name: string }>;
+  }
+
+  async getRootFolders() {
+    const response = await this.client.get("/api/v3/rootfolder");
+    return response.data as Array<{ path: string; id: number }>;
+  }
+
+  async lookupMovie(term: string) {
+    const response = await this.client.get("/api/v3/movie/lookup", {
+      params: { term },
+    });
+    return response.data as any[];
+  }
+
+  async addMovie(movieData: any) {
+    const response = await this.client.post("/api/v3/movie", movieData);
+    return response.data as { id: number; title: string };
+  }
+
   async getAllMovies() {
     try {
       const response = await this.client.get("/api/v3/movie");

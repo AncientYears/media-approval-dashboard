@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests } from "../api";
+import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -198,6 +198,26 @@ export default function Dashboard() {
             setModal({ title: "Import Missing", lines });
             loadData();
           }}>Import Missing</button>
+          <button className="btn btn-primary btn-tiny" onClick={async () => {
+            setModal({ title: "Scan Downloads", lines: ["Scanning qBittorrent..."] });
+            const result = await scanDownloads();
+            const lines = [
+              `Scanned ${result.total} torrent(s).`,
+              `Imported ${result.imported} into Radarr/Sonarr.`,
+              `Skipped ${result.skipped} (already in DB).`,
+              `No match: ${result.noMatch}.`,
+              `Errors: ${result.errors}.`,
+            ];
+            if (result.results && result.results.length > 0) {
+              lines.push("");
+              for (const r of result.results) {
+                const icon = r.status === "imported" ? "+" : r.status === "skipped" ? "=" : r.status === "error" ? "!" : "-";
+                lines.push(`[${icon}] ${r.title} (${r.status}${r.type ? `, ${r.type}` : ""}${r.error ? `: ${r.error}` : ""})`);
+              }
+            }
+            setModal({ title: "Scan Downloads", lines });
+            loadData();
+          }}>Scan Downloads</button>
         </div>
       </div>
 

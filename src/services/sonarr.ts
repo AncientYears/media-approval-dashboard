@@ -135,6 +135,28 @@ export class SonarrService {
     }
   }
 
+  async getQualityProfiles() {
+    const response = await this.client.get("/api/v3/qualityprofile");
+    return response.data as Array<{ id: number; name: string }>;
+  }
+
+  async getRootFolders() {
+    const response = await this.client.get("/api/v3/rootfolder");
+    return response.data as Array<{ path: string; id: number }>;
+  }
+
+  async lookupSeries(term: string) {
+    const response = await this.client.get("/api/v3/series/lookup", {
+      params: { term },
+    });
+    return response.data as any[];
+  }
+
+  async addSeries(seriesData: any) {
+    const response = await this.client.post("/api/v3/series", seriesData);
+    return response.data as { id: number; title: string };
+  }
+
   async getSeasonEpisodes(seriesId: number, seasonNumber: number) {
     try {
       const response = await this.client.get("/api/v3/episode", {
