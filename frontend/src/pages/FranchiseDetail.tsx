@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, processToLibrary } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary } from "../api";
 import TorrentPanel from "../components/TorrentPanel";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
@@ -9,25 +9,6 @@ type SearchMode = typeof SEARCH_MODES[number];
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i > 2 ? 2 : 1)} ${units[i]}`;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds <= 0) return "0s";
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
 }
 
 function parseAudioCodec(title: string): string[] {
@@ -396,7 +377,6 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [removeConfirmId, setRemoveConfirmId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "list">("table");
   const [searchMode, setSearchMode] = useState<SearchMode>(initialSearch?.mode || "season");
-  const [processing, setProcessing] = useState<number | null>(null);
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
 
   const loadData = useCallback(async () => {
@@ -542,19 +522,6 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
     } finally {
       setMoving(null);
-    }
-  };
-
-  const handleProcess = async (releaseId: number) => {
-    setProcessing(releaseId);
-    try {
-      const result = await processToLibrary(season.request_id);
-      setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
-      loadTorrentStatuses();
-    } catch (err: any) {
-      setMoveResults((prev) => ({ ...prev, [releaseId]: { error: err?.response?.data?.error || err.message } }));
-    } finally {
-      setProcessing(null);
     }
   };
 
