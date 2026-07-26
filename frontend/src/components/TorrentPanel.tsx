@@ -207,13 +207,27 @@ export default function TorrentPanel({
                   </button>
                 </div>
               )}
-              {mr?.source ? (
+              {mr?.source && !mr?.inWorkspace ? (
                 <div className="torrent-path-row">
                   <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
                   <span className="move-result">
                     <span>Hardlinked →</span>
                     <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
                   </span>
+                </div>
+              ) : mr?.inWorkspace ? (
+                <div className="torrent-path-row">
+                  <span className="path-label">In Workspace:</span>
+                  <span className="move-result">
+                    <span>●</span>
+                    <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
+                  </span>
+                  <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                    <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
+                    <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
+                      {isMoving ? "Moving..." : "Move to Library"}
+                    </button>
+                  </div>
                 </div>
               ) : mr?.error ? (
                 <div className="torrent-path-row">

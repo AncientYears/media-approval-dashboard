@@ -2441,7 +2441,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
       ).all(id) as any[];
 
-      const results: Record<number, { source?: string; destination?: string; processedOutputs?: string[] } | null> = {};
+      const results: Record<number, { source?: string; destination?: string; inWorkspace?: boolean; processedOutputs?: string[] } | null> = {};
       const type = request.type === "series" ? "series" : "movie";
       const processedDir = type === "movie" ? (process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy") : (process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy");
       const workspaceBase = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
@@ -2468,7 +2468,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const ws of wsDirs) {
           const wsInput = path.join(ws.path, "inputs", basename);
           if (fs.existsSync(wsInput)) {
-            results[rel.id] = { source: contentPath, destination: wsInput };
+            results[rel.id] = { source: contentPath, destination: wsInput, inWorkspace: true };
             foundInWorkspace = true;
             break;
           }
