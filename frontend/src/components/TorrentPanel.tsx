@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, cleanWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../api";
+import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, deleteWorkspaceFile, deleteWorkspace } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
