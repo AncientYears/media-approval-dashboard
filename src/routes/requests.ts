@@ -652,9 +652,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const seasons = db.prepare(`
         SELECT mr.*,
           (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
-           WHERE rc2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+           JOIN approval_history ah2 ON ah2.release_id = rc2.id AND ah2.request_id = mr.id
+           WHERE rc2.torrent_hash != '') as total_size_mb,
           (SELECT COUNT(*) FROM release_candidates rc3
-           WHERE rc3.request_id = mr.id AND rc3.torrent_hash != '') as release_count,
+           JOIN approval_history ah3 ON ah3.release_id = rc3.id AND ah3.request_id = mr.id
+           WHERE rc3.torrent_hash != '') as release_count,
           (SELECT COUNT(*) FROM release_candidates rc4
            WHERE rc4.request_id = mr.id) as total_candidates
         FROM media_requests mr
@@ -807,6 +809,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           } else if (row.season != null && isSeasonPackTitle(r.title || '', row.season)) {
             hasSeasonPack = true;
+            const quality = r.radarr_quality || "";
+            for (let i = 1; i <= (sonarrEpisodes.length || row.episode_count || 0); i++) {
+              if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
+            }
           }
         }
       }
