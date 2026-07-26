@@ -295,3 +295,5 @@ NTFY_TOPIC=
 - [ ] Workspace cleaned up after processing completes
 - [ ] TorrentPanel checkbox toggles between "Move to Processed" and "Move to Workspace"
 - [ ] TorrentPanel shared component renders correctly in both RequestDetail and FranchiseDetail
+- [ ] TorrentPanel shows content info badge (video/bluray/multi/none) at 100%
+- [ ] Content-info endpoint scans content_path for video files and BDMV directories

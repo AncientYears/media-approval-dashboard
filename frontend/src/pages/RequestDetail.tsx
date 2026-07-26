@@ -453,6 +453,7 @@ export default function RequestDetail() {
             approvedRelease={ar}
             torrentStatus={ts}
             moveResult={mr}
+            requestId={Number(id)}
             isMoving={isMoving}
             isRemoveConfirm={isRemoveConfirm}
             preprocessing={!!preprocessingMap[ar.id]}

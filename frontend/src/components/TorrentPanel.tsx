@@ -1,3 +1,6 @@
+import { useState, useEffect } from "react";
+import { fetchContentInfo } from "../api";
+
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
@@ -26,6 +29,7 @@ export interface TorrentPanelProps {
   approvedRelease: any;
   torrentStatus: any;
   moveResult: any;
+  requestId: number;
   isMoving: boolean;
   isRemoveConfirm: boolean;
   preprocessing: boolean;
@@ -43,6 +47,7 @@ export default function TorrentPanel({
   approvedRelease: ar,
   torrentStatus: ts,
   moveResult: mr,
+  requestId,
   isMoving,
   isRemoveConfirm,
   preprocessing,
@@ -55,8 +60,26 @@ export default function TorrentPanel({
   onResume,
   onCopyPath,
 }: TorrentPanelProps) {
+  const [contentInfo, setContentInfo] = useState<any>(null);
+
+  useEffect(() => {
+    if (ts?.progress === 100 && ts?.found && !contentInfo) {
+      fetchContentInfo(requestId).then(setContentInfo).catch(() => {});
+    }
+  }, [ts?.progress, ts?.found, requestId]);
+
   if (!ar.torrent_hash) return null;
   if (ts && !ts.found) return null;
+
+  const contentBadge = contentInfo ? (() => {
+    switch (contentInfo.type) {
+      case "video": return <span className="rtag rtag-content-ok">Single video</span>;
+      case "bluray": return <span className="rtag rtag-content-warn">Bluray disk</span>;
+      case "multi": return <span className="rtag rtag-content-warn">{contentInfo.videoFiles.length} video files</span>;
+      case "none": return <span className="rtag rtag-content-err">No video files</span>;
+      default: return null;
+    }
+  })() : null;
 
   return (
     <div className="torrent-panel">
@@ -69,6 +92,7 @@ export default function TorrentPanel({
         </span>
         <span className="rtag">{ar.radarr_quality || ar.quality}</span>
         <span className="rtag">{formatSize(ar.size_mb)}</span>
+        {contentBadge}
         {ts?.found && (
           <span className={`status-badge status-badge-sm qb-${ts.state}`}>
             {ts.state}

@@ -582,6 +582,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             approvedRelease={ar}
             torrentStatus={ts}
             moveResult={mr}
+            requestId={season.request_id}
             isMoving={isMoving}
             isRemoveConfirm={isRemoveConfirm}
             preprocessing={!!preprocessingMap[ar.id]}

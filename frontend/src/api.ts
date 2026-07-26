@@ -87,6 +87,11 @@ export async function moveToWorkspace(requestId: number) {
   return response.data;
 }
 
+export async function fetchContentInfo(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/content-info`);
+  return response.data;
+}
+
 export async function moveToLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/move-to-library`);
   return response.data;

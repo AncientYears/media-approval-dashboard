@@ -8,6 +8,33 @@
  *   Show Name S02 ...
  */
 
+export function parseQualityFromName(name: string): string {
+  const lower = name.toLowerCase();
+  let source = "";
+  let resolution = "";
+
+  if (lower.includes("remux")) source = "Remux";
+  else if (lower.includes("web-dl") || lower.includes("webdl")) source = "WEBDL";
+  else if (lower.includes("webrip") || lower.includes("web-rip")) source = "WEBRip";
+  else if (lower.includes("bluray") || lower.includes("bdrip") || lower.includes("blu-ray")) source = "Bluray";
+  else if (lower.includes("hdtv") || lower.includes("hdrip") || lower.includes("hd-rip")) source = "HDTV";
+  else if (lower.includes("dvdrip") || lower.includes("dvd-rip")) source = "DVD";
+  else if (lower.includes("cam") || lower.includes("telesync")) source = "CAM";
+  else if (lower.includes("scr") || lower.includes("screener")) source = "SCR";
+  else source = "Bluray";
+
+  if (lower.includes("2160p") || lower.includes("4k") || lower.includes("uhd")) resolution = "2160p";
+  else if (lower.includes("1080p")) resolution = "1080p";
+  else if (lower.includes("720p")) resolution = "720p";
+  else if (lower.includes("480p")) resolution = "480p";
+  else resolution = "1080p";
+
+  if (source === "Remux") return `Remux-${resolution}`;
+  if (source === "CAM" || source === "SCR") return source;
+  if (source === "DVD") return "DVD";
+  return `${source}-${resolution}`;
+}
+
 export interface ParsedTorrent {
   season: number | null;
   episodes: number[];

@@ -6,7 +6,7 @@ import { QBittorrentService } from "../services/qbittorrent";
 import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
-import { parseTorrentName, formatEpisodes } from "../utils/torrentParser";
+import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir } from "../services/processor";
 import fs from "fs";
 import path from "path";
@@ -18,34 +18,6 @@ function normalizeTitleForMatch(s: string): string {
     .replace(/[.\-_\[\](){}!@#$%^+=|;<>?/\\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function parseQualityFromName(name: string): string {
-  const lower = name.toLowerCase();
-  let source = "";
-  let resolution = "";
-
-  if (lower.includes("remux")) source = "Remux";
-  else if (lower.includes("web-dl") || lower.includes("webdl")) source = "WEBDL";
-  else if (lower.includes("webrip") || lower.includes("web-rip")) source = "WEBRip";
-  else if (lower.includes("bluray") || lower.includes("bdrip") || lower.includes("blu-ray")) source = "Bluray";
-  else if (lower.includes("hdtv") || lower.includes("hdrip") || lower.includes("hd-rip")) source = "HDTV";
-  else if (lower.includes("dvdrip") || lower.includes("dvd-rip")) source = "DVD";
-  else if (lower.includes("hdtv")) source = "HDTV";
-  else if (lower.includes("cam") || lower.includes("telesync")) source = "CAM";
-  else if (lower.includes("scr") || lower.includes("screener")) source = "SCR";
-  else source = "Bluray";
-
-  if (lower.includes("2160p") || lower.includes("4k")) resolution = "2160p";
-  else if (lower.includes("1080p")) resolution = "1080p";
-  else if (lower.includes("720p")) resolution = "720p";
-  else if (lower.includes("480p")) resolution = "480p";
-  else resolution = "1080p";
-
-  if (source === "Remux") return `Remux-${resolution}`;
-  if (source === "CAM" || source === "SCR") return source;
-  if (source === "DVD") return "DVD";
-  return `${source}-${resolution}`;
 }
 
 function isSeasonPackTitle(title: string, season: number): boolean {
@@ -99,7 +71,7 @@ function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
   else if (titleLower.includes("pal") || titleLower.includes("ntsc")) source = "DVD";
   else source = "Bluray";
 
-  if (titleLower.includes("2160p") || titleLower.includes("4k")) resolution = "2160p";
+  if (titleLower.includes("2160p") || titleLower.includes("4k") || titleLower.includes("uhd")) resolution = "2160p";
   else if (titleLower.includes("1080p")) resolution = "1080p";
   else if (titleLower.includes("720p")) resolution = "720p";
   else if (titleLower.includes("480p")) resolution = "480p";
@@ -2125,6 +2097,79 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (error) {
       console.error("Error fetching torrent statuses:", error);
       res.status(500).json({ error: "Failed to fetch torrent statuses" });
+    }
+  });
+
+  // GET /api/requests/:id/content-info - Scan content path for video files
+  router.get("/:id/content-info", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const release = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (!release || !release.torrent_hash) {
+        return res.status(400).json({ error: "No torrent found" });
+      }
+
+      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+
+      let contentPath = torrent.content_path;
+      if (!fs.existsSync(contentPath)) {
+        if (contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
+      }
+      if (!fs.existsSync(contentPath)) {
+        return res.json({ type: "none", videoFiles: [], hasBdmv: false, needsProcessing: false });
+      }
+
+      const VIDEO_EXTS = new Set([".mkv", ".mp4", ".avi", ".mov", ".ts", ".m2ts", ".wmv"]);
+      const videoFiles: { name: string; size: number; path: string }[] = [];
+      let hasBdmv = false;
+
+      function scanDir(dir: string) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (entry.name === "BDMV" || entry.name === "CERTIFICATE") hasBdmv = true;
+            if (entry.name !== "CERTIFICATE") scanDir(fullPath);
+          } else {
+            const ext = path.extname(entry.name).toLowerCase();
+            if (VIDEO_EXTS.has(ext)) {
+              const stat = fs.statSync(fullPath);
+              videoFiles.push({ name: entry.name, size: stat.size, path: fullPath });
+            }
+          }
+        }
+      }
+
+      const stat = fs.statSync(contentPath);
+      if (stat.isDirectory()) {
+        scanDir(contentPath);
+      } else {
+        const ext = path.extname(contentPath).toLowerCase();
+        if (VIDEO_EXTS.has(ext)) {
+          videoFiles.push({ name: path.basename(contentPath), size: stat.size, path: contentPath });
+        }
+      }
+
+      let type: "video" | "bluray" | "multi" | "none";
+      if (hasBdmv) type = "bluray";
+      else if (videoFiles.length === 1) type = "video";
+      else if (videoFiles.length > 1) type = "multi";
+      else type = "none";
+
+      res.json({
+        type,
+        videoFiles: videoFiles.map((f) => ({ name: f.name, size: f.size })),
+        hasBdmv,
+        needsProcessing: hasBdmv || videoFiles.length > 1,
+      });
+    } catch (error: any) {
+      console.error("Error scanning content info:", error);
+      res.status(500).json({ error: `Failed to scan content: ${error.message}` });
     }
   });
 

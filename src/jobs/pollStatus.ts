@@ -1,5 +1,6 @@
 import { Database } from "better-sqlite3";
 import { QBittorrentService } from "../services/qbittorrent";
+import { parseQualityFromName } from "../utils/torrentParser";
 
 const DOWNLOADING_STATES = ["downloading", "forcedDL", "queuedDL", "pausedDL"];
 const SEEDING_STATES = ["uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP"];
@@ -82,7 +83,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
   let running = false;
 
   const insertRcStmt = db.prepare(
-    "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'detected', ?, ?, ?, 'unknown')"
+    "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'detected', ?, ?, ?, ?)"
   );
   const insertAhStmt = db.prepare(
     "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, ?, 'system')"
@@ -177,7 +178,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
               allSeeding = false;
             }
 
-            const rcResult = insertRcStmt.run(req.id, `detected-${match.hash.slice(0, 12)}`, match.name, Math.round((match.size || 0) / (1024 * 1024)), match.hash, match.save_path);
+            const rcResult = insertRcStmt.run(req.id, `detected-${match.hash.slice(0, 12)}`, match.name, Math.round((match.size || 0) / (1024 * 1024)), match.hash, match.save_path, parseQualityFromName(match.name));
             insertAhStmt.run(req.id, rcResult.lastInsertRowid);
             console.log(`[Status] Detected torrent for ${req.title}: ${match.name} (hash=${match.hash})`);
             requestsWithHashes.add(req.id);
