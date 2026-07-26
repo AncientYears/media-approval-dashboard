@@ -401,19 +401,19 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       setReleases(data.releases || []);
       setApprovedReleases(data.approved_releases || []);
       setSearchTerm((prev) => prev || data.title || "");
-      try {
-        const moveStatus = await fetchMoveStatus(season.request_id);
-        if (moveStatus?.moves) {
-          setMoveResults((prev) => {
-            const next = { ...prev };
-            for (const [relId, move] of Object.entries(moveStatus.moves)) {
-              const rid = Number(relId);
-              if (move && !next[rid]) next[rid] = move;
-            }
-            return next;
-          });
-        }
-      } catch {}
+        try {
+          const moveStatus = await fetchMoveStatus(season.request_id);
+          if (moveStatus?.moves) {
+            setMoveResults((prev) => {
+              const next = { ...prev };
+              for (const [relId, move] of Object.entries(moveStatus.moves)) {
+                const rid = Number(relId);
+                next[rid] = move;
+              }
+              return next;
+            });
+          }
+        } catch {}
     } catch {
       // ignore
     }

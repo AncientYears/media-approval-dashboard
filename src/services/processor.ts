@@ -382,16 +382,32 @@ export function writeWorkspaceMetadata(wsPath: string, meta: Partial<WorkspaceMe
   fs.writeFileSync(path.join(wsPath, "metadata.json"), JSON.stringify(merged, null, 2));
 }
 
+function dirSize(dirPath: string): number {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        total += dirSize(fullPath);
+      } else {
+        try { total += fs.statSync(fullPath).size; } catch {}
+      }
+    }
+  } catch {}
+  return total;
+}
+
 function readDirFiles(dirPath: string): WorkspaceFile[] {
   const files: WorkspaceFile[] = [];
   try {
-    for (const entry of fs.readdirSync(dirPath)) {
-      const fullPath = path.join(dirPath, entry);
+    for (const name of fs.readdirSync(dirPath)) {
+      const fullPath = path.join(dirPath, name);
       try {
         const stat = fs.statSync(fullPath);
-        files.push({ name: entry, size: stat.size, exists: true });
+        const size = stat.isDirectory() ? dirSize(fullPath) : stat.size;
+        files.push({ name, size, exists: true });
       } catch {
-        files.push({ name: entry, size: 0, exists: false });
+        files.push({ name, size: 0, exists: false });
       }
     }
   } catch {}
@@ -418,6 +434,12 @@ export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[
         requestId,
         status: "active",
       };
+
+      if (inputFiles.length === 0 && outputFiles.length === 0 && metadata.status !== "completed") {
+        try { fs.rmSync(wsPath, { recursive: true, force: true }); } catch {}
+        continue;
+      }
+
       matches.push({
         index,
         name: entry.name,
@@ -433,6 +455,15 @@ export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[
     return matches.sort((a, b) => a.index - b.index);
   } catch {
     return [];
+  }
+}
+
+export function deleteWorkspace(wsPath: string): boolean {
+  try {
+    fs.rmSync(wsPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -220,19 +220,19 @@ export default function RequestDetail() {
       setApprovedReleases(data.approved_releases || []);
       if (initial) setSearchTerm(data.title || "");
       setError(null);
-      try {
-        const moveStatus = await fetchMoveStatus(Number(id));
-        if (moveStatus?.moves) {
-          setMoveResults((prev) => {
-            const next = { ...prev };
-            for (const [relId, move] of Object.entries(moveStatus.moves)) {
-              const rid = Number(relId);
-              if (move && !next[rid]) next[rid] = move;
-            }
-            return next;
-          });
-        }
-      } catch {}
+        try {
+          const moveStatus = await fetchMoveStatus(Number(id));
+          if (moveStatus?.moves) {
+            setMoveResults((prev) => {
+              const next = { ...prev };
+              for (const [relId, move] of Object.entries(moveStatus.moves)) {
+                const rid = Number(relId);
+                next[rid] = move;
+              }
+              return next;
+            });
+          }
+        } catch {}
     } catch (err) {
       setError("Failed to load releases");
       console.error(err);

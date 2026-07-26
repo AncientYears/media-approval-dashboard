@@ -112,6 +112,11 @@ export async function deleteWorkspaceFile(requestId: number, workspaceIndex: num
   return response.data;
 }
 
+export async function deleteWorkspace(requestId: number, workspaceIndex: number) {
+  const response = await api.delete(`/requests/${requestId}/workspaces/${workspaceIndex}`);
+  return response.data;
+}
+
 export async function fetchMoveStatus(requestId: number) {
   const response = await api.get(`/requests/${requestId}/move-status`);
   return response.data;

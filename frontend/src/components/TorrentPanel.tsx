@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, cleanWorkspaceInputs, deleteWorkspaceFile } from "../api";
+import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, cleanWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -74,6 +74,7 @@ export default function TorrentPanel({
   const [wsEditField, setWsEditField] = useState<"name" | "notes">("name");
   const [wsEditValue, setWsEditValue] = useState("");
   const wsEditRef = useRef<HTMLInputElement>(null);
+  const prevMrRef = useRef<any>(null);
 
   const loadWorkspaces = () => {
     fetchWorkspaces(requestId).then((data) => {
@@ -115,6 +116,13 @@ export default function TorrentPanel({
   useEffect(() => {
     if (wsEditIdx !== null && wsEditRef.current) wsEditRef.current.focus();
   }, [wsEditIdx]);
+
+  useEffect(() => {
+    if (mr && mr !== prevMrRef.current && ts?.progress === 100) {
+      loadWorkspaces();
+    }
+    prevMrRef.current = mr;
+  }, [mr]);
 
   if (!ar.torrent_hash) return null;
   if (ts && !ts.found) return null;
@@ -220,27 +228,18 @@ export default function TorrentPanel({
                   </button>
                 </div>
               )}
-              {mr?.source && !mr?.inWorkspace ? (
+              {mr?.source ? (
                 <div className="torrent-path-row">
                   <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
                   <span className="move-result">
-                    <span>Hardlinked →</span>
+                    <span>Hardlinked &rarr;</span>
                     <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
                   </span>
-                </div>
-              ) : mr?.inWorkspace ? (
-                <div className="torrent-path-row">
-                  <span className="path-label">In Workspace:</span>
-                  <span className="move-result">
-                    <span>●</span>
-                    <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
-                  </span>
-                  <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
-                    <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
-                    <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
-                      {isMoving ? "Moving..." : "Move to Library"}
-                    </button>
-                  </div>
+                  {mr?.inWorkspace && (
+                    <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                      <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
+                    </div>
+                  )}
                 </div>
               ) : mr?.error ? (
                 <div className="torrent-path-row">
@@ -453,17 +452,15 @@ export default function TorrentPanel({
                       openWsManager();
                     }}>Complete</button>
                   )}
-                  {ws.inputCount > 0 && (
-                    <button className="btn btn-secondary btn-tiny" onClick={async () => {
-                      if (!confirm(`Delete all ${ws.inputCount} input file(s)? This removes the hardlinks only.`)) return;
-                      await cleanWorkspaceInputs(requestId, ws.index);
-                      refreshAll();
-                      const refreshed = await fetchWorkspaces(requestId);
-                      const list = refreshed.workspaces || [];
-                      if (list.length === 0) { setWsManagerOpen(false); return; }
-                      openWsManager();
-                    }}>Clean all inputs</button>
-                  )}
+                  <button className="btn btn-danger btn-tiny" onClick={async () => {
+                    if (!confirm(`Delete entire workspace "${ws.metadata?.name || `Job ${ws.index}`}"? This cannot be undone.`)) return;
+                    await deleteWorkspace(requestId, ws.index);
+                    refreshAll();
+                    const refreshed = await fetchWorkspaces(requestId);
+                    const list = refreshed.workspaces || [];
+                    if (list.length === 0) { setWsManagerOpen(false); return; }
+                    openWsManager();
+                  }}>Delete job</button>
                 </div>
               </div>
             ))}

@@ -7,7 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
-import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile } from "../services/processor";
+import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import fs from "fs";
 import path from "path";
 
@@ -2600,6 +2600,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!deleted) return res.status(404).json({ error: "File not found" });
 
       console.log(`[Workspace] Deleted ${subDir}/${decodeURIComponent(fileName)} from ${ws.dirName}`);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // DELETE /api/requests/:id/workspaces/:index - Delete entire workspace
+  router.delete("/:id/workspaces/:index", async (req: Request, res: Response) => {
+    try {
+      const { id, index } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const workspaces = listWorkspaces(request.id, request.title);
+      const ws = workspaces.find((w) => w.index === Number(index));
+      if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+      deleteWorkspace(ws.path);
+      console.log(`[Workspace] Deleted entire workspace ${ws.dirName}`);
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
