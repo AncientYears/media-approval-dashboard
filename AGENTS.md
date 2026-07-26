@@ -26,6 +26,62 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
          └─────────┘ └─────────┘ └──────────┘
 ```
 
+## Folder Structure
+
+```
+/media/Torrents/
+├── Download/              # IMMUTABLE — qBittorrent seeds from here forever
+│   ├── Filmy/             #   Movies download destination
+│   └── Serialy/           #   TV shows download destination
+│
+├── Workspace/             # EPHEMERAL — scratch space for processing jobs
+│   └── {request_id}-{sanitized_name}/
+│       ├── inputs/        #   Hardlinks from Download (read-only source)
+│       └── output/        #   Processed files (mkvmerge/ffmpeg output)
+│
+└── Processed/             # STAGING — ready for Sonarr/Radarr import
+    ├── Filmy/             #   Processed movies awaiting library import
+    └── Serialy/           #   Processed TV shows awaiting library import
+
+/media/
+├── filmy/                 # LIBRARY — Radarr-managed movie library
+└── serialy/               # LIBRARY — Sonarr-managed TV library
+```
+
+### Data Flow
+
+```
+qBittorrent
+     │
+     ▼
+/Download (immutable, always seeds from here)
+     │
+     ├────── [no processing needed] ────── hardlink to /Processed ──┐
+     │                                                              │
+     └────── [processing needed] ── hardlink to /Workspace          │
+              │                                                     │
+              ▼                                                     │
+         /Workspace/{id}-{name}/                                    │
+              inputs/  →  mkvmerge/ffmpeg  →  output/              │
+              │                                                     │
+              └──── hardlink output to /Processed ──┘               │
+                                                                     │
+                                                      /Processed    │
+                                                         │          │
+                                                         ▼          │
+                                                   Sonarr/Radarr import
+                                                         │          │
+                                                         ▼          │
+                                                       /Library     │
+```
+
+### Key Principles
+- **Download is immutable**: never modify, never delete while seeding
+- **Workspace is ephemeral**: cleaned up after each processing job
+- **Processed is staging**: Sonarr/Radarr import from here and rename
+- **Hardlinks everywhere**: zero extra disk space, original untouched
+- **Library managed by Sonarr/Radarr**: they handle renaming and organization
+
 ## Search Flow
 
 ### Single Request Search (POST /:id/search)
@@ -75,18 +131,30 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 
 ## Processing Pipeline
 
+### Workspace Naming
+- Folder: `{request_id}-{sanitized_title}` (e.g. `42-LEGO.Ninjago.Dragons.Rising.S02`)
+- Subdirs: `inputs/` (hardlinks from Download) and `output/` (processed files)
+- Cleaned up automatically after each processing job
+
 ### Hardlink Processing (POST /:id/process)
-1. Takes download content path from qBittorrent
-2. Creates hardlinks to processing workspace
-3. **mkvmerge**: strip/keep audio tracks, remove subtitles
-4. **ffmpeg**: audio codec conversion (fallback)
-5. Hardlinks processed result to library path
-6. Workspace cleaned up after processing
+1. Gets content path from qBittorrent
+2. Creates workspace folder: `{PROCESSING_WORKSPACE}/{request_id}-{name}/`
+3. Hardlinks source files to `workspace/inputs/`
+4. **mkvmerge**: strip/keep audio tracks, remove subtitles
+5. **ffmpeg**: audio codec conversion (fallback)
+6. Output files written to `workspace/output/`
+7. Hardlinks output to Processed folder
+8. Cleans up workspace
+
+### Move to Processed (POST /:id/move-to-processed)
+1. Gets content path from qBittorrent
+2. Hardlinks files from Download to Processed folder
+3. Processed files await Sonarr/Radarr import to Library
 
 ### Move to Library (POST /:id/move-to-library)
-- Hardlinks files from download folder to Sonarr/Radarr library path
-- Falls back to copy on cross-device (EXDEV)
-- Checks existing files before creating links
+1. Hardlinks files from Processed folder to Sonarr/Radarr library path
+2. Falls back to copy on cross-device (EXDEV)
+3. Checks existing files before creating links
 
 ## Key Files
 
@@ -97,7 +165,7 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 | `src/services/radarr.ts` | Radarr API client (search, grab, unmonitor, delete) |
 | `src/services/qbittorrent.ts` | qBittorrent Web API v2 (torrents, auth) |
 | `src/services/scoring.ts` | Release scoring engine |
-| `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg) |
+| `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/routes/requests.ts` | All API endpoints (~1940 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
 | `src/jobs/pollSonarr.ts` | Discovers wanted series, searches |
@@ -127,12 +195,29 @@ QBIT_URL=http://192.168.1.100:8080
 QBIT_USER=admin1
 QBIT_PASS=admin1
 
-# Paths
+# Paths — Download (immutable, seeds forever)
+DOWNLOADS_MOVIES=/media/Torrents/Download/Filmy
+DOWNLOADS_TV=/media/Torrents/Download/Serialy
+
+# Paths — Processed (staging for Sonarr/Radarr import)
+PROCESSED_MOVIES=/media/Torrents/Processed/Filmy
+PROCESSED_TV=/media/Torrents/Processed/Serialy
+
+# Paths — Workspace (ephemeral processing scratch space)
+PROCESSING_WORKSPACE=/media/Torrents/Workspace
+
+# Paths — Library (final destination, managed by Sonarr/Radarr)
 MEDIA_MOVIES=/media/filmy
 MEDIA_TV=/media/serialy
-DOWNLOADS_MOVIES=/media/torrents/downloads/filmy
-DOWNLOADS_TV=/media/torrents/downloads/serialy
-PROCESSING_WORKSPACE=/media/processing
+
+# Polling
+POLL_INTERVAL_RADARR=60
+POLL_INTERVAL_SONARR=60
+POLL_INTERVAL_STATUS=30
+
+# Notifications
+NTFY_URL=
+NTFY_TOPIC=
 ```
 
 ## DB Schema Notes
@@ -157,6 +242,7 @@ PROCESSING_WORKSPACE=/media/processing
 - Startup stale RC cleanup: check each RC individually (not per-hash) to avoid deleting valid RCs
 - Managed media: series show always if DOWNLOADING/SEEDING; movies require `release_count > 0`
 - `franchise-season-row` uses flex layout with expandable inner content (click row header to toggle)
+- Hardlinks cannot cross filesystem boundaries — Download, Workspace, Processed, and Library must all be on the same volume
 
 ## Testing Checklist
 
@@ -175,4 +261,7 @@ PROCESSING_WORKSPACE=/media/processing
 - [ ] Per-episode Search includes episode name in query
 - [ ] "Search All Seasons" fires background search + navigates to first season
 - [ ] SeasonDetail search mode toggle (Season | Episodes) works
-- [ ] Processing pipeline creates hardlinks and runs mkvmerge/ffmpeg
+- [ ] Processing pipeline creates workspace with inputs/output dirs
+- [ ] Move to Processed hardlinks from Download to Processed
+- [ ] Move to Library hardlinks from Processed (not Download)
+- [ ] Workspace cleaned up after processing completes

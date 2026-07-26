@@ -36,6 +36,62 @@ A self-hosted approval gateway for Radarr/Sonarr with qBittorrent and Prowlarr i
          └─────────┘ └─────────┘ └──────────┘
 ```
 
+## Folder Structure
+
+```
+/media/Torrents/
+├── Download/              # IMMUTABLE — qBittorrent seeds from here forever
+│   ├── Filmy/             #   Movies download destination
+│   └── Serialy/           #   TV shows download destination
+│
+├── Workspace/             # EPHEMERAL — scratch space for processing jobs
+│   └── {request_id}-{sanitized_name}/
+│       ├── inputs/        #   Hardlinks from Download (read-only source)
+│       └── output/        #   Processed files (mkvmerge/ffmpeg output)
+│
+└── Processed/             # STAGING — ready for Sonarr/Radarr import
+    ├── Filmy/             #   Processed movies awaiting library import
+    └── Serialy/           #   Processed TV shows awaiting library import
+
+/media/
+├── filmy/                 # LIBRARY — Radarr-managed movie library
+└── serialy/               # LIBRARY — Sonarr-managed TV library
+```
+
+### Data Flow
+
+```
+qBittorrent
+     │
+     ▼
+/Download (immutable, always seeds from here)
+     │
+     ├────── [no processing needed] ────── hardlink to /Processed ──┐
+     │                                                              │
+     └────── [processing needed] ── hardlink to /Workspace          │
+              │                                                     │
+              ▼                                                     │
+         /Workspace/{id}-{name}/                                    │
+              inputs/  →  mkvmerge/ffmpeg  →  output/              │
+              │                                                     │
+              └──── hardlink output to /Processed ──┘               │
+                                                                     │
+                                                      /Processed    │
+                                                         │          │
+                                                         ▼          │
+                                                   Sonarr/Radarr import
+                                                         │          │
+                                                         ▼          │
+                                                       /Library     │
+```
+
+### Key Principles
+- **Download is immutable**: never modify, never delete while seeding
+- **Workspace is ephemeral**: cleaned up after each processing job
+- **Processed is staging**: Sonarr/Radarr import from here and rename
+- **Hardlinks everywhere**: zero extra disk space, original untouched
+- **Library managed by Sonarr/Radarr**: they handle renaming and organization
+
 ## Quick Start
 
 ### Docker (Recommended)
@@ -101,6 +157,7 @@ npm run dev
 | POST | `/api/requests/:id/dismiss` | Delete release candidate (no file deletion) |
 | POST | `/api/requests/:id/set-status` | Manual status fix |
 | POST | `/api/requests/:id/move-to-library` | Hardlink to library path |
+| POST | `/api/requests/:id/move-to-processed` | Hardlink from Download to Processed staging |
 | POST | `/api/requests/:id/process` | Process download through mkvmerge/ffmpeg |
 | POST | `/api/requests/:id/remove-from-library` | Remove hardlinks from library |
 | POST | `/api/requests/:id/torrent/pause` | Pause torrent (single or franchise-level) |

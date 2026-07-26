@@ -67,6 +67,11 @@ export async function fetchFranchiseTorrentStatuses(sonarrId: number) {
   return response.data;
 }
 
+export async function moveToProcessed(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/move-to-processed`);
+  return response.data;
+}
+
 export async function moveToLibrary(requestId: number) {
   const response = await api.post(`/requests/${requestId}/move-to-library`);
   return response.data;

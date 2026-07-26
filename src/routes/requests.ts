@@ -7,7 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes } from "../utils/torrentParser";
-import { processToLibrary, processFile, ProcessOptions } from "../services/processor";
+import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, getProcessedDir } from "../services/processor";
 import fs from "fs";
 import path from "path";
 
@@ -1573,7 +1573,46 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/:id/move-to-library - Hardlink files from download folder to library
+  // POST /api/requests/:id/move-to-processed - Hardlink files from download folder to processed staging
+  router.post("/:id/move-to-processed", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const release = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).get(id) as any;
+
+      if (!release || !release.torrent_hash) {
+        return res.status(400).json({ error: "No torrent found for this request" });
+      }
+
+      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+
+      let contentPath = torrent.content_path;
+      if (!fs.existsSync(contentPath)) {
+        if (contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
+      }
+      if (!fs.existsSync(contentPath)) {
+        return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
+      }
+
+      const type = request.type === "series" ? "series" : "movie";
+      const result = moveToProcessedSync(contentPath, type);
+      if (!result.success) return res.status(500).json({ error: result.error });
+
+      console.log(`[MoveToProcessed] ${contentPath} → ${result.destination}`);
+      res.json({ success: true, source: contentPath, destination: result.destination });
+    } catch (error: any) {
+      console.error("Error moving to processed:", error);
+      res.status(500).json({ error: `Failed to move to processed: ${error.message}` });
+    }
+  });
+
+  // POST /api/requests/:id/move-to-library - Hardlink files from processed folder to library
   router.post("/:id/move-to-library", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -1606,22 +1645,34 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
 
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      const baseName = path.basename(contentPath);
+      const processedPath = path.join(processedDir, baseName);
+
+      if (!fs.existsSync(processedPath)) {
+        moveToProcessedSync(contentPath, type);
+      }
+
+      let sourcePath = processedPath;
+      if (!fs.existsSync(sourcePath)) {
+        sourcePath = contentPath;
+      }
+
       let destFolder = "";
 
       if (request.type === "series" && request.sonarr_id) {
-        // Sonarr series — target /media/Serialy/<name>/S01/
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
           destFolder = path.join(
-            series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title),
+            series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
             `S${String(seasonNum).padStart(2, "0")}`
           );
         } catch {
           return res.status(500).json({ error: "Could not determine series folder from Sonarr" });
         }
       } else if (request.radarr_id) {
-        // Radarr movie
         const movie = await radarr.getMovie(request.radarr_id);
         destFolder = movie.path || movie.folderPath;
         if (!destFolder) {
@@ -1631,24 +1682,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
       }
 
-      const fileName = path.basename(contentPath);
+      const fileName = path.basename(sourcePath);
       const destPath = path.join(destFolder, fileName);
 
       if (fs.existsSync(destPath)) {
-        return res.json({ success: true, message: "File already exists in library", source: contentPath, destination: destPath, alreadyExists: true });
+        return res.json({ success: true, message: "File already exists in library", source: sourcePath, destination: destPath, alreadyExists: true });
       }
 
-      const stat = fs.statSync(contentPath);
+      const stat = fs.statSync(sourcePath);
       if (stat.isDirectory()) {
-        hardlinkDirRecursive(contentPath, path.join(destFolder, path.basename(contentPath)));
+        hardlinkDirRecursive(sourcePath, path.join(destFolder, path.basename(sourcePath)));
       } else {
         fs.mkdirSync(destFolder, { recursive: true });
         try {
-          fs.linkSync(contentPath, destPath);
+          fs.linkSync(sourcePath, destPath);
         } catch (linkErr: any) {
           if (linkErr.code === "EXDEV") {
             console.warn(`[MoveToLibrary] Cross-device link, falling back to copy`);
-            fs.copyFileSync(contentPath, destPath);
+            fs.copyFileSync(sourcePath, destPath);
           } else {
             throw linkErr;
           }
@@ -1656,16 +1707,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const method = fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied";
-      console.log(`[MoveToLibrary] ${method} ${contentPath} → ${destPath}`);
+      console.log(`[MoveToLibrary] ${method} ${sourcePath} → ${destPath}`);
 
-      res.json({ success: true, message: `Files ${method} to library`, source: contentPath, destination: destPath });
+      res.json({ success: true, message: `Files ${method} to library`, source: sourcePath, destination: destPath });
     } catch (error: any) {
       console.error("Error moving to library:", error);
       res.status(500).json({ error: `Failed to move to library: ${error.message}` });
     }
   });
 
-  // POST /api/requests/:id/process - Process downloaded files (hardlink + remux/repack) and move to library
+  // POST /api/requests/:id/process - Process downloaded files through workspace to processed folder
   router.post("/:id/process", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -1698,27 +1749,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
 
-      let destFolder = "";
-      if (request.type === "series" && request.sonarr_id) {
-        try {
-          const series = await sonarr.getSeries(request.sonarr_id);
-          const seasonNum = request.season || 1;
-          destFolder = path.join(
-            series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
-            `S${String(seasonNum).padStart(2, "0")}`
-          );
-        } catch {
-          return res.status(500).json({ error: "Could not determine series folder from Sonarr" });
-        }
-      } else if (request.radarr_id) {
-        const movie = await radarr.getMovie(request.radarr_id);
-        destFolder = movie.path || movie.folderPath;
-        if (!destFolder) {
-          return res.status(500).json({ error: "Could not determine movie folder from Radarr" });
-        }
-      } else {
-        return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
-      }
+      const type = request.type === "series" ? "series" : "movie";
+      const destFolder = getProcessedDir(type);
 
       const options: ProcessOptions = {
         stripAudioTracks: req.body?.stripAudioTracks,
@@ -1727,7 +1759,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         audioCodec: req.body?.audioCodec,
       };
 
-      const result = await processToLibrary(contentPath, destFolder, options);
+      const result = await processToLibrary(contentPath, destFolder, options, request.id, request.title);
 
       if (result.success) {
         console.log(`[Process] ${result.method} ${result.sourceFiles.length} file(s) → ${destFolder}`);
@@ -1738,6 +1770,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         method: result.method,
         sourceFiles: result.sourceFiles,
         outputFiles: result.outputFiles,
+        workspaceDir: `${request.id}-${request.title}`,
         error: result.error,
       });
     } catch (error: any) {

@@ -5,11 +5,11 @@ import path from "path";
 
 const execFileAsync = promisify(execFile);
 
-const MEDIA_DOWNLOADS_MOVIES = process.env.DOWNLOADS_MOVIES || "/media/torrents/downloads/filmy";
-const MEDIA_DOWNLOADS_TV = process.env.DOWNLOADS_TV || "/media/torrents/downloads/serialy";
-const MEDIA_MOVIES = process.env.MEDIA_MOVIES || "/media/filmy";
-const MEDIA_TV = process.env.MEDIA_TV || "/media/serialy";
-const PROCESSING_WORKSPACE = process.env.PROCESSING_WORKSPACE || "/media/processing";
+const MEDIA_DOWNLOADS_MOVIES = process.env.DOWNLOADS_MOVIES || "/media/Torrents/Download/Filmy";
+const MEDIA_DOWNLOADS_TV = process.env.DOWNLOADS_TV || "/media/Torrents/Download/Serialy";
+const PROCESSED_MOVIES = process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy";
+const PROCESSED_TV = process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy";
+const PROCESSING_WORKSPACE = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
 
 export interface ProcessResult {
   success: boolean;
@@ -84,6 +84,55 @@ export interface ProcessOptions {
   audioCodec?: string;
   videoCodec?: string;
   outputFile?: string;
+}
+
+export function getProcessedDir(type: "movie" | "series"): string {
+  return type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV;
+}
+
+export function getDownloadDir(type: "movie" | "series"): string {
+  return type === "movie" ? MEDIA_DOWNLOADS_MOVIES : MEDIA_DOWNLOADS_TV;
+}
+
+export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"): { success: boolean; destination?: string; error?: string } {
+  const destDir = getProcessedDir(type);
+  fs.mkdirSync(destDir, { recursive: true });
+
+  const stat = fs.statSync(sourcePath);
+  if (stat.isDirectory()) {
+    const dest = path.join(destDir, path.basename(sourcePath));
+    hardlinkDirRecursive(sourcePath, dest);
+    return { success: true, destination: dest };
+  }
+
+  const dest = path.join(destDir, path.basename(sourcePath));
+  if (fs.existsSync(dest)) {
+    return { success: true, destination: dest };
+  }
+  hardlinkFile(sourcePath, dest);
+  return { success: true, destination: dest };
+}
+
+export function moveToLibrarySync(sourcePath: string, destDir: string): { success: boolean; destination?: string; method?: string; error?: string } {
+  fs.mkdirSync(destDir, { recursive: true });
+
+  const stat = fs.statSync(sourcePath);
+  if (stat.isDirectory()) {
+    const dest = path.join(destDir, path.basename(sourcePath));
+    if (fs.existsSync(dest)) {
+      return { success: true, destination: dest, method: "exists" };
+    }
+    hardlinkDirRecursive(sourcePath, dest);
+    return { success: true, destination: dest, method: "hardlinked" };
+  }
+
+  const dest = path.join(destDir, path.basename(sourcePath));
+  if (fs.existsSync(dest)) {
+    return { success: true, destination: dest, method: "exists" };
+  }
+  hardlinkFile(sourcePath, dest);
+  const method = fs.existsSync(dest) && fs.statSync(dest).nlink > 1 ? "hardlinked" : "copied";
+  return { success: true, destination: dest, method };
 }
 
 export async function processFile(
@@ -236,16 +285,52 @@ export async function processFile(
   return { success: true, sourceFiles, outputFiles, method };
 }
 
+export function sanitizeName(name: string): string {
+  return name.replace(/[<>:"/\\|?*]/g, ".").replace(/\.+/g, ".").replace(/^[.\s]+|[.\s]+$/g, "");
+}
+
+export function createWorkspaceDir(requestId: number, title: string): string {
+  const dirName = `${requestId}-${sanitizeName(title)}`;
+  const workspaceDir = path.join(PROCESSING_WORKSPACE, dirName);
+  fs.mkdirSync(path.join(workspaceDir, "inputs"), { recursive: true });
+  fs.mkdirSync(path.join(workspaceDir, "output"), { recursive: true });
+  return workspaceDir;
+}
+
+export function cleanupWorkspace(requestId: number, title: string): void {
+  const dirName = `${requestId}-${sanitizeName(title)}`;
+  const workspaceDir = path.join(PROCESSING_WORKSPACE, dirName);
+  try {
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+  } catch {}
+}
+
 export async function processToLibrary(
   sourcePath: string,
   destDir: string,
-  options: ProcessOptions = {}
+  options: ProcessOptions = {},
+  requestId?: number,
+  title?: string,
 ): Promise<ProcessResult> {
-  const workspaceDir = path.join(PROCESSING_WORKSPACE, `job-${Date.now()}`);
+  const dirName = requestId && title
+    ? `${requestId}-${sanitizeName(title)}`
+    : `job-${Date.now()}`;
+  const workspaceDir = path.join(PROCESSING_WORKSPACE, dirName);
+  const workspaceInputs = path.join(workspaceDir, "inputs");
   const workspaceOut = path.join(workspaceDir, "output");
 
+  fs.mkdirSync(workspaceInputs, { recursive: true });
+  fs.mkdirSync(workspaceOut, { recursive: true });
+
   try {
-    const result = await processFile(sourcePath, workspaceOut, options);
+    const stat = fs.statSync(sourcePath);
+    if (stat.isDirectory()) {
+      hardlinkDirRecursive(sourcePath, workspaceInputs);
+    } else {
+      hardlinkFile(sourcePath, path.join(workspaceInputs, path.basename(sourcePath)));
+    }
+
+    const result = await processFile(workspaceInputs, workspaceOut, options);
     if (!result.success) return result;
 
     for (const src of result.outputFiles) {
