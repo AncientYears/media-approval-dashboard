@@ -1077,6 +1077,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
 
       if (newTorrents.length === 0) {
+        const orphaned = db.prepare(
+          "SELECT rc.id, rc.request_id FROM release_candidates rc " +
+          "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL " +
+          "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.release_id = rc.id AND ah.request_id = rc.request_id)"
+        ).all() as any[];
+        let backfilled = 0;
+        for (const orph of orphaned) {
+          db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(orph.id, orph.request_id);
+          backfilled++;
+        }
+        if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
         return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [] });
       }
 
@@ -1259,13 +1270,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
                 db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
               }
-              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
+              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
               if (!existingRc) {
                 const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
                 ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for movie: ${title} (hash=${torrent.hash.slice(0, 12)})`);
+              } else {
+                const hasApproval = db.prepare("SELECT 1 FROM approval_history WHERE release_id = ? AND request_id = ?").get(existingRc.id, existingReq.id);
+                if (!hasApproval) {
+                  db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(existingRc.id, existingReq.id);
+                  console.log(`[ScanDownloads] Backfilled approval for RC ${existingRc.id} (movie: ${title})`);
+                }
               }
               results.push({ title, status: "skipped", type: "movie", error: "Already imported" });
             }
@@ -1288,13 +1305,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
                 db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
               }
-              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash);
+              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
               if (!existingRc) {
                 const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
                 ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for series: ${title} (hash=${torrent.hash.slice(0, 12)})`);
+              } else {
+                const hasApproval = db.prepare("SELECT 1 FROM approval_history WHERE release_id = ? AND request_id = ?").get(existingRc.id, existingReq.id);
+                if (!hasApproval) {
+                  db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(existingRc.id, existingReq.id);
+                  console.log(`[ScanDownloads] Backfilled approval for RC ${existingRc.id} (series: ${title})`);
+                }
               }
               results.push({ title, status: "skipped", type: "series", error: "Already imported" });
             }
