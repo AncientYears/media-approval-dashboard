@@ -92,6 +92,11 @@ export async function fetchWorkspaces(requestId: number) {
   return response.data;
 }
 
+export async function updateWorkspaceMetadata(requestId: number, workspaceIndex: number, data: { name?: string; notes?: string; status?: string }) {
+  const response = await api.patch(`/requests/${requestId}/workspaces/${workspaceIndex}`, data);
+  return response.data;
+}
+
 export async function fetchMoveStatus(requestId: number) {
   const response = await api.get(`/requests/${requestId}/move-status`);
   return response.data;

@@ -7,7 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
-import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces } from "../services/processor";
+import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata } from "../services/processor";
 import fs from "fs";
 import path from "path";
 
@@ -2488,6 +2488,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!request) return res.status(404).json({ error: "Request not found" });
       const workspaces = listWorkspaces(request.id, request.title);
       res.json({ workspaces });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // PATCH /api/requests/:id/workspaces/:index - Update workspace metadata
+  router.patch("/:id/workspaces/:index", async (req: Request, res: Response) => {
+    try {
+      const { id, index } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const workspaces = listWorkspaces(request.id, request.title);
+      const ws = workspaces.find((w) => w.index === Number(index));
+      if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+      const { name, notes, status } = req.body || {};
+      const updates: any = {};
+      if (name !== undefined) updates.name = name;
+      if (notes !== undefined) updates.notes = notes;
+      if (status !== undefined) updates.status = status;
+
+      writeWorkspaceMetadata(ws.path, updates);
+      const updated = readWorkspaceMetadata(ws.path);
+      res.json({ success: true, metadata: updated });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

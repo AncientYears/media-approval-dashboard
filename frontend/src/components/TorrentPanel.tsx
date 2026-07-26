@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { fetchContentInfo, fetchWorkspaces } from "../api";
+import { useState, useEffect, useRef } from "react";
+import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -63,17 +63,28 @@ export default function TorrentPanel({
   const [contentInfo, setContentInfo] = useState<any>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<number | "new">("new");
+  const [editingWs, setEditingWs] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  const loadWorkspaces = () => {
+    fetchWorkspaces(requestId).then((data) => {
+      setWorkspaces(data.workspaces || []);
+      if (data.workspaces?.length > 0 && selectedWorkspace === "new") setSelectedWorkspace(data.workspaces[0].index);
+    }).catch(() => {});
+  };
 
   useEffect(() => {
     if (ts?.progress === 100 && ts?.found) {
       setContentInfo(null);
       fetchContentInfo(requestId, ar.id).then(setContentInfo).catch(() => {});
-      fetchWorkspaces(requestId).then((data) => {
-        setWorkspaces(data.workspaces || []);
-        if (data.workspaces?.length > 0) setSelectedWorkspace(data.workspaces[0].index);
-      }).catch(() => {});
+      loadWorkspaces();
     }
   }, [ts?.progress, ts?.found, requestId, ar.id]);
+
+  useEffect(() => {
+    if (editingWs !== null && editInputRef.current) editInputRef.current.focus();
+  }, [editingWs]);
 
   if (!ar.torrent_hash) return null;
   if (ts && !ts.found) return null;
@@ -204,18 +215,62 @@ export default function TorrentPanel({
                   </label>
                   {contentBadge}
                   {preprocessing && workspaces.length > 0 && (
-                    <select
-                      className="workspace-select"
-                      value={selectedWorkspace}
-                      onChange={(e) => setSelectedWorkspace(e.target.value === "new" ? "new" : Number(e.target.value))}
-                    >
-                      {workspaces.map((ws) => (
-                        <option key={ws.index} value={ws.index}>
-                          Job {ws.index} ({ws.inputCount} file{ws.inputCount !== 1 ? "s" : ""})
-                        </option>
-                      ))}
-                      <option value="new">+ New workspace</option>
-                    </select>
+                    <div className="workspace-picker">
+                      {editingWs !== null ? (
+                        <div className="workspace-edit-inline">
+                          <input
+                            ref={editInputRef}
+                            className="workspace-edit-input"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onBlur={async () => {
+                              if (editName.trim()) {
+                                await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
+                                loadWorkspaces();
+                              }
+                              setEditingWs(null);
+                            }}
+                            onKeyDown={async (e) => {
+                              if (e.key === "Enter" && editName.trim()) {
+                                await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
+                                loadWorkspaces();
+                                setEditingWs(null);
+                              }
+                              if (e.key === "Escape") setEditingWs(null);
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <select
+                            className="workspace-select"
+                            value={selectedWorkspace}
+                            onChange={(e) => setSelectedWorkspace(e.target.value === "new" ? "new" : Number(e.target.value))}
+                          >
+                            {workspaces.map((ws) => {
+                              const label = ws.metadata?.name || `Job ${ws.index}`;
+                              return (
+                                <option key={ws.index} value={ws.index}>
+                                  {label} ({ws.inputCount} in / {ws.outputCount} out)
+                                </option>
+                              );
+                            })}
+                            <option value="new">+ New workspace</option>
+                          </select>
+                          {selectedWorkspace !== "new" && (
+                            <button
+                              className="btn btn-secondary btn-tiny"
+                              title="Rename workspace"
+                              onClick={() => {
+                                const ws = workspaces.find((w: any) => w.index === selectedWorkspace);
+                                setEditName(ws?.metadata?.name || `Job ${ws?.index}`);
+                                setEditingWs(selectedWorkspace as number);
+                              }}
+                            >&#9998;</button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   )}
                   <div style={{ display: "flex", gap: 4 }}>
                     <button

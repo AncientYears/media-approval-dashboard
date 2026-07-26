@@ -314,6 +314,7 @@ export function createWorkspaceDir(requestId: number, title: string, jobIndex?: 
   const workspaceDir = path.join(PROCESSING_WORKSPACE, dirName);
   fs.mkdirSync(path.join(workspaceDir, "inputs"), { recursive: true });
   fs.mkdirSync(path.join(workspaceDir, "output"), { recursive: true });
+  writeWorkspaceMetadata(workspaceDir, { requestId, status: "active" });
   return workspaceDir;
 }
 
@@ -325,11 +326,39 @@ export function cleanupWorkspace(requestId: number, title: string): void {
   } catch {}
 }
 
+export interface WorkspaceMetadata {
+  name?: string;
+  notes?: string;
+  createdAt: string;
+  requestId: number;
+  status: "active" | "completed";
+}
+
 export interface WorkspaceInfo {
   index: number;
   name: string;
+  dirName: string;
   path: string;
   inputCount: number;
+  outputCount: number;
+  metadata: WorkspaceMetadata;
+}
+
+export function readWorkspaceMetadata(wsPath: string): WorkspaceMetadata | null {
+  try {
+    const data = fs.readFileSync(path.join(wsPath, "metadata.json"), "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+export function writeWorkspaceMetadata(wsPath: string, meta: Partial<WorkspaceMetadata>): void {
+  const existing = readWorkspaceMetadata(wsPath);
+  const merged = { ...existing, ...meta } as WorkspaceMetadata;
+  if (!merged.createdAt) merged.createdAt = new Date().toISOString();
+  if (!merged.status) merged.status = "active";
+  fs.writeFileSync(path.join(wsPath, "metadata.json"), JSON.stringify(merged, null, 2));
 }
 
 export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[] {
@@ -344,9 +373,17 @@ export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[
       const index = m[1] ? parseInt(m[1]) : 1;
       const wsPath = path.join(PROCESSING_WORKSPACE, entry.name);
       const inputsDir = path.join(wsPath, "inputs");
+      const outputDir = path.join(wsPath, "output");
       let inputCount = 0;
+      let outputCount = 0;
       try { inputCount = fs.readdirSync(inputsDir).length; } catch {}
-      matches.push({ index, name: entry.name, path: wsPath, inputCount });
+      try { outputCount = fs.readdirSync(outputDir).length; } catch {}
+      const metadata = readWorkspaceMetadata(wsPath) || {
+        createdAt: fs.statSync(wsPath).birthtime.toISOString(),
+        requestId,
+        status: "active",
+      };
+      matches.push({ index, name: entry.name, dirName: entry.name, path: wsPath, inputCount, outputCount, metadata });
     }
     return matches.sort((a, b) => a.index - b.index);
   } catch {

@@ -1347,6 +1347,29 @@ body {
   flex-shrink: 0;
 }
 
+.workspace-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.workspace-edit-inline {
+  display: flex;
+  align-items: center;
+}
+
+.workspace-edit-input {
+  font-size: 10px;
+  padding: 2px 4px;
+  border: 1px solid var(--primary);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  width: 140px;
+  outline: none;
+}
+
 .btn-workspace {
   background: #7c3aed;
   color: #fff;
