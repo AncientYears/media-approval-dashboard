@@ -71,7 +71,6 @@ export default function TorrentPanel({
   const [wsManagerOpen, setWsManagerOpen] = useState(false);
   const [wsManagerData, setWsManagerData] = useState<any[]>([]);
   const [wsEditIdx, setWsEditIdx] = useState<number | null>(null);
-  const [wsEditField, setWsEditField] = useState<"name" | "notes">("name");
   const [wsEditValue, setWsEditValue] = useState("");
   const wsEditRef = useRef<HTMLInputElement>(null);
   const prevMrRef = useRef<any>(null);
@@ -82,9 +81,12 @@ export default function TorrentPanel({
       setWorkspaces(list);
       if (selectedWorkspace !== "new") {
         const stillExists = list.some((w: any) => w.index === selectedWorkspace);
-        if (!stillExists) setSelectedWorkspace(list.length > 0 ? list[0].index : "new");
+        if (!stillExists) {
+          if (list.length > 0) setSelectedWorkspace(list[list.length - 1].index);
+          else setSelectedWorkspace("new");
+        }
       } else if (list.length > 0) {
-        setSelectedWorkspace(list[0].index);
+        setSelectedWorkspace(list[list.length - 1].index);
       }
     }).catch(() => {});
   };
@@ -96,9 +98,37 @@ export default function TorrentPanel({
 
   const openWsManager = () => {
     fetchWorkspaces(requestId).then((data) => {
-      setWsManagerData(data.workspaces || []);
+      const list = data.workspaces || [];
+      setWsManagerData(list);
       setWsManagerOpen(true);
     }).catch(() => {});
+  };
+
+  const managedWs = wsManagerData.find((w: any) => w.index === (typeof selectedWorkspace === "number" ? selectedWorkspace : null));
+
+  const handleFileDelete = async (wsIndex: number, subDir: "inputs" | "output", fileName: string) => {
+    await deleteWorkspaceFile(requestId, wsIndex, subDir, fileName);
+    refreshAll();
+    const refreshed = await fetchWorkspaces(requestId);
+    const list = refreshed.workspaces || [];
+    setWsManagerData(list);
+    const updated = list.find((w: any) => w.index === wsIndex);
+    if (!updated || (updated.inputCount === 0 && updated.outputCount === 0)) {
+      setWsManagerOpen(false);
+    }
+  };
+
+  const handleDeleteJob = async (wsIndex: number) => {
+    await deleteWorkspace(requestId, wsIndex);
+    refreshAll();
+    setWsManagerOpen(false);
+  };
+
+  const handleComplete = async (wsIndex: number) => {
+    await completeWorkspace(requestId, wsIndex);
+    refreshAll();
+    const refreshed = await fetchWorkspaces(requestId);
+    setWsManagerData(refreshed.workspaces || []);
   };
 
   useEffect(() => {
@@ -338,132 +368,113 @@ export default function TorrentPanel({
         <div className="torrent-meta"><span>Waiting for qBittorrent...</span></div>
       )}
     </div>
-    {wsManagerOpen && (
+    {wsManagerOpen && managedWs && (
       <div className="modal-overlay" onClick={() => setWsManagerOpen(false)}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
           <div className="modal-header">
-            <h3>Workspaces</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {wsEditIdx === managedWs.index ? (
+                <input
+                  ref={wsEditRef}
+                  className="workspace-edit-input"
+                  value={wsEditValue}
+                  onChange={(e) => setWsEditValue(e.target.value)}
+                  onBlur={async () => {
+                    if (wsEditValue.trim()) {
+                      await updateWorkspaceMetadata(requestId, managedWs.index, { name: wsEditValue.trim() });
+                      refreshAll();
+                      openWsManager();
+                    }
+                    setWsEditIdx(null);
+                  }}
+                  onKeyDown={async (e) => {
+                    if (e.key === "Enter" && wsEditValue.trim()) {
+                      await updateWorkspaceMetadata(requestId, managedWs.index, { name: wsEditValue.trim() });
+                      refreshAll();
+                      openWsManager();
+                      setWsEditIdx(null);
+                    }
+                    if (e.key === "Escape") setWsEditIdx(null);
+                  }}
+                />
+              ) : (
+                <h3 style={{ margin: 0, cursor: "pointer" }} onClick={() => { setWsEditValue(managedWs.metadata?.name || `Job ${managedWs.index}`); setWsEditIdx(managedWs.index); }}>
+                  {managedWs.metadata?.name || `Job ${managedWs.index}`}
+                </h3>
+              )}
+              <span className={`ws-manager-status ${managedWs.metadata?.status === "completed" ? "ws-completed" : "ws-active"}`}>
+                {managedWs.metadata?.status || "active"}
+              </span>
+            </div>
             <button className="modal-close" onClick={() => setWsManagerOpen(false)}>&times;</button>
           </div>
           <div className="modal-body">
-            {wsManagerData.length === 0 && <p style={{ color: "var(--text-secondary)", fontSize: 12 }}>No workspaces yet.</p>}
-            {wsManagerData.map((ws: any) => (
-              <div key={ws.index} className="ws-manager-row">
-                <div className="ws-manager-header">
-                  {wsEditIdx === ws.index ? (
-                    <input
-                      ref={wsEditRef}
-                      className="workspace-edit-input"
-                      value={wsEditValue}
-                      onChange={(e) => setWsEditValue(e.target.value)}
-                      onBlur={async () => {
-                        if (wsEditValue.trim()) {
-                          await updateWorkspaceMetadata(requestId, ws.index, { [wsEditField]: wsEditValue.trim() });
-                          refreshAll();
-                          openWsManager();
-                        }
-                        setWsEditIdx(null);
-                      }}
-                      onKeyDown={async (e) => {
-                        if (e.key === "Enter" && wsEditValue.trim()) {
-                          await updateWorkspaceMetadata(requestId, ws.index, { [wsEditField]: wsEditValue.trim() });
-                          refreshAll();
-                          openWsManager();
-                          setWsEditIdx(null);
-                        }
-                        if (e.key === "Escape") setWsEditIdx(null);
-                      }}
-                    />
-                  ) : (
-                    <span className="ws-manager-name" onClick={() => { setWsEditField("name"); setWsEditValue(ws.metadata?.name || `Job ${ws.index}`); setWsEditIdx(ws.index); }}>
-                      {ws.metadata?.name || `Job ${ws.index}`}
-                    </span>
-                  )}
-                  <span className={`ws-manager-status ${ws.metadata?.status === "completed" ? "ws-completed" : "ws-active"}`}>
-                    {ws.metadata?.status || "active"}
-                  </span>
-                </div>
-                <div className="ws-manager-meta">
-                  <span>{ws.inputCount} input{ws.inputCount !== 1 ? "s" : ""}</span>
-                  <span>{ws.outputCount} output{ws.outputCount !== 1 ? "s" : ""}</span>
-                  <span className="ws-manager-date">{new Date(ws.metadata?.createdAt).toLocaleDateString()}</span>
-                </div>
-                {ws.metadata?.notes && (
-                  <div className="ws-manager-notes" onClick={() => { setWsEditField("notes"); setWsEditValue(ws.metadata.notes); setWsEditIdx(ws.index); }}>
-                    {ws.metadata.notes}
+            <div className="ws-manager-meta">
+              <span>{managedWs.inputCount} input{managedWs.inputCount !== 1 ? "s" : ""}</span>
+              <span>{managedWs.outputCount} output{managedWs.outputCount !== 1 ? "s" : ""}</span>
+              <span className="ws-manager-date">{new Date(managedWs.metadata?.createdAt).toLocaleDateString()}</span>
+            </div>
+            <div className="ws-manager-section-label">Notes</div>
+            <textarea
+              className="ws-manager-notes-input"
+              rows={2}
+              placeholder="Add notes about this workspace..."
+              value={managedWs.metadata?.notes || ""}
+              onChange={(e) => {
+                setWsManagerData((prev) => prev.map((w) => w.index === managedWs.index ? { ...w, metadata: { ...w.metadata, notes: e.target.value } } : w));
+              }}
+              onBlur={async () => {
+                await updateWorkspaceMetadata(requestId, managedWs.index, { notes: managedWs.metadata?.notes || "" });
+              }}
+            />
+            {managedWs.inputFiles?.length > 0 && (
+              <div className="ws-manager-section">
+                <div className="ws-manager-section-label">Inputs</div>
+                {managedWs.inputFiles.map((f: any) => (
+                  <div key={f.name} className="ws-manager-output-path ws-file-row">
+                    <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
+                    <span className="ws-file-name" title={f.name}>{f.name}</span>
+                    <span className="ws-file-size">{formatBytes(f.size)}</span>
+                    <button className="btn btn-danger btn-tiny" title="Delete" onClick={() => handleFileDelete(managedWs.index, "inputs", f.name)}>&times;</button>
                   </div>
-                )}
-                {ws.inputFiles?.length > 0 && (
-                  <div className="ws-manager-outputs">
-                    <div className="ws-manager-section-label">Inputs</div>
-                    {ws.inputFiles.map((f: any) => (
-                      <div key={f.name} className="ws-manager-output-path ws-file-row">
-                        <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
-                        <span className="ws-file-name" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)`}>
-                          {f.name}
-                        </span>
-                        <span className="ws-file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-                        <button className="btn btn-danger btn-tiny" title="Delete this file" onClick={async () => {
-                          if (!confirm(`Delete "${f.name}"?`)) return;
-                          await deleteWorkspaceFile(requestId, ws.index, "inputs", f.name);
-                          refreshAll();
-                          openWsManager();
-                        }}>&times;</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {ws.outputFiles?.length > 0 && (
-                  <div className="ws-manager-outputs">
-                    <div className="ws-manager-section-label">Outputs</div>
-                    {ws.outputFiles.map((f: any) => (
-                      <div key={f.name} className="ws-manager-output-path ws-file-row">
-                        <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
-                        <span className="ws-file-name" title={`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB) - Click to copy`} onClick={() => navigator.clipboard.writeText(f.name)}>
-                          {f.name}
-                        </span>
-                        <span className="ws-file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-                        <button className="btn btn-danger btn-tiny" title="Delete this file" onClick={async () => {
-                          if (!confirm(`Delete "${f.name}"?`)) return;
-                          await deleteWorkspaceFile(requestId, ws.index, "output", f.name);
-                          refreshAll();
-                          openWsManager();
-                        }}>&times;</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {ws.metadata?.outputPaths?.length > 0 && (
-                  <div className="ws-manager-outputs ws-manager-processed">
-                    <div className="ws-manager-section-label">Processed</div>
-                    {ws.metadata.outputPaths.map((p: string, i: number) => (
-                      <div key={i} className="ws-manager-output-path" title="Click to copy" onClick={() => navigator.clipboard.writeText(p)}>
-                        {p}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="ws-manager-actions">
-                  {ws.metadata?.status !== "completed" && ws.outputCount > 0 && (
-                    <button className="btn btn-primary btn-tiny" onClick={async () => {
-                      if (!confirm(`Complete "${ws.metadata?.name || `Job ${ws.index}`}"? Inputs will be deleted, outputs moved to processed.`)) return;
-                      await completeWorkspace(requestId, ws.index);
-                      refreshAll();
-                      openWsManager();
-                    }}>Complete</button>
-                  )}
-                  <button className="btn btn-danger btn-tiny" onClick={async () => {
-                    if (!confirm(`Delete entire workspace "${ws.metadata?.name || `Job ${ws.index}`}"? This cannot be undone.`)) return;
-                    await deleteWorkspace(requestId, ws.index);
-                    refreshAll();
-                    const refreshed = await fetchWorkspaces(requestId);
-                    const list = refreshed.workspaces || [];
-                    if (list.length === 0) { setWsManagerOpen(false); return; }
-                    openWsManager();
-                  }}>Delete job</button>
-                </div>
+                ))}
               </div>
-            ))}
+            )}
+            {managedWs.outputFiles?.length > 0 && (
+              <div className="ws-manager-section">
+                <div className="ws-manager-section-label">Outputs</div>
+                {managedWs.outputFiles.map((f: any) => (
+                  <div key={f.name} className="ws-manager-output-path ws-file-row">
+                    <span className="ws-file-exists">{f.exists ? "\u25CF" : "\u25CB"}</span>
+                    <span className="ws-file-name" title={`${f.name} - Click to copy`} onClick={() => navigator.clipboard.writeText(f.name)}>{f.name}</span>
+                    <span className="ws-file-size">{formatBytes(f.size)}</span>
+                    <button className="btn btn-danger btn-tiny" title="Delete" onClick={() => handleFileDelete(managedWs.index, "output", f.name)}>&times;</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {managedWs.metadata?.outputPaths?.length > 0 && (
+              <div className="ws-manager-section ws-manager-processed">
+                <div className="ws-manager-section-label">Processed</div>
+                {managedWs.metadata.outputPaths.map((p: string, i: number) => (
+                  <div key={i} className="ws-manager-output-path" title="Click to copy" onClick={() => navigator.clipboard.writeText(p)}>
+                    {p}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="ws-manager-actions">
+              {managedWs.metadata?.status !== "completed" && managedWs.outputCount > 0 && (
+                <button className="btn btn-primary btn-tiny" onClick={() => {
+                  if (!confirm(`Complete "${managedWs.metadata?.name || `Job ${managedWs.index}`}"? Inputs will be deleted, outputs moved to /Processed. Radarr/Sonarr will scan and import.`)) return;
+                  handleComplete(managedWs.index);
+                }}>Complete &amp; Import</button>
+              )}
+              <button className="btn btn-danger btn-tiny" onClick={() => {
+                if (!confirm(`Delete workspace "${managedWs.metadata?.name || `Job ${managedWs.index}`}"? This cannot be undone.`)) return;
+                handleDeleteJob(managedWs.index);
+              }}>Delete Job</button>
+            </div>
           </div>
         </div>
       </div>

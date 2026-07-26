@@ -1891,6 +1891,29 @@ body {
   padding-left: 8px;
 }
 
+.ws-manager-section {
+  margin-bottom: 10px;
+}
+
+.ws-manager-notes-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  margin-bottom: 10px;
+  min-height: 36px;
+}
+
+.ws-manager-notes-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
 .ws-file-exists {
   font-size: 8px;
   margin-right: 6px;

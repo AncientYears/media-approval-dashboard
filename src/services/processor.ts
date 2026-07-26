@@ -415,15 +415,17 @@ function readDirFiles(dirPath: string): WorkspaceFile[] {
 }
 
 export function listWorkspaces(requestId: number, title: string): WorkspaceInfo[] {
-  const base = `${requestId}-${sanitizeName(title)}`;
   try {
     const entries = fs.readdirSync(PROCESSING_WORKSPACE, { withFileTypes: true });
     const matches: WorkspaceInfo[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const m = entry.name.match(new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-(\\d+))?$`));
-      if (!m) continue;
-      const index = m[1] ? parseInt(m[1]) : 1;
+      const prefix = `${requestId}-`;
+      if (!entry.name.startsWith(prefix)) continue;
+      const suffix = entry.name.slice(prefix.length);
+      if (!suffix) continue;
+      const indexMatch = suffix.match(/-(\d+)$/);
+      const index = indexMatch ? parseInt(indexMatch[1]) : 1;
       const wsPath = path.join(PROCESSING_WORKSPACE, entry.name);
       const inputsDir = path.join(wsPath, "inputs");
       const outputDir = path.join(wsPath, "output");
