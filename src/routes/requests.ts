@@ -2651,7 +2651,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.post("/:id/move-to-workspace", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { releaseId, workspaceName, workspaceNotes, workspaceScripts } = req.body || {};
+      const { releaseId, name, notes, scripts } = req.body || {};
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
 
@@ -2682,9 +2682,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const wsConfig: any = {};
-      if (workspaceName) wsConfig.name = workspaceName;
-      if (workspaceNotes) wsConfig.notes = workspaceNotes;
-      if (workspaceScripts) wsConfig.scripts = workspaceScripts;
+      if (name) wsConfig.name = name;
+      if (notes) wsConfig.notes = notes;
+      if (scripts) wsConfig.scripts = scripts;
 
       const result = moveToWorkspaceSync(contentPath, request.id, request.title, req.body?.workspaceIndex, release.id, release.torrent_hash, Object.keys(wsConfig).length > 0 ? wsConfig : undefined);
       if (!result.success) return res.status(500).json({ error: result.error });

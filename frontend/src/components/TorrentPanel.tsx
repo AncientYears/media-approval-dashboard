@@ -27,11 +27,57 @@ function formatDuration(seconds: number): string {
 
 const SCRIPT_OPTIONS = ["remux", "repack", "extract-subtitles", "convert-audio", "downmix-audio", "hdr-to-sdr", "custom"];
 
+function ScriptDropdown({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  const toggle = (script: string) => {
+    onChange(value.includes(script) ? value.filter((s) => s !== script) : [...value, script]);
+  };
+
+  return (
+    <div className="script-dropdown" ref={ref}>
+      <button type="button" className="script-dropdown-trigger" onClick={() => setOpen(!open)}>
+        {value.length > 0 ? (
+          <div className="script-tags">
+            {value.map((s) => (
+              <span key={s} className="script-tag">{s}</span>
+            ))}
+          </div>
+        ) : (
+          <span className="script-placeholder">{placeholder || "Select scripts..."}</span>
+        )}
+        <span className={`script-dropdown-arrow ${open ? "open" : ""}`}>&#9662;</span>
+      </button>
+      {open && (
+        <div className="script-dropdown-menu">
+          {SCRIPT_OPTIONS.map((script) => (
+            <label key={script} className="script-dropdown-item">
+              <input type="checkbox" checked={value.includes(script)} onChange={() => toggle(script)} />
+              <span>{script}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface TorrentPanelProps {
   approvedRelease: any;
   torrentStatus: any;
   moveResult: any;
   requestId: number;
+  requestTitle?: string;
   isMoving: boolean;
   isRemoveConfirm: boolean;
   preprocessing: boolean;
@@ -51,6 +97,7 @@ export default function TorrentPanel({
   torrentStatus: ts,
   moveResult: mr,
   requestId,
+  requestTitle,
   isMoving,
   isRemoveConfirm,
   preprocessing,
@@ -77,7 +124,8 @@ export default function TorrentPanel({
   const wsEditRef = useRef<HTMLInputElement>(null);
   const prevMrRef = useRef<any>(null);
 
-  const [newWsName, setNewWsName] = useState("");
+  const defaultName = requestTitle || ar.title || "";
+  const [newWsName, setNewWsName] = useState(defaultName);
   const [newWsNotes, setNewWsNotes] = useState("");
   const [newWsScripts, setNewWsScripts] = useState<string[]>([]);
 
@@ -360,7 +408,7 @@ export default function TorrentPanel({
                     <button
                       className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
                       onClick={() => {
-                        const wsConfig = preprocessing && selectedWorkspace === "new" && (newWsName || newWsNotes || newWsScripts.length > 0)
+                        const wsConfig = preprocessing && selectedWorkspace === "new"
                           ? { name: newWsName || undefined, notes: newWsNotes || undefined, scripts: newWsScripts.length > 0 ? newWsScripts : undefined }
                           : undefined;
                         onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined, wsConfig);
@@ -440,23 +488,14 @@ export default function TorrentPanel({
               }}
             />
             <div className="ws-manager-section-label">Scripts</div>
-            <div className="ws-scripts-row">
-              {SCRIPT_OPTIONS.map((script) => (
-                <label key={script} className="ws-script-check">
-                  <input
-                    type="checkbox"
-                    checked={managedWs.metadata?.scripts?.includes(script) || false}
-                    onChange={async (e) => {
-                      const current = managedWs.metadata?.scripts || [];
-                      const next = e.target.checked ? [...current, script] : current.filter((s: string) => s !== script);
-                      setWsManagerData((prev) => prev.map((w) => w.index === managedWs.index ? { ...w, metadata: { ...w.metadata, scripts: next } } : w));
-                      await updateWorkspaceMetadata(requestId, managedWs.index, { scripts: next } as any);
-                    }}
-                  />
-                  <span>{script}</span>
-                </label>
-              ))}
-            </div>
+            <ScriptDropdown
+              value={managedWs.metadata?.scripts || []}
+              onChange={async (next) => {
+                setWsManagerData((prev) => prev.map((w) => w.index === managedWs.index ? { ...w, metadata: { ...w.metadata, scripts: next } } : w));
+                await updateWorkspaceMetadata(requestId, managedWs.index, { scripts: next } as any);
+              }}
+              placeholder="Select scripts..."
+            />
             <div className="ws-manager-section">
               <div className="ws-manager-section-label">Inputs ({managedWs.inputCount})</div>
               {managedWs.inputFiles?.length > 0 ? (
@@ -530,7 +569,7 @@ export default function TorrentPanel({
             <div className="ws-manager-section-label">Name</div>
             <input
               className="ws-manager-notes-input"
-              placeholder="Workspace name (optional)"
+              placeholder="Workspace name"
               value={newWsName}
               onChange={(e) => setNewWsName(e.target.value)}
             />
@@ -543,20 +582,11 @@ export default function TorrentPanel({
               onChange={(e) => setNewWsNotes(e.target.value)}
             />
             <div className="ws-manager-section-label">Scripts</div>
-            <div className="ws-scripts-row">
-              {SCRIPT_OPTIONS.map((script) => (
-                <label key={script} className="ws-script-check">
-                  <input
-                    type="checkbox"
-                    checked={newWsScripts.includes(script)}
-                    onChange={(e) => {
-                      setNewWsScripts((prev) => e.target.checked ? [...prev, script] : prev.filter((s) => s !== script));
-                    }}
-                  />
-                  <span>{script}</span>
-                </label>
-              ))}
-            </div>
+            <ScriptDropdown
+              value={newWsScripts}
+              onChange={setNewWsScripts}
+              placeholder="Select scripts..."
+            />
             <div className="ws-manager-section">
               <div className="ws-manager-section-label">Outputs</div>
               <div className="ws-manager-empty">Place processed files in workspace/output/</div>

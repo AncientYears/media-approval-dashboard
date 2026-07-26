@@ -27,13 +27,12 @@ export default function WorkspaceOverview() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
-  const active = workspaces.filter((w) => w.metadata?.status !== "completed");
-  const completed = workspaces.filter((w) => w.metadata?.status === "completed");
+  const activeCount = workspaces.filter((w) => w.metadata?.status !== "completed").length;
 
   return (
     <div className="ws-overview-wrapper" ref={ref}>
       <button className="ws-overview-toggle" onClick={() => setOpen(!open)}>
-        {active.length > 0 && <span className="ws-overview-badge">{active.length}</span>}
+        {activeCount > 0 && <span className="ws-overview-badge">{activeCount}</span>}
         Workspaces
       </button>
       {open && (
@@ -41,51 +40,32 @@ export default function WorkspaceOverview() {
           {loading ? (
             <div className="ws-overview-loading">Loading...</div>
           ) : workspaces.length === 0 ? (
-            <div className="ws-overview-empty">No active workspaces</div>
+            <div className="ws-overview-empty">No workspaces</div>
           ) : (
-            <>
-              {active.length > 0 && (
-                <div className="ws-overview-group">
-                  <div className="ws-overview-group-label">Active</div>
-                  {active.map((w) => (
-                    <div
-                      key={`${w.requestId}-${w.index}`}
-                      className="ws-overview-row"
-                      onClick={() => {
-                        navigate(w.mediaType === "tv" ? `/managed/${w.requestId}` : `/requests/${w.requestId}`);
-                        setOpen(false);
-                      }}
-                    >
-                      <div className="ws-overview-row-title">{w.metadata?.name || `Job ${w.index}`}</div>
-                      <div className="ws-overview-row-meta">
-                        <span>{w.mediaTitle}</span>
-                        <span>{w.inputCount} in / {w.outputCount} out</span>
-                      </div>
+            workspaces.map((w) => {
+              const isCompleted = w.metadata?.status === "completed";
+              return (
+                <div
+                  key={`${w.requestId}-${w.index}`}
+                  className={`ws-overview-row ${isCompleted ? "ws-overview-row-completed" : ""}`}
+                  onClick={() => {
+                    navigate(w.mediaType === "tv" ? `/managed/${w.requestId}` : `/requests/${w.requestId}`);
+                    setOpen(false);
+                  }}
+                >
+                  <span className={`ws-overview-dot ${isCompleted ? "ws-dot-done" : "ws-dot-active"}`} />
+                  <div>
+                    <div className="ws-overview-row-title">{w.metadata?.name || `Job ${w.index}`}</div>
+                    <div className="ws-overview-row-meta">
+                      <span>{w.mediaTitle}</span>
+                      {w.inputCount > 0 && <span>{w.inputCount} in</span>}
+                      {w.outputCount > 0 && <span>{w.outputCount} out</span>}
+                      {isCompleted && <span>done</span>}
                     </div>
-                  ))}
+                  </div>
                 </div>
-              )}
-              {completed.length > 0 && (
-                <div className="ws-overview-group">
-                  <div className="ws-overview-group-label">Completed</div>
-                  {completed.map((w) => (
-                    <div
-                      key={`${w.requestId}-${w.index}`}
-                      className="ws-overview-row ws-overview-row-completed"
-                      onClick={() => {
-                        navigate(w.mediaType === "tv" ? `/managed/${w.requestId}` : `/requests/${w.requestId}`);
-                        setOpen(false);
-                      }}
-                    >
-                      <div className="ws-overview-row-title">{w.metadata?.name || `Job ${w.index}`}</div>
-                      <div className="ws-overview-row-meta">
-                        <span>{w.mediaTitle}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
+              );
+            })
           )}
         </div>
       )}

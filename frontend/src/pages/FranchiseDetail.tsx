@@ -538,12 +538,12 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
     }
   };
 
-  const handleMove = async (releaseId: number, workspaceIndex?: number) => {
+  const handleMove = async (releaseId: number, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => {
     setMoving(releaseId);
     try {
       const isPreprocess = preprocessingMap[releaseId];
       const result = isPreprocess
-        ? await moveToWorkspace(season.request_id, releaseId, workspaceIndex)
+        ? await moveToWorkspace(season.request_id, releaseId, workspaceIndex, wsConfig)
         : await moveToProcessed(season.request_id, releaseId);
       setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
       loadTorrentStatuses();
@@ -612,6 +612,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             torrentStatus={ts}
             moveResult={mr}
             requestId={season.request_id}
+            requestTitle={franchise.title}
             isMoving={isMoving}
             isRemoveConfirm={isRemoveConfirm}
             preprocessing={!!preprocessingMap[ar.id]}

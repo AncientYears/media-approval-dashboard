@@ -134,7 +134,7 @@ export async function moveToLibrary(requestId: number) {
 }
 
 export async function fetchActiveWorkspaces() {
-  const response = await api.get(`/workspaces/active`);
+  const response = await api.get(`/requests/workspaces/active`);
   return response.data;
 }
 

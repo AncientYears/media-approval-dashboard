@@ -369,12 +369,12 @@ export default function RequestDetail() {
     }
   };
 
-  const handleMove = async (releaseId: number, workspaceIndex?: number) => {
+  const handleMove = async (releaseId: number, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => {
     setMoving(releaseId);
     try {
       const isPreprocess = preprocessingMap[releaseId];
       const result = isPreprocess
-        ? await moveToWorkspace(Number(id), releaseId, workspaceIndex)
+        ? await moveToWorkspace(Number(id), releaseId, workspaceIndex, wsConfig)
         : await moveToProcessed(Number(id), releaseId);
       setMoveResults((prev) => ({ ...prev, [releaseId]: result }));
       loadData();
@@ -483,6 +483,7 @@ export default function RequestDetail() {
             torrentStatus={ts}
             moveResult={mr}
             requestId={Number(id)}
+            requestTitle={request.title}
             isMoving={isMoving}
             isRemoveConfirm={isRemoveConfirm}
             preprocessing={!!preprocessingMap[ar.id]}
