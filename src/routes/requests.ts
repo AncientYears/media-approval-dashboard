@@ -1104,7 +1104,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             });
           }
 
-          // Step 2: If no local match, use Sonarr/Radarr lookup but validate substring match
+          // Step 2: If no local match, use Sonarr/Radarr lookup — try all results until one validates
           let radarrId: number | null = null;
           let sonarrId: number | null = null;
           let matchedTitle = "";
@@ -1112,25 +1112,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (type === "movie" && !matchedRadarr && radarrProfileId) {
             try {
               const lookup = await radarr.lookupMovie(titleClean);
-              if (lookup.length > 0) {
-                const found = lookup[0];
+              for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
-                // Validate: lookup title must contain the torrent title or vice versa
                 if (foundNorm.includes(tNorm) || tNorm.includes(foundNorm)) {
-                  const added = await radarr.addMovie({
-                    ...found,
-                    qualityProfileId: radarrProfileId,
-                    rootFolderPath: radarrRootPath,
-                    monitored: true,
-                    addOptions: { searchForMovie: false },
-                  });
-                  radarrId = added.id;
-                  matchedTitle = found.title;
-                  existingRadarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
-                  console.log(`[ScanDownloads] Created Radarr: ${found.title} (radarr_id=${added.id})`);
-                } else {
-                  console.log(`[ScanDownloads] Lookup rejected: "${found.title}" vs "${titleClean}" (no substring match)`);
+                  try {
+                    const added = await radarr.addMovie({
+                      ...found,
+                      qualityProfileId: radarrProfileId,
+                      rootFolderPath: radarrRootPath,
+                      monitored: true,
+                      addOptions: { searchForMovie: false },
+                    });
+                    radarrId = added.id;
+                    matchedTitle = found.title;
+                    existingRadarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
+                    console.log(`[ScanDownloads] Created Radarr: ${found.title} (radarr_id=${added.id})`);
+                  } catch (addErr: any) {
+                    console.error(`[ScanDownloads] Radarr addMovie failed for "${found.title}": ${addErr.message}`);
+                  }
+                  break;
                 }
+              }
+              if (!radarrId) {
+                console.log(`[ScanDownloads] No valid Radarr match for "${titleClean}" (${lookup.length} results checked)`);
               }
             } catch (err: any) {
               console.error(`[ScanDownloads] Radarr lookup failed for "${titleClean}": ${err.message}`);
@@ -1138,26 +1142,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           } else if (type === "series" && !matchedSonarr && sonarrProfileId) {
             try {
               const lookup = await sonarr.lookupSeries(titleClean);
-              if (lookup.length > 0) {
-                const found = lookup[0];
+              for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
                 if (foundNorm.includes(tNorm) || tNorm.includes(foundNorm)) {
-                  const added = await sonarr.addSeries({
-                    ...found,
-                    qualityProfileId: sonarrProfileId,
-                    path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
-                    monitored: true,
-                    seasonFolder: true,
-                    addOptions: { searchForMissingEpisodes: false },
-                    seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
-                  });
-                  sonarrId = added.id;
-                  matchedTitle = found.title;
-                  existingSonarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
-                  console.log(`[ScanDownloads] Created Sonarr: ${found.title} (sonarr_id=${added.id})`);
-                } else {
-                  console.log(`[ScanDownloads] Lookup rejected: "${found.title}" vs "${titleClean}" (no substring match)`);
+                  try {
+                    const added = await sonarr.addSeries({
+                      ...found,
+                      qualityProfileId: sonarrProfileId,
+                      path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
+                      monitored: true,
+                      seasonFolder: true,
+                      addOptions: { searchForMissingEpisodes: false },
+                      seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
+                    });
+                    sonarrId = added.id;
+                    matchedTitle = found.title;
+                    existingSonarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
+                    console.log(`[ScanDownloads] Created Sonarr: ${found.title} (sonarr_id=${added.id})`);
+                  } catch (addErr: any) {
+                    console.error(`[ScanDownloads] Sonarr addSeries failed for "${found.title}": ${addErr.message}`);
+                  }
+                  break;
                 }
+              }
+              if (!sonarrId) {
+                console.log(`[ScanDownloads] No valid Sonarr match for "${titleClean}" (${lookup.length} results checked)`);
               }
             } catch (err: any) {
               console.error(`[ScanDownloads] Sonarr lookup failed for "${titleClean}": ${err.message}`);

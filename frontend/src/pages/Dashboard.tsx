@@ -24,7 +24,7 @@ const STATUS_ORDER: Record<string, number> = {
   DOWNLOADING: 3,
 };
 
-function Modal({ title, lines, onClose }: { title?: string; lines: string[]; onClose: () => void }) {
+function Modal({ title, lines, onClose, onOk }: { title?: string; lines: string[]; onClose: () => void; onOk?: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
@@ -36,7 +36,14 @@ function Modal({ title, lines, onClose }: { title?: string; lines: string[]; onC
             </div>
           ))}
         </div>
-        <button className="btn btn-primary" onClick={onClose}>OK</button>
+        {onOk ? (
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="btn btn-danger" onClick={onOk}>Delete Duplicates</button>
+          </div>
+        ) : (
+          <button className="btn btn-primary" onClick={onClose}>OK</button>
+        )}
       </div>
     </div>
   );
@@ -69,7 +76,7 @@ export default function Dashboard() {
   const [sortBy, setSortBy] = useState("status_asc");
   const [modal, setModal] = useState<{ title?: string; lines: string[] } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
-  const [confirmCleanup, setConfirmCleanup] = useState<{ dryResult: any } | null>(null);
+  const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -118,7 +125,21 @@ export default function Dashboard() {
 
   return (
     <div className="container">
-      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => setModal(null)} />}
+      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => { setModal(null); setPendingCleanup(null); }} onOk={pendingCleanup ? async () => {
+        setPendingCleanup(null);
+        setModal({ title: "Cleanup Duplicates", lines: ["Deleting..."] });
+        try {
+          const result = await cleanupDuplicates(false);
+          const lines = [`Cleaned up ${result.duplicates} duplicate(s):`];
+          for (const r of result.results) {
+            lines.push(`  "${r.title}": deleted ${r.deleted}, moved ${r.movedRcs} RCs`);
+          }
+          setModal({ title: "Cleanup Complete", lines });
+          loadData();
+        } catch (err: any) {
+          setModal({ title: "Cleanup Error", lines: [err.message] });
+        }
+      } : undefined} />}
       {confirmDelete && (
         <ConfirmModal
           message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
@@ -128,27 +149,6 @@ export default function Dashboard() {
             loadData();
           }}
           onCancel={() => setConfirmDelete(null)}
-        />
-      )}
-      {confirmCleanup && (
-        <ConfirmModal
-          message={`Delete ${confirmCleanup.dryResult.duplicates} duplicate(s) from DB and Sonarr/Radarr? This cannot be undone.`}
-          onConfirm={async () => {
-            try {
-              const result = await cleanupDuplicates(false);
-              setConfirmCleanup(null);
-              const lines = [`Cleaned up ${result.duplicates} duplicate(s):`];
-              for (const r of result.results) {
-                lines.push(`  "${r.title}": deleted ${r.deleted}, moved ${r.movedRcs} RCs`);
-              }
-              setModal({ title: "Cleanup Complete", lines });
-              loadData();
-            } catch (err: any) {
-              setConfirmCleanup(null);
-              setModal({ title: "Cleanup Error", lines: [err.message] });
-            }
-          }}
-          onCancel={() => setConfirmCleanup(null)}
         />
       )}
 
@@ -241,17 +241,27 @@ export default function Dashboard() {
             loadData();
           }}>Scan Downloads</button>
           <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
+            if (cleanupRunning.current) return;
+            cleanupRunning.current = true;
             setModal({ title: "Cleanup Duplicates", lines: ["Checking for duplicates..."] });
             try {
               const dryResult = await cleanupDuplicates(true);
               if (dryResult.duplicates === 0) {
                 setModal({ title: "Cleanup Duplicates", lines: ["No duplicates found!"] });
               } else {
-                setModal(null);
-                setConfirmCleanup({ dryResult });
+                const lines: string[] = [`Found ${dryResult.duplicates} duplicate title(s):`];
+                for (const r of dryResult.results) {
+                  lines.push(`  "${r.title}": delete ${r.deleted}, move ${r.movedRcs} RCs`);
+                  if (r.sonarrDeleted?.length) lines.push(`    Sonarr: ${r.sonarrDeleted.join(", ")}`);
+                  if (r.radarrDeleted?.length) lines.push(`    Radarr: ${r.radarrDeleted.join(", ")}`);
+                }
+                setPendingCleanup({ dryResult });
+                setModal({ title: "Cleanup Duplicates", lines });
               }
             } catch (err: any) {
               setModal({ title: "Cleanup Duplicates", lines: [`Error: ${err.message}`] });
+            } finally {
+              cleanupRunning.current = false;
             }
           }}>Cleanup Duplicates</button>
         </div>
