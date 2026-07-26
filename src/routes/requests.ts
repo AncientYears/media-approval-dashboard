@@ -20,6 +20,23 @@ function normalizeTitleForMatch(s: string): string {
     .trim();
 }
 
+function parseQualityFromName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes("2160p") || lower.includes("4k")) return "Bluray-2160p";
+  if (lower.includes("1080p")) return "Bluray-1080p";
+  if (lower.includes("720p")) return "Bluray-720p";
+  if (lower.includes("480p")) return "DVD";
+  if (lower.includes("remux")) return "Remux-1080p";
+  if (lower.includes("web-dl") || lower.includes("webdl")) return "WEBDL-1080p";
+  if (lower.includes("webrip") || lower.includes("web-rip")) return "WEBRip-1080p";
+  if (lower.includes("bluray") || lower.includes("bdrip")) return "Bluray-1080p";
+  if (lower.includes("hdtv")) return "HDTV-1080p";
+  if (lower.includes("dvdrip")) return "DVD";
+  if (lower.includes("cam") || lower.includes("telesync")) return "CAM";
+  if (lower.includes("scr") || lower.includes("screener")) return "SCR";
+  return "unknown";
+}
+
 function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Primary: prefix match (lookup title is start of torrent title or vice versa)
   if (torrentNorm.startsWith(lookupNorm) || lookupNorm.startsWith(torrentNorm)) return true;
@@ -1077,15 +1094,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
 
       if (newTorrents.length === 0) {
+        const qbitHashes = new Set(allTorrents.map((t: any) => t.hash));
         const orphaned = db.prepare(
-          "SELECT rc.id, rc.request_id FROM release_candidates rc " +
+          "SELECT rc.id, rc.request_id, rc.torrent_hash FROM release_candidates rc " +
           "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL " +
           "AND NOT EXISTS (SELECT 1 FROM approval_history ah WHERE ah.release_id = rc.id AND ah.request_id = rc.request_id)"
         ).all() as any[];
         let backfilled = 0;
         for (const orph of orphaned) {
+          if (!qbitHashes.has(orph.torrent_hash)) continue;
           db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(orph.id, orph.request_id);
           backfilled++;
+        }
+        // Remove approval_history for RCs whose torrent is no longer in qBittorrent
+        const allApprovedRcs = db.prepare(
+          "SELECT DISTINCT ah.release_id, rc.torrent_hash FROM approval_history ah " +
+          "JOIN release_candidates rc ON rc.id = ah.release_id " +
+          "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
+        ).all() as any[];
+        const toRemove = allApprovedRcs.filter((r: any) => !qbitHashes.has(r.torrent_hash));
+        if (toRemove.length > 0) {
+          const removeIds = toRemove.map((r: any) => r.release_id);
+          db.prepare(`DELETE FROM approval_history WHERE release_id IN (${removeIds.map(() => "?").join(",")})`).run(...removeIds);
+          console.log(`[ScanDownloads] Removed ${toRemove.length} stale approval(s) for RCs not in qBittorrent`);
         }
         if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
         return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [] });
@@ -1261,8 +1292,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               ).run(title, finalRadarrId);
               const requestId = result.lastInsertRowid as number;
               const rcResult = db.prepare(
-                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
-              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name));
               db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
               results.push({ title, status: "imported", type: "movie", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Movie: ${title} (radarr_id=${finalRadarrId})`);
@@ -1273,8 +1304,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
               if (!existingRc) {
                 const rcResult = db.prepare(
-                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown')"
-                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path);
+                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name));
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for movie: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               } else {
@@ -1296,8 +1327,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               ).run(title, finalSonarrId, season);
               const requestId = result.lastInsertRowid as number;
               const rcResult = db.prepare(
-                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
-              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
+              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name), epStr);
               db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
               results.push({ title, status: "imported", type: "series", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Series: ${title} (sonarr_id=${finalSonarrId}, S${String(season).padStart(2, "0")})`);
@@ -1308,8 +1339,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
               if (!existingRc) {
                 const rcResult = db.prepare(
-                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, 'unknown', ?)"
-                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, epStr);
+                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name), epStr);
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for series: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               } else {
