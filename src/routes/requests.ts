@@ -34,7 +34,8 @@ function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   const longerSet = new Set(longer.split(/\s+/));
   if (shorterWords.length >= 2) {
     const matched = shorterWords.filter((w: string) => longerSet.has(w));
-    if (matched.length >= shorterWords.length - 1) return true;
+    if (matched.length === shorterWords.length) return true;
+    if (shorterWords.length >= 4 && matched.length >= shorterWords.length - 1) return true;
   }
 
   return false;
@@ -1062,7 +1063,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const newTorrents = allTorrents.filter((t: any) => !existingHashes.has(t.hash));
 
       if (newTorrents.length === 0) {
-        return res.json({ success: true, imported: 0, skipped: 0, total: allTorrents.length, results: [] });
+        return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [] });
       }
 
       const results: Array<{ title: string; status: string; type?: string; request_id?: number; error?: string }> = [];

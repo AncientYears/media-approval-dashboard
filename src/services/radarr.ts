@@ -105,8 +105,12 @@ export class RadarrService {
         monitored: false,
       });
       console.log(`[Radarr] Unmonitored movie ${movieId}`);
-    } catch (error) {
-      console.error(`[Radarr] Failed to unmonitor movie ${movieId}:`, error);
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        console.log(`[Radarr] Movie ${movieId} already deleted from Radarr, skipping unmonitor`);
+        return;
+      }
+      console.error(`[Radarr] Failed to unmonitor movie ${movieId}:`, error.message || error);
       throw error;
     }
   }

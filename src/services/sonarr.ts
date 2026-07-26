@@ -98,8 +98,12 @@ export class SonarrService {
     try {
       const response = await this.client.get(`/api/v3/series/${seriesId}`);
       return response.data;
-    } catch (error) {
-      console.error("Sonarr: Failed to fetch series", error);
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        console.log(`[Sonarr] Series ${seriesId} not found (404)`);
+        throw error;
+      }
+      console.error(`[Sonarr] Failed to fetch series ${seriesId}:`, error.message || error);
       throw error;
     }
   }
@@ -127,8 +131,12 @@ export class SonarrService {
         seasons,
       });
       console.log(`[Sonarr] Unmonitored season ${seasonNumber} of series ${seriesId}`);
-    } catch (error) {
-      console.error(`[Sonarr] Failed to unmonitor season ${seasonNumber} of series ${seriesId}:`, error);
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        console.log(`[Sonarr] Series ${seriesId} already deleted from Sonarr, skipping unmonitor`);
+        return;
+      }
+      console.error(`[Sonarr] Failed to unmonitor season ${seasonNumber} of series ${seriesId}:`, error.message || error);
       throw error;
     }
   }
@@ -139,8 +147,12 @@ export class SonarrService {
         params: { deleteFiles, addImportListExclusion: true },
       });
       console.log(`[Sonarr] Deleted series ${seriesId} (deleteFiles=${deleteFiles})`);
-    } catch (error) {
-      console.error(`[Sonarr] Failed to delete series ${seriesId}:`, error);
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        console.log(`[Sonarr] Series ${seriesId} already deleted from Sonarr`);
+        return;
+      }
+      console.error(`[Sonarr] Failed to delete series ${seriesId}:`, error.message || error);
       throw error;
     }
   }
