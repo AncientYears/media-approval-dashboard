@@ -137,9 +137,33 @@ export default function TorrentPanel({
                 </span>
                 <button className="btn btn-danger btn-tiny" onClick={() => onDismiss(ar.id)}>Delete</button>
               </div>
-              <div className="torrent-path-row">
-                <span className="path-label">Move:</span>
-                {!ts.in_library && !mr?.source && !mr?.error && (
+              {ts.in_library && (
+                <div className="torrent-path-row">
+                  <span className="path-label">Library:</span>
+                  <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(ts.library_path)}>
+                    {ts.library_path}
+                  </span>
+                  <button className={`btn btn-tiny ${isRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={() => onRemoveFromLibrary(ar.id)}>
+                    {isRemoveConfirm ? "Remove?" : "In Library"}
+                  </button>
+                </div>
+              )}
+              {mr?.source ? (
+                <div className="torrent-path-row">
+                  <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
+                  <span className="move-result">
+                    <span>Hardlinked →</span>
+                    <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
+                  </span>
+                </div>
+              ) : mr?.error ? (
+                <div className="torrent-path-row">
+                  <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
+                  <span className="move-error">{mr.error}</span>
+                </div>
+              ) : (
+                <div className="torrent-path-row">
+                  <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
                   <label className="preprocessing-toggle">
                     <input
                       type="checkbox"
@@ -148,24 +172,6 @@ export default function TorrentPanel({
                     />
                     <span className="preprocessing-label">Needs preprocessing</span>
                   </label>
-                )}
-                {ts.in_library ? (
-                  <>
-                    <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(ts.library_path)}>
-                      {ts.library_path}
-                    </span>
-                    <button className={`btn btn-tiny ${isRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={() => onRemoveFromLibrary(ar.id)}>
-                      {isRemoveConfirm ? "Remove?" : "In Library"}
-                    </button>
-                  </>
-                ) : mr?.source ? (
-                  <span className="move-result">
-                    <span>Hardlinked →</span>
-                    <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
-                  </span>
-                ) : mr?.error ? (
-                  <span className="move-error">{mr.error}</span>
-                ) : (
                   <div style={{ display: "flex", gap: 4 }}>
                     <button
                       className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
@@ -178,8 +184,8 @@ export default function TorrentPanel({
                       {isMoving ? "Moving..." : "Move to Library"}
                     </button>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
         </>
