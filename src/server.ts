@@ -108,8 +108,10 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       for (const rc of withHashes) {
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
         if (!t) continue;
-        const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-        const req = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+        const tnRaw = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
+        const tn = tnRaw.replace(/\bS\d{1,2}E\d{1,3}\b/g, "").replace(/\bS\d{1,2}\b/g, "").replace(/\s+/g, " ").trim();
+        const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
+        const req = reqRaw.replace(/\bS\d{1,2}E\d{1,3}\b/g, "").replace(/\bS\d{1,2}\b/g, "").replace(/\s+/g, " ").trim();
         const isPrefix = tn.startsWith(req) || req.startsWith(tn);
         const isIncluded = (req.length >= 10 && tn.includes(req)) || (tn.length >= 10 && req.includes(tn));
         let isWordMatch = false;
