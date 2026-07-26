@@ -403,7 +403,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [approvingId, setApprovingId] = useState<number | null>(null);
-  const [sortBy, setSortBy] = useState<"app_score" | "size_mb" | "seeders" | "quality" | "indexer">("app_score");
+  const [sortBy, setSortBy] = useState<"app_score" | "size_mb" | "seeders" | "quality" | "indexer" | "title">("app_score");
   const [sortAsc, setSortAsc] = useState(false);
   const [filterEpisode, setFilterEpisode] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
@@ -582,6 +582,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       else if (sortBy === "seeders") cmp = (b.seeders ?? 0) - (a.seeders ?? 0);
       else if (sortBy === "quality") cmp = (a.quality || a.radarr_quality || "").localeCompare(b.quality || b.radarr_quality || "");
       else if (sortBy === "indexer") cmp = (a.indexer || "").localeCompare(b.indexer || "");
+      else if (sortBy === "title") cmp = (a.title || "").localeCompare(b.title || "");
       return sortAsc ? -cmp : cmp;
     });
 
@@ -780,7 +781,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
               <tr>
                 {([
                   { key: null, label: "Ep", cls: "" },
-                  { key: null, label: "Title", cls: "" },
+                  { key: "title" as const, label: "Title", cls: "" },
                   { key: "quality" as const, label: "Q", cls: "" },
                   { key: "size_mb" as const, label: "Size", cls: "" },
                   { key: "indexer" as const, label: "Indexer", cls: "" },
