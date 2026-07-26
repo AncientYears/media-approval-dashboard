@@ -1185,12 +1185,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             staleFixed++;
           }
         }
+        // Fix RCs with wrong title or Unknown quality
+        const rcToFix = db.prepare(
+          "SELECT rc.id, rc.title, rc.torrent_hash, rc.radarr_quality FROM release_candidates rc " +
+          "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
+        ).all() as any[];
+        let rcFixed = 0;
+        for (const rc of rcToFix) {
+          if (!qbitHashes.has(rc.torrent_hash)) continue;
+          const torrent = allTorrents.find((t: any) => t.hash === rc.torrent_hash);
+          if (!torrent) continue;
+          const correctQuality = parseQualityFromName(torrent.name);
+          if (rc.title !== torrent.name || rc.radarr_quality?.toLowerCase() === 'unknown') {
+            db.prepare("UPDATE release_candidates SET title = ?, radarr_quality = ? WHERE id = ?").run(torrent.name, correctQuality, rc.id);
+            console.log(`[ScanDownloads] Fixed RC ${rc.id}: title="${torrent.name.slice(0, 60)}", quality="${correctQuality}"`);
+            rcFixed++;
+          }
+        }
+        if (rcFixed > 0) console.log(`[ScanDownloads] Fixed ${rcFixed} RC(s) with wrong title/quality`);
+
         if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
         if (seasonFixed > 0) console.log(`[ScanDownloads] Removed ${seasonFixed} season-mismatched RC(s) — re-importing...`);
 
         // If season mismatches were cleaned, don't return — fall through to import the freed torrents
         if (seasonFixed === 0) {
-          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleFixed, seasonFixed });
+          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleFixed, seasonFixed, rcFixed });
         }
         // Season mismatches cleaned — recompute which torrents need importing
         const freshHashes = new Set(
@@ -2117,10 +2136,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.get("/:id/content-info", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const release = db.prepare(
-        "SELECT rc.* FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
-      ).get(id) as any;
+      const releaseId = req.query.releaseId as string | undefined;
+
+      let release;
+      if (releaseId) {
+        release = db.prepare("SELECT * FROM release_candidates WHERE id = ?").get(releaseId) as any;
+      } else {
+        release = db.prepare(
+          "SELECT rc.* FROM release_candidates rc " +
+          "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? " +
+          "ORDER BY ah.approved_at DESC LIMIT 1"
+        ).get(id) as any;
+      }
 
       if (!release || !release.torrent_hash) {
         return res.status(400).json({ error: "No torrent found" });

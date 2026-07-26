@@ -63,10 +63,11 @@ export default function TorrentPanel({
   const [contentInfo, setContentInfo] = useState<any>(null);
 
   useEffect(() => {
-    if (ts?.progress === 100 && ts?.found && !contentInfo) {
-      fetchContentInfo(requestId).then(setContentInfo).catch(() => {});
+    if (ts?.progress === 100 && ts?.found) {
+      setContentInfo(null);
+      fetchContentInfo(requestId, ar.id).then(setContentInfo).catch(() => {});
     }
-  }, [ts?.progress, ts?.found, requestId]);
+  }, [ts?.progress, ts?.found, requestId, ar.id]);
 
   if (!ar.torrent_hash) return null;
   if (ts && !ts.found) return null;
