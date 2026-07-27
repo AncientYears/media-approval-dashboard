@@ -91,6 +91,7 @@ export interface TorrentPanelProps {
   onResume: (releaseId: number) => void;
   onCopyPath: (text: string) => void;
   onRefreshMoveStatus?: () => void;
+  onRefreshProcessed?: () => void;
 }
 
 export default function TorrentPanel({
@@ -110,6 +111,7 @@ export default function TorrentPanel({
   onResume,
   onCopyPath,
   onRefreshMoveStatus,
+  onRefreshProcessed,
 }: TorrentPanelProps) {
   const [contentInfo, setContentInfo] = useState<any>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
@@ -180,8 +182,8 @@ export default function TorrentPanel({
   const handleComplete = async (wsIndex: number) => {
     await completeWorkspace(requestId, wsIndex);
     refreshAll();
-    const refreshed = await fetchWorkspaces(requestId);
-    setWsManagerData(refreshed.workspaces || []);
+    if (onRefreshProcessed) onRefreshProcessed();
+    setWsManagerOpen(false);
   };
 
   useEffect(() => {

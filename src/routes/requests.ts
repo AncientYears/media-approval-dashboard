@@ -2507,8 +2507,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         const processedPath = path.join(processedDir, basename);
         if (fs.existsSync(processedPath)) {
-          results[rel.id] = { source: contentPath, destination: processedPath };
-          continue;
+          // Verify it's actually the same file (same inode) — not a workspace output with the same name
+          try {
+            const contentStat = fs.statSync(contentPath);
+            const processedStat = fs.statSync(processedPath);
+            if (contentStat.ino === processedStat.ino && contentStat.dev === processedStat.dev) {
+              results[rel.id] = { source: contentPath, destination: processedPath };
+              continue;
+            }
+          } catch {}
+          // Different file with same name (workspace output) — fall through to workspace check
         }
 
         const wsDirs = listWorkspaces(request.id, request.title);
@@ -2579,12 +2587,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (request.type === "series" && request.sonarr_id) {
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
-          libraryPath = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          const seasonNum = request.season || 1;
+          const seasonFolder = path.join(
+            series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
+            `S${String(seasonNum).padStart(2, "0")}`
+          );
+          if (fs.existsSync(seasonFolder)) {
+            const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (files.length > 0) {
+              libraryPath = path.join(seasonFolder, files[0]);
+            }
+          }
         } catch {}
       } else if (request.radarr_id) {
         try {
           const movie = await radarr.getMovie(request.radarr_id);
-          libraryPath = movie.path || movie.folderPath;
+          const movieFolder = movie.path || movie.folderPath;
+          if (movieFolder && fs.existsSync(movieFolder)) {
+            const files = fs.readdirSync(movieFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (files.length > 0) {
+              libraryPath = path.join(movieFolder, files[0]);
+            }
+          }
         } catch {}
       }
 
@@ -2597,9 +2621,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
-        const destPath = libraryPath ? path.join(libraryPath, entry.name) : "";
-        const inLibrary = destPath ? fs.existsSync(destPath) : false;
-        files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: inLibrary ? destPath : "" });
+        // If the library has a video file, the torrent is imported → processed hardlink is also in library
+        files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary: !!libraryPath, libraryPath });
       }
 
       res.json({ files, processedDir });
@@ -2726,6 +2749,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const type = request.type === "series" ? "series" : "movie";
       const result = completeWorkspace(ws.path, type);
       if (!result.success) return res.status(400).json({ error: result.error });
+
+      // Delete the workspace directory after successful completion
+      try { deleteWorkspace(ws.path); } catch {}
 
       const processedDir = getProcessedDir(type);
       if (type === "movie" && request.radarr_id) {

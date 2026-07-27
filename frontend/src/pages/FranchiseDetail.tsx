@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces } from "../api";
 import TorrentPanel from "../components/TorrentPanel";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
@@ -382,6 +382,8 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [processedDir, setProcessedDir] = useState<string>("");
   const [movingProcessed, setMovingProcessed] = useState(false);
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
+  const [wsPickerFile, setWsPickerFile] = useState<string | null>(null);
+  const [wsPickerList, setWsPickerList] = useState<any[]>([]);
 
   const refreshMoveStatus = useCallback(async () => {
     try {
@@ -600,8 +602,51 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
     if (ts.release_id) tsByRelease.set(ts.release_id, ts);
   }
 
+  const openWsPicker = async (fileName: string) => {
+    setWsPickerFile(fileName);
+    try {
+      const data = await fetchWorkspaces(season.request_id);
+      setWsPickerList(data.workspaces || []);
+    } catch { setWsPickerList([]); }
+  };
+
+  const handleWsPickerSelect = async (workspaceIndex?: number) => {
+    if (!wsPickerFile) return;
+    setMovingProcessed(true);
+    try {
+      await processedToWorkspace(season.request_id, wsPickerFile, { workspaceIndex });
+      setProcessedFiles((prev) => prev.filter((p) => p.name !== wsPickerFile));
+    } catch {}
+    setMovingProcessed(false);
+    setWsPickerFile(null);
+  };
+
   return (
     <div className="container">
+      {wsPickerFile && (
+        <div className="modal-overlay" onClick={() => setWsPickerFile(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title">Move to Workspace</span>
+              <button className="modal-close" onClick={() => setWsPickerFile(null)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
+                Moving: <strong>{wsPickerFile}</strong>
+              </p>
+              {wsPickerList.length > 0 && wsPickerList.map((ws: any) => (
+                <button key={ws.index} className="btn btn-secondary" style={{ width: "100%", marginBottom: 6, textAlign: "left", fontSize: 12 }} onClick={() => handleWsPickerSelect(ws.index)}>
+                  {ws.metadata?.name || `Job ${ws.index}`} — {ws.inputCount} input(s), {ws.outputCount} output(s)
+                </button>
+              ))}
+              <button className="btn btn-primary" style={{ width: "100%", marginTop: 4 }} onClick={() => handleWsPickerSelect()}>
+                + New Workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {processedFiles.length > 0 && (
         <div className="torrent-panel processed-panel">
           <div className="section-divider">Processed</div>
@@ -625,8 +670,8 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                       {movingProcessed ? "..." : "To Library"}
                     </button>
                   )}
-                  <button className="btn btn-workspace btn-tiny" onClick={async () => { setMovingProcessed(true); try { await processedToWorkspace(season.request_id, f.name); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setMovingProcessed(false); }} disabled={movingProcessed}>
-                    {movingProcessed ? "..." : "To Workspace"}
+                  <button className="btn btn-workspace btn-tiny" onClick={() => openWsPicker(f.name)}>
+                    To Workspace
                   </button>
                   <button className="btn btn-danger btn-tiny" onClick={async () => { setDeletingProcessed(f.name); try { await deleteProcessedFile(season.request_id, f.name); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setDeletingProcessed(null); }} disabled={deletingProcessed === f.name}>
                     {deletingProcessed === f.name ? "..." : "Delete"}
@@ -667,6 +712,13 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             onResume={(releaseId) => handleResume(releaseId)}
             onCopyPath={handleCopyPath}
             onRefreshMoveStatus={refreshMoveStatus}
+            onRefreshProcessed={async () => {
+              try {
+                const pData = await fetchRequestProcessed(season.request_id);
+                setProcessedFiles(pData.files || []);
+                setProcessedDir(pData.processedDir || "");
+              } catch {}
+            }}
           />
         );
       })}
