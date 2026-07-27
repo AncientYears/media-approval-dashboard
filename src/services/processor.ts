@@ -5,10 +5,10 @@ import path from "path";
 
 const execFileAsync = promisify(execFile);
 
-const MEDIA_DOWNLOADS_MOVIES = process.env.DOWNLOADS_MOVIES || "/media/Torrents/Download/Filmy";
-const MEDIA_DOWNLOADS_TV = process.env.DOWNLOADS_TV || "/media/Torrents/Download/Serialy";
-const PROCESSED_MOVIES = process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy";
-const PROCESSED_TV = process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy";
+const MEDIA_DOWNLOADS_MOVIES = process.env.DOWNLOADS_MOVIES || "/media/Torrents/download/filmy";
+const MEDIA_DOWNLOADS_TV = process.env.DOWNLOADS_TV || "/media/Torrents/download/serialy";
+const PROCESSED_MOVIES = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+const PROCESSED_TV = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
 const PROCESSING_WORKSPACE = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
 
 export interface ProcessResult {

@@ -12,7 +12,8 @@ import fs from "fs";
 import path from "path";
 
 function toQBittorrentPath(hostPath: string): string {
-  if (hostPath.startsWith("/media/Torrents")) return hostPath.replace("/media/Torrents", "/Torrents");
+  // Strip /media prefix — volume maps /media/Torrents → /Torrents
+  if (hostPath.startsWith("/media/")) return hostPath.slice("/media".length);
   return hostPath;
 }
 
@@ -446,7 +447,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const quality = parseQualityFromName(match.name);
               db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, ?)"
-              ).run(requestId, `imported-${movie.id}`, match.name, match.hash, match.save_path, quality);
+              ).run(requestId, `imported-${movie.id}`, match.name, match.hash, fromQBittorrentPath(match.save_path), quality);
               db.prepare(
                 "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
               ).run(requestId, requestId);
@@ -513,8 +514,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }).filter((f) => !f.name.startsWith("."));
       };
 
-      const moviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy";
-      const tvDir = process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy";
+      const moviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+      const tvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
       const movies = listDir(moviesDir);
       const tv = listDir(tvDir);
       res.json({ movies, tv, moviesDir, tvDir });
@@ -921,7 +922,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           try {
             const series = await sonarr.getSeries(season.sonarr_id);
             const seasonFolder = path.join(
-              series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
+              series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title),
               `S${String(season.season).padStart(2, "0")}`
             );
             if (fs.existsSync(seasonFolder)) {
@@ -950,8 +951,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           seeding_time: torrent.seeding_time,
           ratio: Math.round(torrent.ratio * 100) / 100,
           eta: torrent.eta,
-          save_path: torrent.save_path,
-          content_path: torrent.content_path,
+          save_path: fromQBittorrentPath(torrent.save_path),
+          content_path: fromQBittorrentPath(torrent.content_path),
           in_library: inLibrary,
           library_path: libraryPath,
           num_seeds: torrent.num_seeds,
@@ -1000,7 +1001,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             );
             if (match) {
               db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
-                .run(match.hash, match.save_path, approvedRelease.id);
+                .run(match.hash, fromQBittorrentPath(match.save_path), approvedRelease.id);
               console.log(`[Reactivate] Re-detected torrent for ${r.title}: ${match.hash}`);
             }
           }
@@ -1114,7 +1115,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const rcResult = db.prepare(
             "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, torrent_hash, save_path, parsed_episodes) " +
             "VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?)"
-          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, match.name, sizeMb, quality, match.hash, match.save_path, episodeStr);
+          ).run(orphan.id, `manual-${match.hash.slice(0, 12)}`, match.name, sizeMb, quality, match.hash, fromQBittorrentPath(match.save_path), episodeStr);
 
           db.prepare(
             "INSERT INTO approval_history (request_id, release_id) VALUES (?, ?)"
@@ -1294,7 +1295,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       for (const torrent of newTorrents) {
         const parsed = parseTorrentName(torrent.name);
-        const savePath = (torrent.save_path || "").toLowerCase();
+        const savePath = (fromQBittorrentPath(torrent.save_path) || "").toLowerCase();
 
         let type: "movie" | "series" = "movie";
         if (parsed.season !== null || /\bS\d{1,2}\b/.test(torrent.name) || /season/i.test(torrent.name)) {
@@ -1430,7 +1431,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const requestId = result.lastInsertRowid as number;
               const rcResult = db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
-              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name));
+              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, fromQBittorrentPath(torrent.save_path), parseQualityFromName(torrent.name));
               db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
               results.push({ title, status: "imported", type: "movie", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Movie: ${title} (radarr_id=${finalRadarrId})`);
@@ -1442,7 +1443,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (!existingRc) {
                 const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
-                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name));
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, fromQBittorrentPath(torrent.save_path), parseQualityFromName(torrent.name));
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for movie: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               } else {
@@ -1470,7 +1471,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const requestId = result.lastInsertRowid as number;
               const rcResult = db.prepare(
                 "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
-              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name), epStr);
+              ).run(requestId, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, fromQBittorrentPath(torrent.save_path), parseQualityFromName(torrent.name), epStr);
               db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
               results.push({ title, status: "imported", type: "series", request_id: Number(requestId) });
               console.log(`[ScanDownloads] Series: ${title} (sonarr_id=${finalSonarrId}, S${String(season).padStart(2, "0")})`);
@@ -1482,7 +1483,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (!existingRc) {
                 const rcResult = db.prepare(
                   "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
-                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, torrent.save_path, parseQualityFromName(torrent.name), epStr);
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, fromQBittorrentPath(torrent.save_path), parseQualityFromName(torrent.name), epStr);
                 db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
                 console.log(`[ScanDownloads] Added RC for series: ${title} (hash=${torrent.hash.slice(0, 12)})`);
               } else {
@@ -2144,9 +2145,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) {
-        contentPath = "/media" + contentPath;
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
 
       let destPath = "";
       let inLibrary = false;
@@ -2189,7 +2188,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
-          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title);
           const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
           if (fs.existsSync(seasonFolder)) {
             const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
@@ -2228,7 +2227,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         seeding_time: torrent.seeding_time,
         ratio: Math.round(torrent.ratio * 100) / 100,
         eta: torrent.eta,
-        save_path: torrent.save_path,
+        save_path: fromQBittorrentPath(torrent.save_path),
         content_path: contentPath,
         dest_path: destPath,
         library_path: destPath,
@@ -2286,7 +2285,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
-          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title);
           seriesSeasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
         } catch {
           // ignore
@@ -2310,9 +2309,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
 
         let contentPath = torrent.content_path;
-        if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) {
-          contentPath = "/media" + contentPath;
-        }
+        if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
 
         let destPath = "";
         let inLibrary = false;
@@ -2361,7 +2358,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           seeding_time: torrent.seeding_time,
           ratio: Math.round(torrent.ratio * 100) / 100,
           eta: torrent.eta,
-          save_path: torrent.save_path,
+          save_path: fromQBittorrentPath(torrent.save_path),
           content_path: contentPath,
           dest_path: destPath,
           library_path: destPath,
@@ -2406,9 +2403,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath)) {
-        if (contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
       if (!fs.existsSync(contentPath)) {
         return res.json({ type: "none", videoFiles: [], hasBdmv: false, needsProcessing: false });
       }
@@ -2589,9 +2584,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) {
-        contentPath = "/media" + contentPath;
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
 
       let destPath = "";
 
@@ -2600,7 +2593,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
-          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+          const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title);
           const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
           if (fs.existsSync(seasonFolder)) {
             const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
@@ -2659,9 +2652,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath)) {
-        if (contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
       if (!fs.existsSync(contentPath)) {
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
@@ -2692,7 +2683,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const results: Record<number, { source?: string; destination?: string; inWorkspace?: boolean; workspaceIndex?: number; processedOutputs?: string[] } | null> = {};
       const type = request.type === "series" ? "series" : "movie";
-      const processedDir = type === "movie" ? (process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy") : (process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy");
+      const processedDir = type === "movie" ? (process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy") : (process.env.PROCESSED_TV || "/media/Torrents/processed/serialy");
       const workspaceBase = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
 
       for (const rel of releases) {
@@ -2701,7 +2692,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (!torrent) { results[rel.id] = null; continue; }
 
         let contentPath = torrent.content_path;
-        if (!fs.existsSync(contentPath) && contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
+        if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
         if (!fs.existsSync(contentPath)) { results[rel.id] = null; continue; }
 
         const basename = path.basename(contentPath);
@@ -2815,7 +2806,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
           const seasonFolder = path.join(
-            series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
+            series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title),
             `S${String(seasonNum).padStart(2, "0")}`
           );
           if (fs.existsSync(seasonFolder)) {
@@ -3175,9 +3166,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath)) {
-        if (contentPath.startsWith("/Torrents/")) contentPath = "/media" + contentPath;
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
       if (!fs.existsSync(contentPath)) {
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
@@ -3222,11 +3211,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath)) {
-        if (contentPath.startsWith("/Torrents/")) {
-          contentPath = "/media" + contentPath;
-        }
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
       if (!fs.existsSync(contentPath)) {
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
@@ -3252,7 +3237,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
           destFolder = path.join(
-            series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title),
+            series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title),
             `S${String(seasonNum).padStart(2, "0")}`
           );
         } catch {
@@ -3326,11 +3311,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath)) {
-        if (contentPath.startsWith("/Torrents/")) {
-          contentPath = "/media" + contentPath;
-        }
-      }
+      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
       if (!fs.existsSync(contentPath)) {
         return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
       }
@@ -3530,8 +3511,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (magnetUrl) {
           try {
             const savePath = request.type === "movie"
-              ? process.env.MEDIA_MOVIES || "/media/filmy"
-              : process.env.MEDIA_TV || "/media/serialy";
+              ? process.env.MEDIA_MOVIES || "/media/Filmy"
+              : process.env.MEDIA_TV || "/media/Serialy";
             await qbittorrent.addTorrent(magnetUrl, savePath);
             console.log(`[Grab] Added torrent via magnet for ${request.title}: ${release.title}`);
           } catch (grabErr: any) {
@@ -3701,8 +3682,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const type = request.type === "series" ? "series" : "movie";
       const downloadDir = type === "series"
-        ? (process.env.DOWNLOADS_TV || "/media/Torrents/Download/Serialy")
-        : (process.env.DOWNLOADS_MOVIES || "/media/Torrents/Download/Filmy");
+        ? (process.env.DOWNLOADS_TV || "/media/Torrents/download/serialy")
+        : (process.env.DOWNLOADS_MOVIES || "/media/Torrents/download/filmy");
       const qbitSavePath = toQBittorrentPath(downloadDir);
 
       // Snapshot existing qBittorrent hashes before adding
