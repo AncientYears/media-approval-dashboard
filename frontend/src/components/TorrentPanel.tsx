@@ -305,9 +305,11 @@ export default function TorrentPanel({
                         {isMoving ? "Moving..." : "Move to Processed"}
                       </button>
                     )}
-                    <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
-                      {isMoving ? "Moving..." : "Move to Library"}
-                    </button>
+                    {!ts.in_library && (
+                      <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
+                        {isMoving ? "Moving..." : "Move to Library"}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}

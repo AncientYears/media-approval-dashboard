@@ -2692,8 +2692,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {}
       }
 
-      // Determine library path for in-library checks
-      let libraryPath = "";
+      // Determine library files for per-file in-library checks
+      const libraryFiles = new Set<string>();
       if (request.type === "series" && request.sonarr_id) {
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
@@ -2703,9 +2703,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             `S${String(seasonNum).padStart(2, "0")}`
           );
           if (fs.existsSync(seasonFolder)) {
-            const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-            if (files.length > 0) {
-              libraryPath = path.join(seasonFolder, files[0]);
+            for (const f of fs.readdirSync(seasonFolder)) {
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) libraryFiles.add(f);
             }
           }
         } catch {}
@@ -2714,9 +2713,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const movie = await radarr.getMovie(request.radarr_id);
           const movieFolder = movie.path || movie.folderPath;
           if (movieFolder && fs.existsSync(movieFolder)) {
-            const files = fs.readdirSync(movieFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-            if (files.length > 0) {
-              libraryPath = path.join(movieFolder, files[0]);
+            for (const f of fs.readdirSync(movieFolder)) {
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) libraryFiles.add(f);
             }
           }
         } catch {}
@@ -2731,8 +2729,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
-        // If the library has a video file, the torrent is imported → processed hardlink is also in library
-        files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary: !!libraryPath, libraryPath });
+        const inLibrary = libraryFiles.has(entry.name) || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)));
+        const libraryMatch = inLibrary ? [...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || "" : "";
+        files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: libraryMatch });
       }
 
       res.json({ files, processedDir });
