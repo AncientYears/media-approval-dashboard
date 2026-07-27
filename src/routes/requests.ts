@@ -11,6 +11,16 @@ import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, mov
 import fs from "fs";
 import path from "path";
 
+function toQBittorrentPath(hostPath: string): string {
+  if (hostPath.startsWith("/media/Torrents")) return hostPath.replace("/media/Torrents", "/Torrents");
+  return hostPath;
+}
+
+function fromQBittorrentPath(qbitPath: string): string {
+  if (qbitPath.startsWith("/Torrents/")) return "/media" + qbitPath;
+  return qbitPath;
+}
+
 function normalizeTitleForMatch(s: string): string {
   return s.toLowerCase()
     .replace(/[&]/g, "and")
@@ -3693,6 +3703,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const downloadDir = type === "series"
         ? (process.env.DOWNLOADS_TV || "/media/Torrents/Download/Serialy")
         : (process.env.DOWNLOADS_MOVIES || "/media/Torrents/Download/Filmy");
+      const qbitSavePath = toQBittorrentPath(downloadDir);
 
       // Snapshot existing qBittorrent hashes before adding
       const preHashes = new Set((await qbittorrent.getTorrents()).map((t) => t.hash));
@@ -3701,12 +3712,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       let addedHash = "";
 
       if (magnetUrl) {
-        await qbittorrent.addTorrent(magnetUrl, downloadDir);
+        await qbittorrent.addTorrent(magnetUrl, qbitSavePath);
         addedTitle = request.title || "Imported";
       } else if (torrentFileBase64) {
         const buf = Buffer.from(torrentFileBase64, "base64");
         const filename = torrentFilename || "imported.torrent";
-        await qbittorrent.addTorrentFile(buf, filename, downloadDir);
+        await qbittorrent.addTorrentFile(buf, filename, qbitSavePath);
         addedTitle = filename.replace(/\.torrent$/i, "") || request.title || "Imported";
       }
 
@@ -3722,6 +3733,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (newTorrent) {
         addedHash = newTorrent.hash;
         addedTitle = newTorrent.name || addedTitle;
+        newTorrent.content_path = fromQBittorrentPath(newTorrent.content_path);
+        newTorrent.save_path = fromQBittorrentPath(newTorrent.save_path);
       }
 
       // Create release_candidate
