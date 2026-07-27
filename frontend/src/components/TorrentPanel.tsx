@@ -92,8 +92,6 @@ export interface TorrentPanelProps {
   onCopyPath: (text: string) => void;
   onRefreshMoveStatus?: () => void;
   onRefreshProcessed?: () => void;
-  onProcessedToWorkspace?: (processedFileName: string, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => void;
-  onUnlinkProcessed?: (processedFileName: string) => void;
 }
 
 export default function TorrentPanel({
@@ -114,8 +112,6 @@ export default function TorrentPanel({
   onCopyPath,
   onRefreshMoveStatus,
   onRefreshProcessed,
-  onProcessedToWorkspace,
-  onUnlinkProcessed,
 }: TorrentPanelProps) {
   const [contentInfo, setContentInfo] = useState<any>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
@@ -129,12 +125,6 @@ export default function TorrentPanel({
   const [wsEditValue, setWsEditValue] = useState("");
   const wsEditRef = useRef<HTMLInputElement>(null);
   const prevMrRef = useRef<any>(null);
-  const [procWsPickerOpen, setProcWsPickerOpen] = useState(false);
-  const [procWsPickerFile, setProcWsPickerFile] = useState("");
-  const [procWsPickerList, setProcWsPickerList] = useState<any[]>([]);
-  const [procWsName, setProcWsName] = useState("");
-  const [procWsNotes, setProcWsNotes] = useState("");
-  const [procWsScripts, setProcWsScripts] = useState<string[]>([]);
 
   const defaultName = requestTitle || ar.title || "";
   const [newWsName, setNewWsName] = useState(defaultName);
@@ -335,42 +325,9 @@ export default function TorrentPanel({
                     <span>Hardlinked &rarr;</span>
                     <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
                   </span>
-                  <div className="move-actions">
-                    {mr?.inWorkspace && (
-                      <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
-                    )}
-                    {!mr?.inWorkspace && !ts.in_library && (
-                      <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
-                        {isMoving ? "Moving..." : "Move to Library"}
-                      </button>
-                    )}
-                    {!mr?.inWorkspace && onProcessedToWorkspace && (
-                      <button
-                        className="btn btn-workspace btn-tiny"
-                        onClick={() => {
-                          const fname = mr.destination.split("/").pop();
-                          if (!fname || !onProcessedToWorkspace) return;
-                          setProcWsPickerFile(fname);
-                          setProcWsPickerOpen(true);
-                          fetchWorkspaces(requestId).then((d) => setProcWsPickerList(d.workspaces || [])).catch(() => setProcWsPickerList([]));
-                        }}
-                        disabled={isMoving}
-                      >
-                        {isMoving ? "Moving..." : "To Workspace"}
-                      </button>
-                    )}
-                    {onUnlinkProcessed && (
-                      <button
-                        className="btn btn-danger btn-tiny"
-                        onClick={() => {
-                          const fname = mr.destination.split("/").pop();
-                          if (fname && confirm("Remove processed file and unlink from this torrent?")) onUnlinkProcessed(fname);
-                        }}
-                      >
-                        Unlink
-                      </button>
-                    )}
-                  </div>
+                  {mr?.inWorkspace && (
+                    <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
+                  )}
                 </div>
               ) : (
                 <div className="torrent-path-row">
@@ -636,46 +593,6 @@ export default function TorrentPanel({
             </div>
             <div className="ws-manager-actions">
               <button className="btn btn-primary btn-tiny" onClick={() => setWsManagerOpen(false)}>Done</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
-    {procWsPickerOpen && (
-      <div className="modal-overlay" onClick={() => setProcWsPickerOpen(false)}>
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <div className="modal-header">
-            <span className="modal-title">Move to Workspace</span>
-            <button className="modal-close" onClick={() => setProcWsPickerOpen(false)}>&times;</button>
-          </div>
-          <div className="modal-body">
-            <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
-              Moving: <strong>{procWsPickerFile}</strong>
-            </p>
-            {procWsPickerList.map((ws: any) => (
-              <button key={ws.index} className="btn btn-secondary" style={{ width: "100%", marginBottom: 6, textAlign: "left", fontSize: 12 }} onClick={() => {
-                if (onProcessedToWorkspace) onProcessedToWorkspace(procWsPickerFile, ws.index);
-                setProcWsPickerOpen(false);
-              }}>
-                {ws.metadata?.name || `Job ${ws.index}`} — {ws.inputCount} in / {ws.outputCount} out
-              </button>
-            ))}
-            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, marginTop: 4 }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>New Workspace</div>
-              <input className="ws-manager-input" placeholder="Name..." value={procWsName} onChange={(e) => setProcWsName(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
-              <input className="ws-manager-input" placeholder="Notes..." value={procWsNotes} onChange={(e) => setProcWsNotes(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
-              <ScriptDropdown value={procWsScripts} onChange={setProcWsScripts} placeholder="Scripts..." />
-              <button className="btn btn-primary" style={{ width: "100%", marginTop: 6 }} onClick={() => {
-                if (onProcessedToWorkspace) onProcessedToWorkspace(procWsPickerFile, undefined, {
-                  name: procWsName || undefined,
-                  notes: procWsNotes || undefined,
-                  scripts: procWsScripts.length > 0 ? procWsScripts : undefined,
-                });
-                setProcWsPickerOpen(false);
-                setProcWsName("");
-                setProcWsNotes("");
-                setProcWsScripts([]);
-              }}>Create &amp; Move</button>
             </div>
           </div>
         </div>

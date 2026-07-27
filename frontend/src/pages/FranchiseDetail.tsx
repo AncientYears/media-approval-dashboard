@@ -380,12 +380,12 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
   const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[]>([]);
   const [processedDir, setProcessedDir] = useState<string>("");
-  const [movingProcessed, setMovingProcessed] = useState(false);
+  const [movingProcessed, setMovingProcessed] = useState<string | null>(null);
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
-  const [wsPickerFile, setWsPickerFile] = useState<string | null>(null);
-  const [wsPickerList, setWsPickerList] = useState<any[]>([]);
-  const [wsPickerName, setWsPickerName] = useState("");
-  const [wsPickerNotes, setWsPickerNotes] = useState("");
+  const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
+  const [procWsSelects, setProcWsSelects] = useState<Record<string, number | "new">>({});
+  const [procWsNames, setProcWsNames] = useState<Record<string, string>>({});
+  const [procWsNotesMap, setProcWsNotesMap] = useState<Record<string, string>>({});
 
   const refreshMoveStatus = useCallback(async () => {
     try {
@@ -426,6 +426,8 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
           const pData = await fetchRequestProcessed(season.request_id);
           setProcessedFiles(pData.files || []);
           setProcessedDir(pData.processedDir || "");
+          const wData = await fetchWorkspaces(season.request_id);
+          setProcWorkspaces(wData.workspaces || []);
         } catch {}
     } catch {
       // ignore
@@ -604,60 +606,43 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
     if (ts.release_id) tsByRelease.set(ts.release_id, ts);
   }
 
-  const openWsPicker = async (fileName: string) => {
-    setWsPickerFile(fileName);
+  const refreshProcessedAndWorkspaces = async () => {
     try {
-      const data = await fetchWorkspaces(season.request_id);
-      setWsPickerList(data.workspaces || []);
-    } catch { setWsPickerList([]); }
+      const pData = await fetchRequestProcessed(season.request_id);
+      setProcessedFiles(pData.files || []);
+      setProcessedDir(pData.processedDir || "");
+      const wData = await fetchWorkspaces(season.request_id);
+      setProcWorkspaces(wData.workspaces || []);
+    } catch {}
   };
 
-  const handleWsPickerSelect = async (workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => {
-    if (!wsPickerFile) return;
-    setMovingProcessed(true);
+  const handleProcessedToWs = async (fileName: string) => {
+    const wsVal = procWsSelects[fileName];
+    if (wsVal === undefined || wsVal === "new") return;
+    setMovingProcessed(fileName);
     try {
-      await processedToWorkspace(season.request_id, wsPickerFile, { workspaceIndex, ...wsConfig });
-      setProcessedFiles((prev) => prev.filter((p) => p.name !== wsPickerFile));
+      await processedToWorkspace(season.request_id, fileName, { workspaceIndex: wsVal as number });
+      await refreshProcessedAndWorkspaces();
       refreshMoveStatus();
     } catch {}
-    setMovingProcessed(false);
-    setWsPickerFile(null);
-    setWsPickerName("");
-    setWsPickerNotes("");
+    setMovingProcessed(null);
+  };
+
+  const handleProcessedToNewWs = async (fileName: string) => {
+    setMovingProcessed(fileName);
+    try {
+      await processedToWorkspace(season.request_id, fileName, {
+        name: procWsNames[fileName] || undefined,
+        notes: procWsNotesMap[fileName] || undefined,
+      });
+      await refreshProcessedAndWorkspaces();
+      refreshMoveStatus();
+    } catch {}
+    setMovingProcessed(null);
   };
 
   return (
     <div className="container">
-      {wsPickerFile && (
-        <div className="modal-overlay" onClick={() => setWsPickerFile(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <span className="modal-title">Move to Workspace</span>
-              <button className="modal-close" onClick={() => setWsPickerFile(null)}>&times;</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
-                Moving: <strong>{wsPickerFile}</strong>
-              </p>
-              {wsPickerList.length > 0 && wsPickerList.map((ws: any) => (
-                <button key={ws.index} className="btn btn-secondary" style={{ width: "100%", marginBottom: 6, textAlign: "left", fontSize: 12 }} onClick={() => handleWsPickerSelect(ws.index)}>
-                  {ws.metadata?.name || `Job ${ws.index}`} — {ws.inputCount} input(s), {ws.outputCount} output(s)
-                </button>
-              ))}
-              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, marginTop: 4 }}>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>New Workspace</div>
-                <input className="ws-manager-input" placeholder="Name..." value={wsPickerName} onChange={(e) => setWsPickerName(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
-                <input className="ws-manager-input" placeholder="Notes..." value={wsPickerNotes} onChange={(e) => setWsPickerNotes(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
-                <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => handleWsPickerSelect(undefined, {
-                  name: wsPickerName || undefined,
-                  notes: wsPickerNotes || undefined,
-                })}>Create &amp; Move</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {processedFiles.length > 0 && (
         <div className="torrent-panel processed-panel">
           <div className="section-divider">Processed</div>
@@ -665,32 +650,70 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             <span className="rtag rtag-content-ok">Processed</span>
             <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
           </div>
-          {processedFiles.map((f) => (
-            <div key={f.name}>
-              <div className="torrent-path-row">
-                <span className="path-label">Processed:</span>
-                <span className="torrent-path" title={`${processedDir}/${f.name}`} onClick={() => handleCopyPath(`${processedDir}/${f.name}`)}>
-                  {f.name}
-                </span>
-                {f.inLibrary && (
-                  <button className="btn btn-tiny btn-library-ok" title={f.libraryPath}>In Library</button>
-                )}
-                <div className="move-actions">
-                  {!f.inLibrary && (
-                    <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(true); try { await moveToLibrary(season.request_id); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setMovingProcessed(false); }} disabled={movingProcessed}>
-                      {movingProcessed ? "..." : "To Library"}
-                    </button>
+          {processedFiles.map((f) => {
+            const wsForFile = procWorkspaces.find((ws: any) => {
+              return ws.inputFiles?.some((inf: any) => inf.name === f.name);
+            });
+            return (
+              <div key={f.name}>
+                <div className="torrent-path-row">
+                  <span className="path-label">Processed:</span>
+                  <span className="torrent-path" title={`${processedDir}/${f.name}`} onClick={() => handleCopyPath(`${processedDir}/${f.name}`)}>
+                    {f.name}
+                  </span>
+                  {f.inLibrary && (
+                    <button className="btn btn-tiny btn-library-ok" title={f.libraryPath}>In Library</button>
                   )}
-                  <button className="btn btn-workspace btn-tiny" onClick={() => openWsPicker(f.name)}>
-                    To Workspace
-                  </button>
-                  <button className="btn btn-danger btn-tiny" onClick={async () => { setDeletingProcessed(f.name); try { await deleteProcessedFile(season.request_id, f.name); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setDeletingProcessed(null); }} disabled={deletingProcessed === f.name}>
-                    {deletingProcessed === f.name ? "..." : "Delete"}
-                  </button>
+                  <div className="move-actions">
+                    {!f.inLibrary && (
+                      <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(f.name); try { await moveToLibrary(season.request_id); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed(null); }} disabled={movingProcessed === f.name}>
+                        {movingProcessed === f.name ? "..." : "To Library"}
+                      </button>
+                    )}
+                    {wsForFile ? (
+                      <button className="btn btn-secondary btn-tiny" onClick={() => {
+                        const wsName = wsForFile.metadata?.name || `Job ${wsForFile.index}`;
+                        alert(`Workspace: ${wsName}\nInputs: ${wsForFile.inputCount}\nOutputs: ${wsForFile.outputCount}`);
+                      }}>Manage</button>
+                    ) : (
+                      <select
+                        className="workspace-select"
+                        value={procWsSelects[f.name] ?? ""}
+                        onChange={(e) => {
+                          const val = e.target.value === "new" ? "new" : Number(e.target.value);
+                          setProcWsSelects((prev) => ({ ...prev, [f.name]: val }));
+                          if (val === "new") setProcWsNames((prev) => ({ ...prev, [f.name]: f.name.replace(/\.[^.]+$/, "") }));
+                        }}
+                      >
+                        <option value="" disabled>To Workspace</option>
+                        {procWorkspaces.map((ws: any) => (
+                          <option key={ws.index} value={ws.index}>{ws.metadata?.name || `Job ${ws.index}`}</option>
+                        ))}
+                        <option value="new">+ New</option>
+                      </select>
+                    )}
+                    {procWsSelects[f.name] === "new" && (
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <input className="ws-manager-input" placeholder="Name..." value={procWsNames[f.name] || ""} onChange={(e) => setProcWsNames((prev) => ({ ...prev, [f.name]: e.target.value }))} style={{ width: 120, fontSize: 11 }} />
+                        <input className="ws-manager-input" placeholder="Notes..." value={procWsNotesMap[f.name] || ""} onChange={(e) => setProcWsNotesMap((prev) => ({ ...prev, [f.name]: e.target.value }))} style={{ width: 100, fontSize: 11 }} />
+                        <button className="btn btn-workspace btn-tiny" onClick={() => handleProcessedToNewWs(f.name)} disabled={movingProcessed === f.name}>
+                          {movingProcessed === f.name ? "..." : "Move"}
+                        </button>
+                      </div>
+                    )}
+                    {procWsSelects[f.name] && procWsSelects[f.name] !== "new" && (
+                      <button className="btn btn-workspace btn-tiny" onClick={() => handleProcessedToWs(f.name)} disabled={movingProcessed === f.name}>
+                        {movingProcessed === f.name ? "..." : "Move"}
+                      </button>
+                    )}
+                    <button className="btn btn-danger btn-tiny" onClick={() => { setDeletingProcessed(f.name); deleteProcessedFile(season.request_id, f.name).then(() => refreshProcessedAndWorkspaces()); }} disabled={deletingProcessed === f.name}>
+                      {deletingProcessed === f.name ? "..." : "Delete"}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -723,27 +746,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             onResume={(releaseId) => handleResume(releaseId)}
             onCopyPath={handleCopyPath}
             onRefreshMoveStatus={refreshMoveStatus}
-            onRefreshProcessed={async () => {
-              try {
-                const pData = await fetchRequestProcessed(season.request_id);
-                setProcessedFiles(pData.files || []);
-                setProcessedDir(pData.processedDir || "");
-              } catch {}
-            }}
-            onProcessedToWorkspace={async (fileName: string, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => {
-              try {
-                await processedToWorkspace(season.request_id, fileName, { workspaceIndex, ...wsConfig });
-                setProcessedFiles((prev) => prev.filter((p) => p.name !== fileName));
-                refreshMoveStatus();
-              } catch {}
-            }}
-            onUnlinkProcessed={async (fileName: string) => {
-              try {
-                await deleteProcessedFile(season.request_id, fileName);
-                setProcessedFiles((prev) => prev.filter((p) => p.name !== fileName));
-                refreshMoveStatus();
-              } catch {}
-            }}
+            onRefreshProcessed={refreshProcessedAndWorkspaces}
           />
         );
       })}
