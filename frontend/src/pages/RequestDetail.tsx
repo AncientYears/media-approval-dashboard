@@ -725,21 +725,19 @@ export default function RequestDetail() {
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain} disabled={searching}>
           {searching ? <span className="spinner" /> : "Refresh"}
         </button>
-        {(!hasAnyTorrent && !approvedReleases.some((r: any) => r.torrent_hash)) && (
-          deleteConfirm === 0 ? (
-            <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(1)}>Delete</button>
-          ) : deleteConfirm === 1 ? (
-            <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(2)}>Are you sure?</button>
-              <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(false)}>Keep Files</button>
-              <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(true)}>Delete Files</button>
-              <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
-            </div>
-          )
+        {deleteConfirm === 0 ? (
+          <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(1)}>Destroy</button>
+        ) : deleteConfirm === 1 ? (
+          <div style={{ display: "flex", gap: 4 }}>
+            <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(2)}>Are you sure?</button>
+            <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 4 }}>
+            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(false)}>Keep Library</button>
+            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(true)}>Delete Library</button>
+            <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
+          </div>
         )}
       </div>
 
