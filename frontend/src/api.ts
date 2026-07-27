@@ -189,8 +189,8 @@ export async function deleteDismissedRequests() {
   return response.data;
 }
 
-export async function deleteRequest(requestId: number) {
-  const response = await api.delete(`/requests/${requestId}`);
+export async function deleteRequest(requestId: number, deleteFiles = false) {
+  const response = await api.delete(`/requests/${requestId}`, { params: { deleteFiles } });
   return response.data;
 }
 

@@ -403,9 +403,12 @@ export default function RequestDetail() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!confirm("Permanently delete this request? This cannot be undone.")) return;
-    await deleteRequest(Number(id));
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  const handleDelete = async (deleteFiles: boolean) => {
+    const label = deleteFiles ? "Delete request AND library files?" : "Delete request only (keep library files)?";
+    if (!confirm(label + " This cannot be undone.")) return;
+    await deleteRequest(Number(id), deleteFiles);
     toast("Request deleted", "success");
     navigate("/");
   };
@@ -506,8 +509,9 @@ export default function RequestDetail() {
     try {
       const data = await scanProcessedDir(Number(id));
       const currentNames = new Set(processedFiles.map((f) => f.name));
-      setScanFiles(data.files || []);
-      setScanSelected(new Set((data.files || []).filter((f: any) => currentNames.has(f.name)).map((f: any) => f.name)));
+      const unlinked = (data.files || []).filter((f: any) => !currentNames.has(f.name));
+      setScanFiles(unlinked);
+      setScanSelected(new Set());
       setScanOpen(true);
     } catch {}
     setScanning(false);
@@ -717,7 +721,15 @@ export default function RequestDetail() {
           {searching ? <span className="spinner" /> : "Refresh"}
         </button>
         {(!hasAnyTorrent && !approvedReleases.some((r: any) => r.torrent_hash)) && (
-          <button className="btn btn-danger btn-tiny" onClick={handleDelete}>Delete</button>
+          !deleteConfirm ? (
+            <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(true)}>Delete</button>
+          ) : (
+            <div style={{ display: "flex", gap: 4 }}>
+              <button className="btn btn-danger btn-tiny" onClick={() => handleDelete(false)}>Keep Files</button>
+              <button className="btn btn-danger btn-tiny" onClick={() => handleDelete(true)}>Delete Files</button>
+              <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(false)}>Cancel</button>
+            </div>
+          )
         )}
       </div>
 

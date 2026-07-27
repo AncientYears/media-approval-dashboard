@@ -1966,8 +1966,35 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.delete("/:id", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const deleteFiles = req.query.deleteFiles === "true";
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.json({ success: true });
+
+      // Delete processed files
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      const approvals = db.prepare(
+        "SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
+      ).all(id) as any[];
+      for (const ah of approvals) {
+        try {
+          const names = JSON.parse(ah.processed_files);
+          for (const name of names) {
+            const fp = path.join(processedDir, name);
+            if (fs.existsSync(fp)) {
+              const st = fs.statSync(fp);
+              if (st.isDirectory()) fs.rmSync(fp, { recursive: true, force: true });
+              else fs.unlinkSync(fp);
+            }
+          }
+        } catch {}
+      }
+
+      // Delete workspaces
+      const wsDirs = listWorkspaces(request.id, request.title);
+      for (const ws of wsDirs) {
+        try { deleteWorkspace(ws.path); } catch {}
+      }
 
       // Delete from Sonarr/Radarr
       const sUrl = process.env.SONARR_URL || "";
@@ -1975,16 +2002,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const rUrl = process.env.RADARR_URL || "";
       const rKey = process.env.RADARR_API_KEY || "";
       if (request.sonarr_id && sUrl) {
-        try { await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
+        try { await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
       }
       if (request.radarr_id && rUrl) {
-        try { await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": rKey } }); } catch {}
+        try { await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": rKey } }); } catch {}
       }
 
       db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
-      console.log(`[Delete] Deleted request #${id}: ${request.title} (sonarr=${request.sonarr_id}, radarr=${request.radarr_id})`);
+      console.log(`[Delete] Deleted request #${id}: ${request.title} (deleteFiles=${deleteFiles})`);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting request:", error);
