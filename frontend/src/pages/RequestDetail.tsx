@@ -200,6 +200,9 @@ export default function RequestDetail() {
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
   const [wsPickerFile, setWsPickerFile] = useState<string | null>(null);
   const [wsPickerList, setWsPickerList] = useState<any[]>([]);
+  const [wsPickerName, setWsPickerName] = useState("");
+  const [wsPickerNotes, setWsPickerNotes] = useState("");
+  const [wsPickerScripts, setWsPickerScripts] = useState<string[]>([]);
 
   const refreshMoveStatus = async () => {
     try {
@@ -491,15 +494,19 @@ export default function RequestDetail() {
     } catch { setWsPickerList([]); }
   };
 
-  const handleWsPickerSelect = async (workspaceIndex?: number) => {
+  const handleWsPickerSelect = async (workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => {
     if (!wsPickerFile) return;
     setMovingProcessed(true);
     try {
-      await processedToWorkspace(Number(id), wsPickerFile, { workspaceIndex });
+      await processedToWorkspace(Number(id), wsPickerFile, { workspaceIndex, ...wsConfig });
       setProcessedFiles((prev) => prev.filter((p) => p.name !== wsPickerFile));
+      refreshMoveStatus();
     } catch {}
     setMovingProcessed(false);
     setWsPickerFile(null);
+    setWsPickerName("");
+    setWsPickerNotes("");
+    setWsPickerScripts([]);
   };
 
   return (
@@ -520,9 +527,19 @@ export default function RequestDetail() {
                   {ws.metadata?.name || `Job ${ws.index}`} — {ws.inputCount} input(s), {ws.outputCount} output(s)
                 </button>
               ))}
-              <button className="btn btn-primary" style={{ width: "100%", marginTop: 4 }} onClick={() => handleWsPickerSelect()}>
-                + New Workspace
-              </button>
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, marginTop: 4 }}>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>New Workspace</div>
+                <input className="ws-manager-input" placeholder="Name..." value={wsPickerName} onChange={(e) => setWsPickerName(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
+                <input className="ws-manager-input" placeholder="Notes..." value={wsPickerNotes} onChange={(e) => setWsPickerNotes(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
+                <div style={{ marginBottom: 6 }}>
+                  <select multiple style={{ width: "100%", fontSize: 12, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 4, padding: 4 }}>
+                  </select>
+                </div>
+                <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => handleWsPickerSelect(undefined, {
+                  name: wsPickerName || undefined,
+                  notes: wsPickerNotes || undefined,
+                })}>Create &amp; Move</button>
+              </div>
             </div>
           </div>
         </div>
@@ -598,6 +615,20 @@ export default function RequestDetail() {
                 const pData = await fetchRequestProcessed(Number(id));
                 setProcessedFiles(pData.files || []);
                 setProcessedDir(pData.processedDir || "");
+              } catch {}
+            }}
+            onProcessedToWorkspace={async (fileName: string, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => {
+              try {
+                await processedToWorkspace(Number(id), fileName, { workspaceIndex, ...wsConfig });
+                setProcessedFiles((prev) => prev.filter((p) => p.name !== fileName));
+                refreshMoveStatus();
+              } catch {}
+            }}
+            onUnlinkProcessed={async (fileName: string) => {
+              try {
+                await deleteProcessedFile(Number(id), fileName);
+                setProcessedFiles((prev) => prev.filter((p) => p.name !== fileName));
+                refreshMoveStatus();
               } catch {}
             }}
           />

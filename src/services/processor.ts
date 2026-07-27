@@ -533,13 +533,11 @@ export function completeWorkspace(wsPath: string, type: "movie" | "series"): { s
       const src = path.join(outputDir, entry.name);
       const dest = path.join(processedDir, entry.name);
       if (entry.isDirectory()) {
-        hardlinkDirRecursive(src, dest);
+        if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true });
+        fs.renameSync(src, dest);
       } else {
-        if (fs.existsSync(dest)) {
-          processedPaths.push(dest);
-          continue;
-        }
-        hardlinkFile(src, dest);
+        if (fs.existsSync(dest)) fs.unlinkSync(dest);
+        fs.renameSync(src, dest);
       }
       processedPaths.push(dest);
     }
@@ -548,6 +546,7 @@ export function completeWorkspace(wsPath: string, type: "movie" | "series"): { s
   }
 
   deleteWorkspaceInputs(wsPath);
+  try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch {}
   writeWorkspaceMetadata(wsPath, { status: "completed", outputPaths: processedPaths } as any);
 
   return { success: true, processedPaths };
