@@ -1472,6 +1472,23 @@ body {
   flex-shrink: 0;
 }
 
+.ws-picker-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ws-picker-row-selected {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.ws-picker-row-selected:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 .workspace-picker {
   display: flex;
   align-items: center;

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
-import ScriptDropdown from "../components/ScriptDropdown";
+import WorkspacePickerModal from "../components/WorkspacePickerModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -201,9 +201,6 @@ export default function RequestDetail() {
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
-  const [procWsPickerName, setProcWsPickerName] = useState("");
-  const [procWsPickerNotes, setProcWsPickerNotes] = useState("");
-  const [procWsPickerScripts, setProcWsPickerScripts] = useState<string[]>([]);
 
   const refreshMoveStatus = async () => {
     try {
@@ -501,77 +498,35 @@ export default function RequestDetail() {
 
   const openProcWsPicker = async (fileName: string) => {
     setProcWsPickerFile(fileName);
-    setProcWsPickerName(fileName.replace(/\.[^.]+$/, ""));
-    setProcWsPickerNotes("");
-    setProcWsPickerScripts([]);
     try {
       const wData = await fetchWorkspaces(Number(id));
       setProcWorkspaces(wData.workspaces || []);
     } catch {}
   };
 
-  const handleProcWsPickExisting = async (workspaceIndex: number) => {
+  const handleProcWsMove = async (config: { workspaceIndex?: number; name?: string; notes?: string; scripts?: string[] }) => {
     if (!procWsPickerFile) return;
     setMovingProcessed(procWsPickerFile);
     try {
-      await processedToWorkspace(Number(id), procWsPickerFile, { workspaceIndex });
+      await processedToWorkspace(Number(id), procWsPickerFile, config);
       await refreshProcessedAndWorkspaces();
       refreshMoveStatus();
     } catch {}
     setMovingProcessed(null);
     setProcWsPickerFile(null);
-  };
-
-  const handleProcWsPickNew = async () => {
-    if (!procWsPickerFile) return;
-    setMovingProcessed(procWsPickerFile);
-    try {
-      await processedToWorkspace(Number(id), procWsPickerFile, {
-        name: procWsPickerName || undefined,
-        notes: procWsPickerNotes || undefined,
-        scripts: procWsPickerScripts.length > 0 ? procWsPickerScripts : undefined,
-      });
-      await refreshProcessedAndWorkspaces();
-      refreshMoveStatus();
-    } catch {}
-    setMovingProcessed(null);
-    setProcWsPickerFile(null);
-    setProcWsPickerName("");
-    setProcWsPickerNotes("");
-    setProcWsPickerScripts([]);
   };
 
   return (
     <div className="container">
-      {procWsPickerFile && (
-        <div className="modal-overlay" onClick={() => setProcWsPickerFile(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <span className="modal-title">Move to Workspace</span>
-              <button className="modal-close" onClick={() => setProcWsPickerFile(null)}>&times;</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
-                Moving: <strong>{procWsPickerFile}</strong>
-              </p>
-              {procWorkspaces.length > 0 && procWorkspaces.map((ws: any) => (
-                <button key={ws.index} className="btn btn-secondary" style={{ width: "100%", marginBottom: 6, textAlign: "left", fontSize: 12 }} onClick={() => handleProcWsPickExisting(ws.index)}>
-                  {ws.metadata?.name || `Job ${ws.index}`} — {ws.inputCount} input(s), {ws.outputCount} output(s)
-                </button>
-              ))}
-              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, marginTop: 4 }}>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>New Workspace</div>
-                <input className="ws-manager-input" placeholder="Name..." value={procWsPickerName} onChange={(e) => setProcWsPickerName(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
-                <input className="ws-manager-input" placeholder="Notes..." value={procWsPickerNotes} onChange={(e) => setProcWsPickerNotes(e.target.value)} style={{ width: "100%", marginBottom: 4 }} />
-                <ScriptDropdown value={procWsPickerScripts} onChange={setProcWsPickerScripts} placeholder="Scripts..." />
-                <button className="btn btn-primary" style={{ width: "100%", marginTop: 6 }} onClick={handleProcWsPickNew} disabled={movingProcessed === procWsPickerFile}>
-                  {movingProcessed === procWsPickerFile ? "Moving..." : "Create & Move"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <WorkspacePickerModal
+        open={!!procWsPickerFile}
+        fileName={procWsPickerFile || undefined}
+        workspaces={procWorkspaces}
+        defaultName={procWsPickerFile?.replace(/\.[^.]+$/, "") || ""}
+        onMove={handleProcWsMove}
+        onCancel={() => setProcWsPickerFile(null)}
+        busy={movingProcessed === procWsPickerFile}
+      />
 
       {processedFiles.length > 0 && (
         <div className="torrent-panel processed-panel">
