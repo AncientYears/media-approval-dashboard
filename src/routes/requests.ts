@@ -2545,6 +2545,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/:id/processed - List processed files for this specific request
+  router.get("/:id/processed", (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = type === "movie"
+        ? (process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy")
+        : (process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy");
+
+      if (!fs.existsSync(processedDir)) return res.json({ files: [] });
+
+      const entries = fs.readdirSync(processedDir, { withFileTypes: true });
+      const files: { name: string; size: number; isDir: boolean }[] = [];
+
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) continue;
+        const fullPath = path.join(processedDir, entry.name);
+        let size = 0;
+        try { size = fs.statSync(fullPath).size; } catch {}
+        files.push({ name: entry.name, size, isDir: entry.isDirectory() });
+      }
+
+      res.json({ files, processedDir });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // GET /api/requests/:id/workspaces - List existing workspaces for this request
   router.get("/:id/workspaces", async (req: Request, res: Response) => {
     try {

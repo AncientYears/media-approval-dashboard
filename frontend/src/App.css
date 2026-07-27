@@ -7,6 +7,7 @@
   --warning: #f59e0b;
   --bg: #0f172a;
   --bg-secondary: #1e293b;
+  --card-bg: #1e293b;
   --text: #f1f5f9;
   --text-secondary: #cbd5e1;
   --border: #334155;
@@ -1573,6 +1574,17 @@ body {
 /* Processed Files Card */
 .processed-card {
   border-style: dashed;
+}
+
+.processed-panel {
+  margin-bottom: 1rem;
+}
+
+.processed-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .processed-file-list {

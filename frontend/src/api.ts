@@ -19,8 +19,8 @@ export async function fetchManaged() {
   return response.data;
 }
 
-export async function fetchProcessed() {
-  const response = await api.get("/requests/processed");
+export async function fetchRequestProcessed(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/processed`);
   return response.data;
 }
 

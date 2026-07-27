@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 
@@ -194,6 +194,7 @@ export default function RequestDetail() {
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
+  const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
 
   const refreshMoveStatus = async () => {
     try {
@@ -232,6 +233,10 @@ export default function RequestDetail() {
               return next;
             });
           }
+        } catch {}
+        try {
+          const pData = await fetchRequestProcessed(Number(id));
+          setProcessedFiles(pData.files || []);
         } catch {}
     } catch (err) {
       setError("Failed to load releases");
@@ -491,6 +496,21 @@ export default function RequestDetail() {
           />
         );
       })}
+
+      {processedFiles.length > 0 && (
+        <div className="torrent-panel processed-panel">
+          <div className="processed-header">
+            <span className="rtag rtag-content-ok">Processed</span>
+            <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
+          </div>
+          {processedFiles.map((f) => (
+            <div key={f.name} className="processed-file-row">
+              <span className="processed-file-name" title={f.name}>{f.name}</span>
+              <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : (f.isDir ? "folder" : "—")}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {request.status === "DISMISSED" && !hasAnyTorrent && (
         <div className="torrent-panel">

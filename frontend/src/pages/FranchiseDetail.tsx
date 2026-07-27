@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus, fetchRequestProcessed } from "../api";
 import TorrentPanel from "../components/TorrentPanel";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
@@ -378,6 +378,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [viewMode, setViewMode] = useState<"table" | "list">("table");
   const [searchMode, setSearchMode] = useState<SearchMode>(initialSearch?.mode || "season");
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
+  const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
 
   const refreshMoveStatus = useCallback(async () => {
     try {
@@ -413,6 +414,10 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
               return next;
             });
           }
+        } catch {}
+        try {
+          const pData = await fetchRequestProcessed(season.request_id);
+          setProcessedFiles(pData.files || []);
         } catch {}
     } catch {
       // ignore
@@ -621,6 +626,21 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
           />
         );
       })}
+
+      {processedFiles.length > 0 && (
+        <div className="torrent-panel processed-panel">
+          <div className="processed-header">
+            <span className="rtag rtag-content-ok">Processed</span>
+            <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
+          </div>
+          {processedFiles.map((f) => (
+            <div key={f.name} className="processed-file-row">
+              <span className="processed-file-name" title={f.name}>{f.name}</span>
+              <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : (f.isDir ? "folder" : "—")}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="detail-topbar">
         <button className="btn btn-secondary btn-tiny" onClick={onBack}>&larr; {franchise.title}</button>
