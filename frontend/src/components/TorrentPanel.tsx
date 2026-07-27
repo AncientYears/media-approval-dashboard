@@ -47,6 +47,7 @@ export interface TorrentPanelProps {
   onRefreshMoveStatus?: () => void;
   onRefreshProcessed?: () => void;
   onUnlinkProcessed?: (processedFileName: string) => void;
+  onDestroy?: (releaseId: number, deleteFiles: boolean) => void;
 }
 
 export default function TorrentPanel({
@@ -68,6 +69,7 @@ export default function TorrentPanel({
   onRefreshMoveStatus,
   onRefreshProcessed,
   onUnlinkProcessed,
+  onDestroy,
 }: TorrentPanelProps) {
   const [contentInfo, setContentInfo] = useState<any>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
@@ -75,6 +77,7 @@ export default function TorrentPanel({
   const [wsManagerOpen, setWsManagerOpen] = useState(false);
   const [wsManagerData, setWsManagerData] = useState<any[]>([]);
   const [wsEditIdx, setWsEditIdx] = useState<number | null>(null);
+  const [destroyConfirm, setDestroyConfirm] = useState(0);
   const [wsEditValue, setWsEditValue] = useState("");
   const wsEditRef = useRef<HTMLInputElement>(null);
   const prevMrRef = useRef<any>(null);
@@ -229,6 +232,22 @@ export default function TorrentPanel({
                   <button className="btn btn-secondary btn-tiny" onClick={() => onPause(ar.id)}>Pause</button>
                 ) : (
                   <button className="btn btn-secondary btn-tiny" onClick={() => onResume(ar.id)}>Resume</button>
+                )}
+                {onDestroy && (
+                  destroyConfirm === 0 ? (
+                    <button className="btn btn-danger btn-tiny" onClick={() => setDestroyConfirm(1)}>Destroy</button>
+                  ) : destroyConfirm === 1 ? (
+                    <div style={{ display: "flex", gap: 3 }}>
+                      <button className="btn btn-danger btn-tiny" onClick={() => setDestroyConfirm(2)}>Sure?</button>
+                      <button className="btn btn-secondary btn-tiny" onClick={() => setDestroyConfirm(0)}>No</button>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 3 }}>
+                      <button className="btn btn-danger btn-tiny" onClick={() => { setDestroyConfirm(0); onDestroy(ar.id, true); }}>Delete Files</button>
+                      <button className="btn btn-danger btn-tiny" onClick={() => { setDestroyConfirm(0); onDestroy(ar.id, false); }}>Keep Files</button>
+                      <button className="btn btn-secondary btn-tiny" onClick={() => setDestroyConfirm(0)}>No</button>
+                    </div>
+                  )
                 )}
               </div>
             )}

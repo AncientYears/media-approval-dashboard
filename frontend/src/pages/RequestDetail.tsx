@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -403,16 +403,14 @@ export default function RequestDetail() {
     }
   };
 
-  const [deleteConfirm, setDeleteConfirm] = useState(0);
-
-  const handleDestroy = async (deleteFiles: boolean) => {
-    if (deleteConfirm < 2) { setDeleteConfirm(deleteConfirm + 1); return; }
-    const label = deleteFiles ? "DESTROY request AND delete downloaded files from disk?" : "DESTROY request? (downloaded files kept on disk)";
+  const handleDestroyRelease = async (releaseId: number, deleteFiles: boolean) => {
+    const label = deleteFiles ? "DESTROY this torrent AND delete downloaded files from disk?" : "DESTROY this torrent? (downloaded files kept on disk)";
     if (!confirm(label + "\n\nThis will export the .torrent file + trackers before deleting. This CANNOT be undone.")) return;
     try {
-      const result = await destroyRequest(Number(id), deleteFiles);
-      toast(`Request destroyed. ${result.exported?.length || 0} torrent(s) exported to /media/Torrents/Trackers/`, "success");
-      navigate("/");
+      const result = await destroyRelease(Number(id), releaseId, deleteFiles);
+      toast(`${result.title || "Torrent"} destroyed. Exported to /media/Torrents/Trackers/`, "success");
+      loadData();
+      refreshMoveStatus();
     } catch (err: any) {
       toast(`Destroy failed: ${err.message}`, "error");
     }
@@ -689,6 +687,7 @@ export default function RequestDetail() {
             onCopyPath={handleCopyPath}
             onRefreshMoveStatus={refreshMoveStatus}
             onRefreshProcessed={refreshProcessedAndWorkspaces}
+            onDestroy={handleDestroyRelease}
             onUnlinkProcessed={async (fileName: string) => {
               try {
                 await deleteProcessedFile(Number(id), fileName);
@@ -725,20 +724,6 @@ export default function RequestDetail() {
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain} disabled={searching}>
           {searching ? <span className="spinner" /> : "Refresh"}
         </button>
-        {deleteConfirm === 0 ? (
-          <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(1)}>Destroy</button>
-        ) : deleteConfirm === 1 ? (
-          <div style={{ display: "flex", gap: 4 }}>
-            <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(2)}>Are you sure?</button>
-            <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
-          </div>
-        ) : (
-          <div style={{ display: "flex", gap: 4 }}>
-            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(false)}>Keep Files</button>
-            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(true)}>Delete Files</button>
-            <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
-          </div>
-        )}
       </div>
 
       {searchProgress && (

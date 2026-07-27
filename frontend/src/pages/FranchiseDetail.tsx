@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, destroyRelease } from "../api";
+import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
 
@@ -94,6 +95,7 @@ function Breakdown({ r }: { r: any }) {
 export default function FranchiseDetail() {
   const { sonarrId } = useParams<{ sonarrId: string }>();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [franchise, setFranchise] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -522,6 +524,19 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
     loadTorrentStatuses();
   };
 
+  const handleDestroyRelease = async (releaseId: number, deleteFiles: boolean) => {
+    const label = deleteFiles ? "DESTROY this torrent AND delete downloaded files from disk?" : "DESTROY this torrent? (downloaded files kept on disk)";
+    if (!confirm(label + "\n\nThis will export the .torrent file + trackers before deleting. This CANNOT be undone.")) return;
+    try {
+      const result = await destroyRelease(season.request_id, releaseId, deleteFiles);
+      toast(`${result.title || "Torrent"} destroyed. Exported to /media/Torrents/Trackers/`, "success");
+      loadTorrentStatuses();
+      refreshMoveStatus();
+    } catch (err: any) {
+      toast(`Destroy failed: ${err.message}`, "error");
+    }
+  };
+
   const handleCopyPath = async (text: string) => {
     try { await navigator.clipboard.writeText(text); } catch {
       const ta = document.createElement("textarea");
@@ -725,6 +740,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             onCopyPath={handleCopyPath}
             onRefreshMoveStatus={refreshMoveStatus}
             onRefreshProcessed={refreshProcessedAndWorkspaces}
+            onDestroy={handleDestroyRelease}
             onUnlinkProcessed={async (fileName: string) => {
               try {
                 await deleteProcessedFile(season.request_id, fileName);
