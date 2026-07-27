@@ -138,6 +138,11 @@ export async function moveToLibrary(requestId: number) {
   return response.data;
 }
 
+export async function deleteProcessedFile(requestId: number, fileName: string) {
+  const response = await api.delete(`/requests/${requestId}/processed/${encodeURIComponent(fileName)}`);
+  return response.data;
+}
+
 export async function fetchActiveWorkspaces() {
   const response = await api.get(`/requests/workspaces/active`);
   return response.data;

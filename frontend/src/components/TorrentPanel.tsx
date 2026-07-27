@@ -323,23 +323,23 @@ export default function TorrentPanel({
                     <span>Hardlinked &rarr;</span>
                     <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
                   </span>
-                  <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                  <div className="move-actions">
                     {mr?.inWorkspace && (
                       <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
                     )}
+                    {!mr?.inWorkspace && !ts.in_library && (
+                      <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
+                        {isMoving ? "Moving..." : "Move to Library"}
+                      </button>
+                    )}
                     {!mr?.inWorkspace && (
-                      <>
-                        <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
-                          {isMoving ? "Moving..." : "Move to Library"}
-                        </button>
-                        <button
-                          className="btn btn-workspace btn-tiny"
-                          onClick={() => onMove(ar.id)}
-                          disabled={isMoving}
-                        >
-                          {isMoving ? "Moving..." : "Move to Workspace"}
-                        </button>
-                      </>
+                      <button
+                        className="btn btn-workspace btn-tiny"
+                        onClick={() => onMove(ar.id)}
+                        disabled={isMoving}
+                      >
+                        {isMoving ? "Moving..." : "To Workspace"}
+                      </button>
                     )}
                   </div>
                 </div>

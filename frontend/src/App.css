@@ -1389,6 +1389,25 @@ body {
   flex-shrink: 0;
 }
 
+.torrent-path-row .move-result {
+  flex: 1;
+  min-width: 0;
+}
+
+.torrent-path-row .move-result .torrent-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-path-row .move-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .path-label {
   font-size: 10px;
   text-transform: uppercase;
@@ -1571,13 +1590,15 @@ body {
   align-items: center;
 }
 
-/* Processed Files Card */
+/* Processed Files */
 .processed-card {
   border-style: dashed;
 }
 
 .processed-panel {
   margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
 }
 
 .processed-header {
@@ -1587,17 +1608,11 @@ body {
   margin-bottom: 8px;
 }
 
-.processed-file-list {
-  max-height: 200px;
-  overflow-y: auto;
-  margin-top: 8px;
-}
-
 .processed-file-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 0;
+  padding: 6px 0;
   border-bottom: 1px solid var(--border);
   gap: 8px;
 }
@@ -1621,6 +1636,22 @@ body {
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.processed-file-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.section-divider {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  padding: 8px 0 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
 }
 
 .franchise-season {

@@ -2546,24 +2546,40 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   });
 
   // GET /api/requests/:id/processed - List processed files for this specific request
-  router.get("/:id/processed", (req: Request, res: Response) => {
+  router.get("/:id/processed", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
 
       const type = request.type === "series" ? "series" : "movie";
-      const processedDir = type === "movie"
-        ? (process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy")
-        : (process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy");
+      const processedDir = getProcessedDir(type);
 
       if (!fs.existsSync(processedDir)) return res.json({ files: [] });
+
+      // Get approved releases for this request to match by content basename
+      const releases = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).all(id) as any[];
+
+      const matchedNames = new Set<string>();
+      for (const rel of releases) {
+        if (!rel.torrent_hash) continue;
+        try {
+          const torrent = await qbittorrent.getTorrentByHash(rel.torrent_hash);
+          if (torrent) {
+            matchedNames.add(path.basename(torrent.content_path));
+          }
+        } catch {}
+      }
 
       const entries = fs.readdirSync(processedDir, { withFileTypes: true });
       const files: { name: string; size: number; isDir: boolean }[] = [];
 
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
+        if (!matchedNames.has(entry.name)) continue;
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
@@ -2571,6 +2587,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       res.json({ files, processedDir });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // DELETE /api/requests/:id/processed/:fileName - Delete a processed file
+  router.delete("/:id/processed/:fileName", (req: Request, res: Response) => {
+    try {
+      const { id, fileName } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      const filePath = path.join(processedDir, decodeURIComponent(fileName));
+
+      if (!filePath.startsWith(processedDir)) {
+        return res.status(400).json({ error: "Invalid path" });
+      }
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) {
+        fs.rmSync(filePath, { recursive: true });
+      } else {
+        fs.unlinkSync(filePath);
+      }
+      console.log(`[Processed] Deleted ${filePath}`);
+      res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 
@@ -195,6 +195,9 @@ export default function RequestDetail() {
   const [searchProgress, setSearchProgress] = useState("");
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
   const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
+  const [processedDir, setProcessedDir] = useState<string>("");
+  const [movingProcessed, setMovingProcessed] = useState(false);
+  const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
 
   const refreshMoveStatus = async () => {
     try {
@@ -237,6 +240,7 @@ export default function RequestDetail() {
         try {
           const pData = await fetchRequestProcessed(Number(id));
           setProcessedFiles(pData.files || []);
+          setProcessedDir(pData.processedDir || "");
         } catch {}
     } catch (err) {
       setError("Failed to load releases");
@@ -466,8 +470,48 @@ export default function RequestDetail() {
       }
     });
 
+  const handleDeleteProcessedFile = async (fileName: string) => {
+    setDeletingProcessed(fileName);
+    try {
+      await deleteProcessedFile(Number(id), fileName);
+      setProcessedFiles((prev) => prev.filter((f) => f.name !== fileName));
+    } catch (err) {
+      console.error("Delete processed file failed:", err);
+    }
+    setDeletingProcessed(null);
+  };
+
   return (
     <div className="container">
+      {processedFiles.length > 0 && (
+        <div className="torrent-panel processed-panel">
+          <div className="section-divider">Processed</div>
+          <div className="processed-header">
+            <span className="rtag rtag-content-ok">Processed</span>
+            <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
+          </div>
+          {processedFiles.map((f) => (
+            <div key={f.name} className="processed-file-row">
+              <span className="processed-file-name" title={`${processedDir}/${f.name}`}>{f.name}</span>
+              <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : (f.isDir ? "folder" : "—")}</span>
+              <div className="processed-file-actions">
+                <button className="btn btn-secondary btn-tiny" onClick={() => handleCopyPath(`${processedDir}/${f.name}`)}>Copy</button>
+                <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(true); try { await moveToLibrary(Number(id)); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setMovingProcessed(false); }} disabled={movingProcessed}>
+                  {movingProcessed ? "..." : "To Library"}
+                </button>
+                <button className="btn btn-danger btn-tiny" onClick={() => handleDeleteProcessedFile(f.name)} disabled={deletingProcessed === f.name}>
+                  {deletingProcessed === f.name ? "..." : "Delete"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {approvedReleases.length > 0 && (
+        <div className="section-divider">Torrents</div>
+      )}
+
       {approvedReleases.length > 0 && approvedReleases.map((ar: any) => {
         const ts = torrentStatuses.find((s: any) => s.release_id === ar.id);
         const mr = moveResults[ar.id];
@@ -496,21 +540,6 @@ export default function RequestDetail() {
           />
         );
       })}
-
-      {processedFiles.length > 0 && (
-        <div className="torrent-panel processed-panel">
-          <div className="processed-header">
-            <span className="rtag rtag-content-ok">Processed</span>
-            <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
-          </div>
-          {processedFiles.map((f) => (
-            <div key={f.name} className="processed-file-row">
-              <span className="processed-file-name" title={f.name}>{f.name}</span>
-              <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : (f.isDir ? "folder" : "—")}</span>
-            </div>
-          ))}
-        </div>
-      )}
 
       {request.status === "DISMISSED" && !hasAnyTorrent && (
         <div className="torrent-panel">
