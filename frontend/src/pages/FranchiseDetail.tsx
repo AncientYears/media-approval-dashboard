@@ -4,6 +4,7 @@ import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisode
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
+import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
 type SearchMode = typeof SEARCH_MODES[number];
@@ -387,6 +388,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
+  const [wsManagerIdx, setWsManagerIdx] = useState<number | null>(null);
 
   const refreshMoveStatus = useCallback(async () => {
     try {
@@ -688,10 +690,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                       </button>
                     )}
                     {wsForFile ? (
-                      <button className="btn btn-secondary btn-tiny" onClick={() => {
-                        const wsName = wsForFile.metadata?.name || `Job ${wsForFile.index}`;
-                        alert(`Workspace: ${wsName}\nInputs: ${wsForFile.inputCount}\nOutputs: ${wsForFile.outputCount}`);
-                      }}>Manage</button>
+                      <button className="btn btn-secondary btn-tiny" onClick={() => setWsManagerIdx(wsForFile.index)}>Manage</button>
                     ) : (
                       <button className="btn btn-workspace btn-tiny" onClick={() => openProcWsPicker(f.name)} disabled={movingProcessed === f.name}>
                         To Workspace
@@ -918,6 +917,16 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             );
           })}
         </div>
+      )}
+
+      {wsManagerIdx !== null && (
+        <WorkspaceManagerModal
+          open={wsManagerIdx !== null}
+          requestId={season.request_id}
+          workspaceIndex={wsManagerIdx}
+          onClose={() => setWsManagerIdx(null)}
+          onRefresh={() => { refreshProcessedAndWorkspaces(); refreshMoveStatus(); }}
+        />
       )}
     </div>
   );

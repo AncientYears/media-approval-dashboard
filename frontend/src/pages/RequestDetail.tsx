@@ -4,6 +4,7 @@ import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, m
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
+import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -202,6 +203,7 @@ export default function RequestDetail() {
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
+  const [wsManagerIdx, setWsManagerIdx] = useState<number | null>(null);
   const [scanFiles, setScanFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
   const [scanSelected, setScanSelected] = useState<Set<string>>(new Set());
   const [scanning, setScanning] = useState(false);
@@ -634,10 +636,7 @@ export default function RequestDetail() {
                       </button>
                     )}
                     {wsForFile ? (
-                      <button className="btn btn-secondary btn-tiny" onClick={() => {
-                        const wsName = wsForFile.metadata?.name || `Job ${wsForFile.index}`;
-                        alert(`Workspace: ${wsName}\nInputs: ${wsForFile.inputCount}\nOutputs: ${wsForFile.outputCount}`);
-                      }}>Manage</button>
+                      <button className="btn btn-secondary btn-tiny" onClick={() => setWsManagerIdx(wsForFile.index)}>Manage</button>
                     ) : (
                       <button className="btn btn-workspace btn-tiny" onClick={() => openProcWsPicker(f.name)} disabled={movingProcessed === f.name}>
                         To Workspace
@@ -875,6 +874,16 @@ export default function RequestDetail() {
             );
           })}
         </div>
+      )}
+
+      {wsManagerIdx !== null && (
+        <WorkspaceManagerModal
+          open={wsManagerIdx !== null}
+          requestId={Number(id)}
+          workspaceIndex={wsManagerIdx}
+          onClose={() => setWsManagerIdx(null)}
+          onRefresh={() => { refreshProcessedAndWorkspaces(); refreshMoveStatus(); }}
+        />
       )}
     </div>
   );
