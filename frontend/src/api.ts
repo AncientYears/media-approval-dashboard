@@ -42,6 +42,11 @@ export async function approveRelease(requestId: number, releaseId: number, reaso
   return response.data;
 }
 
+export async function importTorrent(requestId: number, params: { magnetUrl?: string; torrentFileBase64?: string; torrentFilename?: string; bypassApproval?: boolean }) {
+  const response = await api.post(`/requests/${requestId}/import`, params);
+  return response.data;
+}
+
 export async function searchAgain(requestId: number, params: Record<string, any>) {
   const response = await api.post(`/requests/${requestId}/search`, params);
   return response.data;

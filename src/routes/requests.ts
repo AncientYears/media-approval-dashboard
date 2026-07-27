@@ -3648,6 +3648,92 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/:id/import - Import a .torrent file or magnet link
+  router.post("/:id/import", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { magnetUrl, torrentFileBase64, torrentFilename, bypassApproval } = req.body || {};
+
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      if (!magnetUrl && !torrentFileBase64) {
+        return res.status(400).json({ error: "Provide magnetUrl or torrentFileBase64" });
+      }
+
+      const type = request.type === "series" ? "series" : "movie";
+      const downloadDir = type === "series"
+        ? (process.env.DOWNLOADS_TV || "/media/Torrents/Download/Serialy")
+        : (process.env.DOWNLOADS_MOVIES || "/media/Torrents/Download/Filmy");
+
+      // Snapshot existing qBittorrent hashes before adding
+      const preHashes = new Set((await qbittorrent.getTorrents()).map((t) => t.hash));
+
+      let addedTitle = "";
+      let addedHash = "";
+
+      if (magnetUrl) {
+        await qbittorrent.addTorrent(magnetUrl, downloadDir);
+        addedTitle = request.title || "Imported";
+      } else if (torrentFileBase64) {
+        const buf = Buffer.from(torrentFileBase64, "base64");
+        const filename = torrentFilename || "imported.torrent";
+        await qbittorrent.addTorrentFile(buf, filename, downloadDir);
+        addedTitle = filename.replace(/\.torrent$/i, "") || request.title || "Imported";
+      }
+
+      // Poll qBittorrent up to 10 times, 3s apart, to find the new torrent
+      let newTorrent = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const torrents = await qbittorrent.getTorrents();
+        newTorrent = torrents.find((t) => !preHashes.has(t.hash)) || null;
+        if (newTorrent) break;
+      }
+
+      if (newTorrent) {
+        addedHash = newTorrent.hash;
+        addedTitle = newTorrent.name || addedTitle;
+      }
+
+      // Create release_candidate
+      const radarrReleaseId = addedHash || `imported-${Date.now()}`;
+      const insertRC = db.prepare(`
+        INSERT OR IGNORE INTO release_candidates
+        (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, protocol, info_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const rcResult = insertRC.run(
+        id,
+        radarrReleaseId,
+        addedTitle,
+        "imported",
+        newTorrent ? Math.round(newTorrent.size / (1024 * 1024)) : 0,
+        addedHash,
+        newTorrent?.save_path || downloadDir,
+        "",
+        "torrent",
+        magnetUrl || "",
+      );
+      const releaseId = Number(rcResult.lastInsertRowid);
+
+      if (bypassApproval) {
+        db.prepare(`
+          INSERT INTO approval_history (request_id, release_id, approved_by, approval_reason)
+          VALUES (?, ?, ?, ?)
+        `).run(id, releaseId, "web-user", "imported");
+        db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run("DOWNLOADING", id);
+      }
+
+      console.log(`[Import] ${addedTitle} (${addedHash || "pending"}) → request #${id} (bypass=${!!bypassApproval})`);
+      res.json({ success: true, releaseId, title: addedTitle, hash: addedHash });
+    } catch (error: any) {
+      console.error("Error importing torrent:", error);
+      res.status(500).json({ error: error.message || "Failed to import torrent" });
+    }
+  });
+
   // POST /api/requests/:id/torrent/pause?releaseId=X - Pause torrent
   router.post("/:id/torrent/pause", async (req: Request, res: Response) => {
     try {

@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from "axios";
+import FormData from "form-data";
 
 export interface TorrentInfo {
   hash: string;
@@ -172,6 +173,28 @@ export class QBittorrentService {
     if (savePath) data += `&savepath=${encodeURIComponent(savePath)}`;
     if (category) data += `&category=${encodeURIComponent(category)}`;
     await this.post("/api/v2/torrents/add", data);
+  }
+
+  async addTorrentFile(buffer: Buffer, filename: string, savePath?: string): Promise<void> {
+    await this.ensureAuth();
+    const form = new FormData();
+    form.append("torrents", buffer, { filename, contentType: "application/x-bittorrent" });
+    if (savePath) form.append("savepath", savePath);
+    try {
+      await this.client.post("/api/v2/torrents/add", form, {
+        headers: { ...this.getHeaders(), ...form.getHeaders() },
+      });
+    } catch (error: any) {
+      if (error?.response?.status === 403) {
+        this.sid = null;
+        await this.login();
+        await this.client.post("/api/v2/torrents/add", form, {
+          headers: { ...this.getHeaders(), ...form.getHeaders() },
+        });
+      } else {
+        throw error;
+      }
+    }
   }
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {

@@ -5,6 +5,7 @@ import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
 import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
+import ImportModal from "../components/ImportModal";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
 type SearchMode = typeof SEARCH_MODES[number];
@@ -389,6 +390,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
   const [wsManagerIdx, setWsManagerIdx] = useState<number | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const refreshMoveStatus = useCallback(async () => {
     try {
@@ -772,6 +774,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
         <button className="btn btn-primary btn-tiny" onClick={handleSearch} disabled={searching}>
           {searching ? <span className="spinner" /> : "Search"}
         </button>
+        <button className="btn btn-workspace btn-tiny" onClick={() => setImportOpen(true)}>Import</button>
       </div>
 
       {searchProgress && (
@@ -927,6 +930,13 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
           onRefresh={() => { refreshProcessedAndWorkspaces(); refreshMoveStatus(); }}
         />
       )}
+
+      <ImportModal
+        open={importOpen}
+        requestId={season.request_id}
+        onClose={() => setImportOpen(false)}
+        onImported={() => { loadData(); loadTorrentStatuses(); }}
+      />
     </div>
   );
 }

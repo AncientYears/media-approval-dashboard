@@ -5,6 +5,7 @@ import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
 import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
+import ImportModal from "../components/ImportModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -204,6 +205,7 @@ export default function RequestDetail() {
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
   const [wsManagerIdx, setWsManagerIdx] = useState<number | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [scanFiles, setScanFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
   const [scanSelected, setScanSelected] = useState<Set<string>>(new Set());
   const [scanning, setScanning] = useState(false);
@@ -720,6 +722,7 @@ export default function RequestDetail() {
         <button className="btn btn-primary btn-tiny" onClick={handleSearchAgain} disabled={searching}>
           {searching ? <span className="spinner" /> : "Refresh"}
         </button>
+        <button className="btn btn-workspace btn-tiny" onClick={() => setImportOpen(true)}>Import</button>
       </div>
 
       {searchProgress && (
@@ -884,6 +887,13 @@ export default function RequestDetail() {
           onRefresh={() => { refreshProcessedAndWorkspaces(); refreshMoveStatus(); }}
         />
       )}
+
+      <ImportModal
+        open={importOpen}
+        requestId={Number(id)}
+        onClose={() => setImportOpen(false)}
+        onImported={() => { loadData(); }}
+      />
     </div>
   );
 }
