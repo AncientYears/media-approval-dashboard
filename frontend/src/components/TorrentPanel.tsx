@@ -77,7 +77,7 @@ export default function TorrentPanel({
   const [wsManagerOpen, setWsManagerOpen] = useState(false);
   const [wsManagerData, setWsManagerData] = useState<any[]>([]);
   const [wsEditIdx, setWsEditIdx] = useState<number | null>(null);
-  const [destroyConfirm, setDestroyConfirm] = useState(0);
+  const [showDestroyModal, setShowDestroyModal] = useState(false);
   const [wsEditValue, setWsEditValue] = useState("");
   const wsEditRef = useRef<HTMLInputElement>(null);
   const prevMrRef = useRef<any>(null);
@@ -234,20 +234,7 @@ export default function TorrentPanel({
                   <button className="btn btn-secondary btn-tiny" onClick={() => onResume(ar.id)}>Resume</button>
                 )}
                 {onDestroy && (
-                  destroyConfirm === 0 ? (
-                    <button className="btn btn-danger btn-tiny" onClick={() => setDestroyConfirm(1)}>Destroy</button>
-                  ) : destroyConfirm === 1 ? (
-                    <div style={{ display: "flex", gap: 3 }}>
-                      <button className="btn btn-danger btn-tiny" onClick={() => setDestroyConfirm(2)}>Sure?</button>
-                      <button className="btn btn-secondary btn-tiny" onClick={() => setDestroyConfirm(0)}>No</button>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", gap: 3 }}>
-                      <button className="btn btn-danger btn-tiny" onClick={() => { setDestroyConfirm(0); onDestroy(ar.id, true); }}>Delete Files</button>
-                      <button className="btn btn-danger btn-tiny" onClick={() => { setDestroyConfirm(0); onDestroy(ar.id, false); }}>Keep Files</button>
-                      <button className="btn btn-secondary btn-tiny" onClick={() => setDestroyConfirm(0)}>No</button>
-                    </div>
-                  )
+                  <button className="btn btn-danger btn-tiny" onClick={() => setShowDestroyModal(true)}>Destroy</button>
                 )}
               </div>
             )}
@@ -479,6 +466,40 @@ export default function TorrentPanel({
       onCancel={() => setWsPickerOpen(false)}
       busy={isMoving}
     />
+
+    {showDestroyModal && onDestroy && (
+      <div className="modal-overlay" onClick={() => setShowDestroyModal(false)}>
+        <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+          <h3 className="modal-title" style={{ color: "#ef4444" }}>Destroy Torrent</h3>
+          <div className="modal-body">
+            <div className="modal-line" style={{ fontWeight: 600 }}>
+              {ar.title || "Unknown"}
+            </div>
+            <div className="modal-line" style={{ marginTop: 8, color: "#94a3b8" }}>
+              The .torrent file and tracker info will be exported to /media/Torrents/Trackers/ before removal.
+            </div>
+            <div className="modal-spacer" />
+            <div className="modal-line" style={{ fontSize: "0.9em" }}>
+              <strong style={{ color: "#ef4444" }}>Delete Files</strong> — removes from qBittorrent and deletes downloaded files from disk
+            </div>
+            <div className="modal-line" style={{ fontSize: "0.9em", marginTop: 4 }}>
+              <strong style={{ color: "#f59e0b" }}>Keep Files</strong> — removes from qBittorrent but moves the files to /Processed
+            </div>
+            <div className="modal-line" style={{ fontSize: "0.85em", color: "#94a3b8", marginTop: 8 }}>
+              Processed (renamed/trimmed) files already in /Processed will be kept either way.
+            </div>
+            <div className="modal-line" style={{ fontSize: "0.85em", color: "#94a3b8" }}>
+              Sonarr/Radarr are not affected — if the media is still wanted, it will be re-discovered on next poll.
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={() => setShowDestroyModal(false)}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => { setShowDestroyModal(false); onDestroy(ar.id, false); }}>Keep Files</button>
+            <button className="btn btn-danger" onClick={() => { setShowDestroyModal(false); onDestroy(ar.id, true); }}>Delete Files</button>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   );
 }

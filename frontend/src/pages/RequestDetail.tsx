@@ -404,8 +404,6 @@ export default function RequestDetail() {
   };
 
   const handleDestroyRelease = async (releaseId: number, deleteFiles: boolean) => {
-    const label = deleteFiles ? "DESTROY this torrent AND delete downloaded files from disk?" : "DESTROY this torrent? (downloaded files kept on disk)";
-    if (!confirm(label + "\n\nThis will export the .torrent file + trackers before deleting. This CANNOT be undone.")) return;
     try {
       const result = await destroyRelease(Number(id), releaseId, deleteFiles);
       toast(`${result.title || "Torrent"} destroyed. Exported to /media/Torrents/Trackers/`, "success");
