@@ -684,7 +684,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                         To Workspace
                       </button>
                     )}
-                    <button className="btn btn-danger btn-tiny" onClick={() => { setDeletingProcessed(f.name); deleteProcessedFile(season.request_id, f.name).then(() => refreshProcessedAndWorkspaces()); }} disabled={deletingProcessed === f.name}>
+                    <button className="btn btn-danger btn-tiny" onClick={() => { setDeletingProcessed(f.name); deleteProcessedFile(season.request_id, f.name).then(() => { refreshProcessedAndWorkspaces(); refreshMoveStatus(); }); }} disabled={deletingProcessed === f.name}>
                       {deletingProcessed === f.name ? "..." : "Delete"}
                     </button>
                   </div>

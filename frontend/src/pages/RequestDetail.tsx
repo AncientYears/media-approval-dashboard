@@ -480,6 +480,7 @@ export default function RequestDetail() {
     try {
       await deleteProcessedFile(Number(id), fileName);
       await refreshProcessedAndWorkspaces();
+      refreshMoveStatus();
     } catch (err) {
       console.error("Delete processed file failed:", err);
     }

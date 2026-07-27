@@ -2673,6 +2673,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {}
       }
 
+      const wsDirs = listWorkspaces(request.id, request.title);
+      for (const ws of wsDirs) {
+        if (ws.metadata?.outputPaths) {
+          for (const op of ws.metadata.outputPaths) {
+            const exists = fs.existsSync(op);
+            const base = path.basename(op);
+            if (exists) matchedNames.add(base);
+          }
+        }
+      }
+
       // Determine library path for in-library checks
       let libraryPath = "";
       if (request.type === "series" && request.sonarr_id) {
@@ -2840,9 +2851,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const type = request.type === "series" ? "series" : "movie";
       const result = completeWorkspace(ws.path, type);
       if (!result.success) return res.status(400).json({ error: result.error });
-
-      // Delete the workspace directory after successful completion
-      try { deleteWorkspace(ws.path); } catch {}
 
       const processedDir = getProcessedDir(type);
       if (type === "movie" && request.radarr_id) {
