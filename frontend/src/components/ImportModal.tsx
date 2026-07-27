@@ -49,6 +49,7 @@ export default function ImportModal({ open, requestId, onClose, onImported }: Im
       const res = await importTorrent(requestId, params);
       setResult({ success: true, title: res.title });
       if (onImported) onImported();
+      setTimeout(onClose, 1500);
     } catch (err: any) {
       setResult({ success: false, error: err.response?.data?.error || err.message });
     }
