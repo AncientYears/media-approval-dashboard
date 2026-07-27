@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { fetchContentInfo, fetchWorkspaces } from "../api";
 import WorkspacePickerModal from "./WorkspacePickerModal";
 import WorkspaceManagerModal from "./WorkspaceManagerModal";
@@ -45,7 +45,6 @@ export interface TorrentPanelProps {
   onResume: (releaseId: number) => void;
   onCopyPath: (text: string) => void;
   onRefreshMoveStatus?: () => void;
-  onRefreshProcessed?: () => void;
   onUnlinkProcessed?: (processedFileName: string) => void;
   onDestroy?: (releaseId: number, deleteFiles: boolean) => void;
 }
@@ -67,7 +66,6 @@ export default function TorrentPanel({
   onResume,
   onCopyPath,
   onRefreshMoveStatus,
-  onRefreshProcessed,
   onUnlinkProcessed,
   onDestroy,
 }: TorrentPanelProps) {
@@ -102,10 +100,6 @@ export default function TorrentPanel({
       loadWorkspaces();
     }
   }, [ts?.progress, ts?.found, requestId, ar.id]);
-
-  useEffect(() => {
-    if (wsEditIdx !== null && wsEditRef.current) wsEditRef.current.focus();
-  }, [wsEditIdx]);
 
   useEffect(() => {
     if (mr && mr !== prevMrRef.current && ts?.progress === 100) {

@@ -736,7 +736,6 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             onResume={(releaseId) => handleResume(releaseId)}
             onCopyPath={handleCopyPath}
             onRefreshMoveStatus={refreshMoveStatus}
-            onRefreshProcessed={refreshProcessedAndWorkspaces}
             onDestroy={handleDestroyRelease}
             onUnlinkProcessed={async (fileName: string) => {
               try {

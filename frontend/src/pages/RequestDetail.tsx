@@ -683,7 +683,6 @@ export default function RequestDetail() {
             onResume={handleResume}
             onCopyPath={handleCopyPath}
             onRefreshMoveStatus={refreshMoveStatus}
-            onRefreshProcessed={refreshProcessedAndWorkspaces}
             onDestroy={handleDestroyRelease}
             onUnlinkProcessed={async (fileName: string) => {
               try {
