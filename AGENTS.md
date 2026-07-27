@@ -39,9 +39,14 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 │       ├── inputs/        #   Hardlinks from Download (read-only source)
 │       └── output/        #   Processed files (mkvmerge/ffmpeg output)
 │
-└── Processed/             # STAGING — ready for Sonarr/Radarr import
-    ├── Filmy/             #   Processed movies awaiting library import
-    └── Serialy/           #   Processed TV shows awaiting library import
+├── Processed/             # STAGING — ready for Sonarr/Radarr import
+│   ├── Filmy/             #   Processed movies awaiting library import
+│   └── Serialy/           #   Processed TV shows awaiting library import
+│
+└── Trackers/              # PER-TORRENT METADATA — exported on destroy
+    └── {info_hash}/
+        ├── *.torrent      #   Exported .torrent file
+        └── trackers.json  #   Tracker list
 
 /media/
 ├── filmy/                 # LIBRARY — Radarr-managed movie library
@@ -198,6 +203,34 @@ Download (100% complete)
 2. Falls back to copy on cross-device (EXDEV)
 3. Checks existing files before creating links
 
+## Torrent Import (POST /:id/import)
+
+1. User pastes magnet link OR uploads `.torrent` file + optional bypassApproval toggle
+2. Backend adds to qBittorrent using `toQBittorrentPath()` for save path
+3. Creates `release_candidate` with magnet/URL, status NEW, `torrent_hash = ''`
+4. If `bypassApproval=true`: creates `approval_history` + sets status AWAITING_APPROVAL immediately
+5. Polls qBittorrent up to 30s (1s intervals) waiting for torrent hash to appear
+6. When detected: updates RC hash, and if bypassed, calls `approveRelease()` to grab + transition to DOWNLOADING
+7. Frontend auto-closes modal and refreshes data
+
+## Per-Torrent Destroy (POST /:id/destroy/:releaseId)
+
+1. User clicks "Destroy" on TorrentPanel → opens modal explaining options
+2. Modal shows: release title, "Delete downloaded files from disk?" checkbox, "Remove from qBittorrent?" checkbox
+3. Backend: exports `.torrent` + `trackers.json` to `/media/Torrents/Trackers/{hash}/` (keeps metadata)
+4. If remove from qBittorrent: calls `deleteTorrent(hash, deleteFiles)` — qBittorrent optionally deletes downloaded files
+5. Moves content to /Processed via renameSync (NOT hardlink — torrent is gone, files are now independent)
+6. Cleans up release_candidates, approval_history for that release
+7. Does NOT touch Sonarr/Radarr (they remain as-is)
+
+## Request Grouping (Dashboard)
+
+- Series requests are grouped by `sonarr_id` in the Requests section
+- Each franchise shows as a card with season pills fetched from Sonarr (`GET /managed/:sonarrId/seasons`)
+- Requested seasons show status (SEARCHING/AWAITING_APPROVAL); unrequested seasons shown dimmed (opacity 0.4)
+- Title shows "X/Y requested" count
+- Clicking a requested season navigates to its request detail
+
 ## Key Files
 
 | File | Purpose |
@@ -216,6 +249,7 @@ Download (100% complete)
 | `src/server.ts` | App entry, startup stale RC cleanup |
 | `frontend/src/components/TorrentPanel.tsx` | Shared torrent panel (progress, stats, move actions) |
 | `frontend/src/components/WorkspacePickerModal.tsx` | Shared workspace picker modal (select existing + create new) |
+| `frontend/src/components/WorkspaceManagerModal.tsx` | Shared workspace manager (name, notes, scripts, complete & import, delete) |
 | `frontend/src/components/ScriptDropdown.tsx` | Multi-select dropdown for workspace scripts |
 | `frontend/src/pages/FranchiseDetail.tsx` | Franchise overview + SeasonDetail |
 | `frontend/src/pages/RequestDetail.tsx` | Single request view (movies) |
@@ -241,19 +275,19 @@ QBIT_USER=admin1
 QBIT_PASS=admin1
 
 # Paths — Download (immutable, seeds forever)
-DOWNLOADS_MOVIES=/media/Torrents/Download/Filmy
-DOWNLOADS_TV=/media/Torrents/Download/Serialy
+DOWNLOADS_MOVIES=/media/Torrents/download/filmy
+DOWNLOADS_TV=/media/Torrents/download/serialy
 
 # Paths — Processed (staging for Sonarr/Radarr import)
-PROCESSED_MOVIES=/media/Torrents/Processed/Filmy
-PROCESSED_TV=/media/Torrents/Processed/Serialy
+PROCESSED_MOVIES=/media/Torrents/processed/filmy
+PROCESSED_TV=/media/Torrents/processed/serialy
 
 # Paths — Workspace (ephemeral processing scratch space)
 PROCESSING_WORKSPACE=/media/Torrents/Workspace
 
 # Paths — Library (final destination, managed by Sonarr/Radarr)
-MEDIA_MOVIES=/media/filmy
-MEDIA_TV=/media/serialy
+MEDIA_MOVIES=/media/Filmy
+MEDIA_TV=/media/Serialy
 
 # Polling
 POLL_INTERVAL_RADARR=60
@@ -288,6 +322,14 @@ NTFY_TOPIC=
 - Managed media: series show always if DOWNLOADING/SEEDING; movies require `release_count > 0`
 - `franchise-season-row` uses flex layout with expandable inner content (click row header to toggle)
 - Hardlinks cannot cross filesystem boundaries — Download, Workspace, Processed, and Library must all be on the same volume
+- qBittorrent is in a separate Docker container — volume mapping: `/media/Torrents:/Torrents:rw`. Use `toQBittorrentPath()` (strips `/media`) and `fromQBittorrentPath()` (prepends `/media`) for all path conversions
+- Import endpoint FK fix: uses SELECT-then-INSERT (not INSERT OR IGNORE) to avoid `lastInsertRowid=0` causing FOREIGN KEY constraint failure on approval_history
+- `form-data` npm package used for qBittorrent multipart file upload (already a direct dependency)
+- Import endpoint uses `toQBittorrentPath()` for save path, `fromQBittorrentPath()` for content_path/save_path from qBittorrent
+- Destroy modal is a proper modal (not 3-click confirm), shows options for delete files vs keep files
+- Destroy moves Download content to /Processed via renameSync (NOT hardlink — since torrent is removed anyway)
+- Processed files in /Processed are preserved by destroy either way
+- `--card-bg: #1e293b` CSS variable fixes transparent modals
 
 ## Testing Checklist
 
@@ -321,3 +363,14 @@ NTFY_TOPIC=
 - [ ] TorrentPanel shared component renders correctly in both RequestDetail and FranchiseDetail
 - [ ] TorrentPanel shows content info badge (video/bluray/multi/none) at 100%
 - [ ] Content-info endpoint scans content_path for video files and BDMV directories
+- [ ] titlesMatch rejects sequel numbers (e.g. "moana 2" does NOT match "moana")
+- [ ] titlesMatch tolerates 1 missing word for 3+ word titles (e.g. "LEGO Ninjago" matches "Ninjago Dragons Rising")
+- [ ] Import: magnet link adds to qBittorrent and polls for hash
+- [ ] Import: .torrent file upload creates RC and polls for hash
+- [ ] Import: bypassApproval creates AWAITING_APPROVAL status immediately
+- [ ] Destroy: exports .torrent + trackers.json to /Trackers/{hash}/
+- [ ] Destroy: removes from qBittorrent, moves content to /Processed
+- [ ] Destroy: preserves processed files in /Processed either way
+- [ ] Dashboard: franchise grouping shows all seasons from Sonarr (X/Y requested)
+- [ ] Dashboard: unrequested seasons shown dimmed (opacity 0.4)
+- [ ] Scan Downloads: title+season mismatch detection frees wrongly-linked RCs

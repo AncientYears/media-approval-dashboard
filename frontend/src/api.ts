@@ -29,6 +29,11 @@ export async function fetchFranchise(sonarrId: number) {
   return response.data;
 }
 
+export async function fetchFranchiseSeasons(sonarrId: number) {
+  const response = await api.get(`/requests/managed/${sonarrId}/seasons`);
+  return response.data;
+}
+
 export async function fetchReleases(requestId: number) {
   const response = await api.get(`/requests/${requestId}`);
   return response.data;

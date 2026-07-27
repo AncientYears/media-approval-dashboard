@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
+import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -82,6 +82,7 @@ export default function Dashboard() {
   const [modal, setModal] = useState<{ title?: string; lines: string[]; onCleanup?: () => void } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
+  const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
 
   const loadData = useCallback(async () => {
     try {
@@ -134,6 +135,17 @@ export default function Dashboard() {
       ungroupedRequests.push(req);
     }
   }
+
+  // Fetch full season lists from Sonarr for franchise groups
+  useEffect(() => {
+    const ids = Object.keys(groupedFranchises).map(Number);
+    for (const id of ids) {
+      if (franchiseSeasons[id]) continue;
+      fetchFranchiseSeasons(id).then((data) => {
+        setFranchiseSeasons((prev) => ({ ...prev, [id]: data }));
+      }).catch(() => {});
+    }
+  }, [Object.keys(groupedFranchises).join(",")]);
 
   if (loading && requests.length === 0) {
     return <div className="container"><p>Loading requests...</p></div>;
@@ -325,31 +337,43 @@ export default function Dashboard() {
         <div className="dashboard-section">
           <h3>Requests — {requestsList.length}</h3>
           <div className="requests-grid">
-            {Object.values(groupedFranchises).map((franchise) => (
-              <div key={`franchise-${franchise.sonarr_id}`} className="request-card managed-card">
-                <div className="request-header">
-                  <h3>{franchise.title} <span className="type-suffix">- Series ({franchise.seasons.length} season{franchise.seasons.length !== 1 ? "s" : ""})</span></h3>
+            {Object.values(groupedFranchises).map((franchise) => {
+              const allSeasons = franchiseSeasons[franchise.sonarr_id]?.seasons || [];
+              const requestedMap = new Map(franchise.seasons.map((s: any) => [s.season, s]));
+              return (
+                <div key={`franchise-${franchise.sonarr_id}`} className="request-card managed-card">
+                  <div className="request-header">
+                    <h3>{franchise.title} <span className="type-suffix">- Series ({franchise.seasons.length}/{allSeasons.length || franchise.seasons.length} requested)</span></h3>
+                  </div>
+                  <div className="managed-seasons">
+                    {(allSeasons.length > 0 ? allSeasons : franchise.seasons.map((s: any) => ({ season: s.season }))).map((sn: any) => {
+                      const req = requestedMap.get(sn.season);
+                      return (
+                        <div
+                          key={sn.season}
+                          className={`managed-season ${req ? "" : "unrequested"}`}
+                          onClick={() => req && navigate(`/requests/${req.id}`)}
+                          style={{ opacity: req ? 1 : 0.4, cursor: req ? "pointer" : "default" }}
+                        >
+                          <span className="season-label">S{String(sn.season).padStart(2, "0")}</span>
+                          <span className={`season-status ${req ? (req.status === "AWAITING_APPROVAL" ? "has-content" : "empty") : ""}`}>
+                            {req ? req.status.replace(/_/g, " ") : "—"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="request-actions">
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${franchise.sonarr_id}`)}>View Franchise</button>
+                    <button className="btn btn-danger btn-tiny" onClick={() => {
+                      if (window.confirm(`Delete "${franchise.title}" from DB + Sonarr?`)) {
+                        deleteFranchise(franchise.sonarr_id).then(() => loadData());
+                      }
+                    }}>Delete</button>
+                  </div>
                 </div>
-                <div className="managed-seasons">
-                  {franchise.seasons.map((s: any) => (
-                    <div key={s.season ?? s.id} className="managed-season" onClick={() => navigate(`/requests/${s.id}`)}>
-                      <span className="season-label">S{String(s.season ?? 0).padStart(2, "0")}</span>
-                      <span className={`season-status ${s.status === "AWAITING_APPROVAL" ? "has-content" : "empty"}`}>
-                        {s.status.replace(/_/g, " ")}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <div className="request-actions">
-                  <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${franchise.sonarr_id}`)}>View Franchise</button>
-                  <button className="btn btn-danger btn-tiny" onClick={() => {
-                    if (window.confirm(`Delete "${franchise.title}" from DB + Sonarr?`)) {
-                      deleteFranchise(franchise.sonarr_id).then(() => loadData());
-                    }
-                  }}>Delete</button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {ungroupedRequests.map((req: any) => (
               <div key={req.id} className="request-card">
                 <div className="request-header">

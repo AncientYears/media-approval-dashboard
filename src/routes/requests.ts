@@ -686,6 +686,33 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/managed/:sonarrId/seasons - Lightweight: all seasons from Sonarr + which are requested
+  router.get("/managed/:sonarrId/seasons", async (req: Request, res: Response) => {
+    try {
+      const sonarrId = Number(req.params.sonarrId);
+      const series = await sonarr.getSeries(sonarrId).catch(() => null);
+      if (!series) return res.status(404).json({ error: "Series not found in Sonarr" });
+      const sonarrSeasons = (series.seasons || []).map((s: any) => s.seasonNumber);
+
+      const requestedSeasons = db.prepare(
+        "SELECT season, id, status, title FROM media_requests WHERE sonarr_id = ? AND type = 'series'"
+      ).all(sonarrId) as any[];
+
+      const requestedMap = new Map<number, any>();
+      for (const rs of requestedSeasons) requestedMap.set(rs.season, rs);
+
+      const seasons = sonarrSeasons.map((sn: number) => ({
+        season: sn,
+        requested: requestedMap.get(sn) || null,
+      }));
+
+      res.json({ title: series.title, sonarr_id: sonarrId, seasons });
+    } catch (error: any) {
+      console.error("Error fetching franchise seasons:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch seasons" });
+    }
+  });
+
   // GET /api/requests/managed/:sonarrId - Franchise detail: all seasons + all releases
   router.get("/managed/:sonarrId", async (req: Request, res: Response) => {
     try {
