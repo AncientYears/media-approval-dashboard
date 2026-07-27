@@ -194,6 +194,11 @@ export async function deleteRequest(requestId: number, deleteFiles = false) {
   return response.data;
 }
 
+export async function destroyRequest(requestId: number, deleteFiles = false) {
+  const response = await api.post(`/requests/${requestId}/destroy`, { deleteFiles });
+  return response.data;
+}
+
 export async function detectTorrents() {
   const response = await api.post("/requests/detect-torrents");
   return response.data;

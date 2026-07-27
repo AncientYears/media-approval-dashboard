@@ -1962,6 +1962,108 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/:id/destroy - Full destroy: export torrent+trackers, delete from qbit, clean DB/processed/workspaces
+  router.post("/:id/destroy", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { deleteFiles } = req.body || {};
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const TRACKERS_DIR = "/media/Torrents/Trackers";
+
+      // Export .torrent + trackers for each release
+      const releases = db.prepare(
+        "SELECT rc.* FROM release_candidates rc " +
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+      ).all(id) as any[];
+
+      const exported: string[] = [];
+      for (const rel of releases) {
+        if (!rel.torrent_hash) continue;
+        const hash = rel.torrent_hash;
+        const dir = path.join(TRACKERS_DIR, hash);
+        fs.mkdirSync(dir, { recursive: true });
+
+        // Export .torrent file
+        const torrentBuf = await qbittorrent.exportTorrent(hash);
+        if (torrentBuf) {
+          fs.writeFileSync(path.join(dir, `${rel.title || hash}.torrent`), torrentBuf);
+        }
+
+        // Save tracker URLs
+        const trackers = await qbittorrent.getTrackers(hash);
+        fs.writeFileSync(path.join(dir, "trackers.json"), JSON.stringify({
+          title: rel.title,
+          hash,
+          release_group: rel.release_group,
+          size_mb: rel.size_mb,
+          trackers: trackers.map((t) => t.url),
+          exported_at: new Date().toISOString(),
+        }, null, 2));
+
+        exported.push(hash);
+        console.log(`[Destroy] Exported torrent+trackers for ${rel.title} → ${dir}`);
+      }
+
+      // Delete from qBittorrent
+      for (const rel of releases) {
+        if (rel.torrent_hash) {
+          try { await qbittorrent.deleteTorrent(rel.torrent_hash, !!deleteFiles); } catch {}
+        }
+      }
+
+      // Delete processed files
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      const approvals = db.prepare(
+        "SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
+      ).all(id) as any[];
+      for (const ah of approvals) {
+        try {
+          const names = JSON.parse(ah.processed_files);
+          for (const name of names) {
+            const fp = path.join(processedDir, name);
+            if (fs.existsSync(fp)) {
+              const st = fs.statSync(fp);
+              if (st.isDirectory()) fs.rmSync(fp, { recursive: true, force: true });
+              else fs.unlinkSync(fp);
+            }
+          }
+        } catch {}
+      }
+
+      // Delete workspaces
+      const wsDirs = listWorkspaces(request.id, request.title);
+      for (const ws of wsDirs) {
+        try { deleteWorkspace(ws.path); } catch {}
+      }
+
+      // Delete from Sonarr/Radarr
+      const sUrl = process.env.SONARR_URL || "";
+      const sKey = process.env.SONARR_API_KEY || "";
+      const rUrl = process.env.RADARR_URL || "";
+      const rKey = process.env.RADARR_API_KEY || "";
+      if (request.sonarr_id && sUrl) {
+        try { await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=${!!deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
+      }
+      if (request.radarr_id && rUrl) {
+        try { await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=${!!deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": rKey } }); } catch {}
+      }
+
+      // Clean DB
+      db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
+      db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
+      db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
+
+      console.log(`[Destroy] Deleted request #${id}: ${request.title} (${exported.length} torrents exported, deleteFiles=${!!deleteFiles})`);
+      res.json({ success: true, exported });
+    } catch (error: any) {
+      console.error("Error destroying request:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // DELETE /api/requests/:id - Delete a single request and its releases
   router.delete("/:id", async (req: Request, res: Response) => {
     try {

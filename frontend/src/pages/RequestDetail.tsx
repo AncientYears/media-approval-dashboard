@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, destroyRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -403,14 +403,19 @@ export default function RequestDetail() {
     }
   };
 
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(0);
 
-  const handleDelete = async (deleteFiles: boolean) => {
-    const label = deleteFiles ? "Delete request AND library files?" : "Delete request only (keep library files)?";
-    if (!confirm(label + " This cannot be undone.")) return;
-    await deleteRequest(Number(id), deleteFiles);
-    toast("Request deleted", "success");
-    navigate("/");
+  const handleDestroy = async (deleteFiles: boolean) => {
+    if (deleteConfirm < 2) { setDeleteConfirm(deleteConfirm + 1); return; }
+    const label = deleteFiles ? "DESTROY request, torrent, AND library files?" : "DESTROY request and torrent? (library files kept)";
+    if (!confirm(label + "\n\nThis will export the .torrent file + trackers before deleting. This CANNOT be undone.")) return;
+    try {
+      const result = await destroyRequest(Number(id), deleteFiles);
+      toast(`Request destroyed. ${result.exported?.length || 0} torrent(s) exported to /media/Torrents/Trackers/`, "success");
+      navigate("/");
+    } catch (err: any) {
+      toast(`Destroy failed: ${err.message}`, "error");
+    }
   };
 
   const handleRemoveFromLibrary = async (releaseId: number) => {
@@ -721,13 +726,18 @@ export default function RequestDetail() {
           {searching ? <span className="spinner" /> : "Refresh"}
         </button>
         {(!hasAnyTorrent && !approvedReleases.some((r: any) => r.torrent_hash)) && (
-          !deleteConfirm ? (
-            <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(true)}>Delete</button>
+          deleteConfirm === 0 ? (
+            <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(1)}>Delete</button>
+          ) : deleteConfirm === 1 ? (
+            <div style={{ display: "flex", gap: 4 }}>
+              <button className="btn btn-danger btn-tiny" onClick={() => setDeleteConfirm(2)}>Are you sure?</button>
+              <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
+            </div>
           ) : (
             <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-danger btn-tiny" onClick={() => handleDelete(false)}>Keep Files</button>
-              <button className="btn btn-danger btn-tiny" onClick={() => handleDelete(true)}>Delete Files</button>
-              <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(false)}>Cancel</button>
+              <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(false)}>Keep Files</button>
+              <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(true)}>Delete Files</button>
+              <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
             </div>
           )
         )}

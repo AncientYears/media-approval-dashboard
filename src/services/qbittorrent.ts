@@ -138,6 +138,35 @@ export class QBittorrentService {
     await this.post("/api/v2/torrents/delete", `hashes=${hash}&deleteFiles=${deleteFiles}`);
   }
 
+  async exportTorrent(hash: string): Promise<Buffer | null> {
+    await this.ensureAuth();
+    try {
+      const response = await this.client.get("/api/v2/torrents/export", {
+        params: { hash },
+        headers: this.getHeaders(),
+        responseType: "arraybuffer",
+      });
+      return Buffer.from(response.data);
+    } catch (error: any) {
+      console.error(`[qBittorrent] Export torrent failed for ${hash}:`, error?.response?.status || error.message);
+      return null;
+    }
+  }
+
+  async getTrackers(hash: string): Promise<{ url: string; status: string }[]> {
+    await this.ensureAuth();
+    try {
+      const response = await this.client.get("/api/v2/torrents/trackers", {
+        params: { hash },
+        headers: this.getHeaders(),
+      });
+      return (response.data as any[]).filter((t: any) => t.url && !t.url.startsWith("**")).map((t: any) => ({ url: t.url, status: t.status === 0 ? "working" : t.status === 1 ? "updating" : t.status === 2 ? "disabled" : "error" }));
+    } catch (error: any) {
+      console.error(`[qBittorrent] Get trackers failed for ${hash}:`, error?.response?.status || error.message);
+      return [];
+    }
+  }
+
   async addTorrent(urls: string, savePath?: string, category?: string): Promise<void> {
     let data = `urls=${encodeURIComponent(urls)}`;
     if (savePath) data += `&savepath=${encodeURIComponent(savePath)}`;
