@@ -202,7 +202,6 @@ export default function RequestDetail() {
   const [wsPickerList, setWsPickerList] = useState<any[]>([]);
   const [wsPickerName, setWsPickerName] = useState("");
   const [wsPickerNotes, setWsPickerNotes] = useState("");
-  const [wsPickerScripts, setWsPickerScripts] = useState<string[]>([]);
 
   const refreshMoveStatus = async () => {
     try {
@@ -506,7 +505,6 @@ export default function RequestDetail() {
     setWsPickerFile(null);
     setWsPickerName("");
     setWsPickerNotes("");
-    setWsPickerScripts([]);
   };
 
   return (
