@@ -2610,7 +2610,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             try {
               const contentStat = fs.statSync(contentPath);
               const wsInputStat = fs.statSync(wsInput);
-              if (contentStat.ino === wsInputStat.ino && contentStat.dev === wsInputStat.dev) {
+              if (contentStat.isDirectory() || (contentStat.ino === wsInputStat.ino && contentStat.dev === wsInputStat.dev)) {
                 results[rel.id] = { source: contentPath, destination: wsInput, inWorkspace: true };
                 foundInWorkspace = true;
                 break;
