@@ -2000,6 +2000,30 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         exported = true;
         console.log(`[Destroy] Exported torrent+trackers for ${rel.title} → ${dir}`);
 
+        // If keeping files, hardlink content to processed before removing from qBit
+        if (!deleteFiles && rel.torrent_hash) {
+          const torrent = await qbittorrent.getTorrentByHash(rel.torrent_hash);
+          if (torrent?.content_path && fs.existsSync(torrent.content_path)) {
+            const type = request.type === "series" ? "series" : "movie";
+            const result = moveToProcessedSync(torrent.content_path, type);
+            if (result.success) {
+              console.log(`[Destroy] Hardlinked kept files ${torrent.content_path} → ${result.destination}`);
+              // Store processed file names in approval_history for association
+              const names: string[] = [];
+              const stat = fs.statSync(torrent.content_path);
+              if (stat.isDirectory()) {
+                for (const f of fs.readdirSync(torrent.content_path)) names.push(f);
+              } else {
+                names.push(path.basename(torrent.content_path));
+              }
+              try {
+                db.prepare("UPDATE approval_history SET processed_files = ? WHERE release_id = ?")
+                  .run(JSON.stringify(names), releaseId);
+              } catch {}
+            }
+          }
+        }
+
         // Delete from qBittorrent
         try { await qbittorrent.deleteTorrent(hash, !!deleteFiles); } catch {}
       }

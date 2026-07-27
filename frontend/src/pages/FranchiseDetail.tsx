@@ -95,7 +95,6 @@ function Breakdown({ r }: { r: any }) {
 export default function FranchiseDetail() {
   const { sonarrId } = useParams<{ sonarrId: string }>();
   const navigate = useNavigate();
-  const { toast } = useToast();
   const [franchise, setFranchise] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -363,6 +362,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   initialSearch?: { term: string; mode: SearchMode } | null;
   onBack: () => void;
 }) {
+  const { toast } = useToast();
   const [releases, setReleases] = useState<any[]>([]);
   const [approvedReleases, setApprovedReleases] = useState<any[]>([]);
 
