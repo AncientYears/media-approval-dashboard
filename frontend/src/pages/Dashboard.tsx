@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise } from "../api";
+import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -24,7 +24,7 @@ const STATUS_ORDER: Record<string, number> = {
   DOWNLOADING: 3,
 };
 
-function Modal({ title, lines, onClose, onOk }: { title?: string; lines: string[]; onClose: () => void; onOk?: () => void }) {
+function Modal({ title, lines, onClose, onOk, onCleanup }: { title?: string; lines: string[]; onClose: () => void; onOk?: () => void; onCleanup?: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
@@ -36,7 +36,12 @@ function Modal({ title, lines, onClose, onOk }: { title?: string; lines: string[
             </div>
           ))}
         </div>
-        {onOk ? (
+        {onCleanup ? (
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={onClose}>Close</button>
+            <button className="btn btn-danger" onClick={onCleanup}>Clean Up</button>
+          </div>
+        ) : onOk ? (
           <div className="modal-actions">
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
             <button className="btn btn-danger" onClick={onOk}>Delete Duplicates</button>
@@ -74,7 +79,7 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("status_asc");
-  const [modal, setModal] = useState<{ title?: string; lines: string[] } | null>(null);
+  const [modal, setModal] = useState<{ title?: string; lines: string[]; onCleanup?: () => void } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
 
@@ -125,7 +130,7 @@ export default function Dashboard() {
 
   return (
     <div className="container">
-      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => { setModal(null); setPendingCleanup(null); }} onOk={pendingCleanup ? async () => {
+      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => { setModal(null); setPendingCleanup(null); }} onCleanup={modal.onCleanup} onOk={pendingCleanup ? async () => {
         setPendingCleanup(null);
         setModal({ title: "Cleanup Duplicates", lines: ["Deleting..."] });
         try {
@@ -265,6 +270,39 @@ export default function Dashboard() {
               setModal({ title: "Cleanup Duplicates", lines: [`Error: ${err.message}`] });
             }
           }}>Cleanup Duplicates</button>
+          <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
+            setModal({ title: "Scan Workspaces", lines: ["Scanning workspace directories..."] });
+            try {
+              const result = await scanWorkspaces();
+              if (!result.workspaces || result.workspaces.length === 0) {
+                setModal({ title: "Scan Workspaces", lines: ["No workspace directories found."] });
+                return;
+              }
+              const lines: string[] = [`${result.workspaces.length} workspace(s) found:`];
+              lines.push("");
+              for (const ws of result.workspaces) {
+                const icon = ws.status === "orphaned" ? "!" : ws.status === "empty" ? "-" : "+";
+                const label = ws.status === "orphaned" ? "ORPHANED" : ws.status === "empty" ? "EMPTY" : "active";
+                lines.push(`[${icon}] ${ws.dirName} — ${label}`);
+                if (ws.requestTitle) lines.push(`    Request: ${ws.requestTitle} (${ws.requestType})`);
+                lines.push(`    Inputs: ${ws.inputCount}, Outputs: ${ws.outputCount}`);
+                if (ws.metadata?.name) lines.push(`    Name: ${ws.metadata.name}`);
+                if (ws.metadata?.status) lines.push(`    Status: ${ws.metadata.status}`);
+              }
+              const cleanupable = result.workspaces.filter((ws: any) => ws.status === "orphaned" || ws.status === "empty");
+              if (cleanupable.length > 0) {
+                lines.push("");
+                lines.push(`${cleanupable.length} can be cleaned up.`);
+              }
+              setModal({ title: "Scan Workspaces", lines, onCleanup: cleanupable.length > 0 ? async () => {
+                setModal({ title: "Cleanup Workspaces", lines: ["Deleting..."] });
+                const del = await cleanupWorkspaces(cleanupable.map((ws: any) => ws.dirName));
+                setModal({ title: "Cleanup Workspaces", lines: [`Deleted ${del.deleted} workspace(s).${del.errors.length > 0 ? "\nErrors: " + del.errors.join(", ") : ""}`] });
+              } : undefined });
+            } catch (err: any) {
+              setModal({ title: "Scan Workspaces", lines: [`Error: ${err.message}`] });
+            }
+          }}>Scan Workspaces</button>
         </div>
       </div>
 

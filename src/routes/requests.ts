@@ -1803,6 +1803,91 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/workspaces/scan - Scan all workspace dirs, report orphaned/empty
+  router.post("/workspaces/scan", async (req: Request, res: Response) => {
+    try {
+      const workspaceBase = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
+      if (!fs.existsSync(workspaceBase)) return res.json({ workspaces: [], empty: true });
+
+      const requests = db.prepare("SELECT id, title, type FROM media_requests").all() as any[];
+      const requestMap = new Map<number, any>();
+      for (const r of requests) requestMap.set(r.id, r);
+
+      const entries = fs.readdirSync(workspaceBase, { withFileTypes: true });
+      const results: any[] = [];
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const wsDir = path.join(workspaceBase, entry.name);
+        const match = entry.name.match(/^(\d+)-/);
+        const requestId = match ? parseInt(match[1], 10) : null;
+        const request = requestId ? requestMap.get(requestId) : null;
+
+        const inputsDir = path.join(wsDir, "inputs");
+        const outputDir = path.join(wsDir, "output");
+        const metaPath = path.join(wsDir, "metadata.json");
+
+        let inputCount = 0;
+        let outputCount = 0;
+        let metadata: any = null;
+
+        try { inputCount = fs.readdirSync(inputsDir).length; } catch {}
+        try { outputCount = fs.readdirSync(outputDir).length; } catch {}
+        try { metadata = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch {}
+
+        let status = "active";
+        if (!request) status = "orphaned";
+        else if (inputCount === 0 && outputCount === 0) status = "empty";
+
+        results.push({
+          dirName: entry.name,
+          path: wsDir,
+          requestId,
+          requestTitle: request?.title || null,
+          requestType: request?.type || null,
+          inputCount,
+          outputCount,
+          metadata,
+          status,
+        });
+      }
+
+      res.json({ workspaces: results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/workspaces/cleanup - Delete orphaned/empty workspace dirs
+  router.post("/workspaces/cleanup", async (req: Request, res: Response) => {
+    try {
+      const { dirNames } = req.body as { dirNames?: string[] };
+      if (!dirNames || !Array.isArray(dirNames) || dirNames.length === 0) {
+        return res.status(400).json({ error: "dirNames array required" });
+      }
+
+      const workspaceBase = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
+      let deleted = 0;
+      const errors: string[] = [];
+
+      for (const name of dirNames) {
+        const dirPath = path.join(workspaceBase, name);
+        if (!dirPath.startsWith(workspaceBase)) continue;
+        if (!fs.existsSync(dirPath)) continue;
+        try {
+          deleteWorkspace(dirPath);
+          deleted++;
+        } catch (err: any) {
+          errors.push(`${name}: ${err.message}`);
+        }
+      }
+
+      res.json({ deleted, errors });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // POST /api/requests/:id/reactivate - Re-activate a single DISMISSED request
   router.post("/:id/reactivate", (req: Request, res: Response) => {
     try {
@@ -2524,9 +2609,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const ws of wsDirs) {
           const wsInput = path.join(ws.path, "inputs", basename);
           if (fs.existsSync(wsInput)) {
-            results[rel.id] = { source: contentPath, destination: wsInput, inWorkspace: true };
-            foundInWorkspace = true;
-            break;
+            try {
+              const contentStat = fs.statSync(contentPath);
+              const wsInputStat = fs.statSync(wsInput);
+              if (contentStat.ino === wsInputStat.ino && contentStat.dev === wsInputStat.dev) {
+                results[rel.id] = { source: contentPath, destination: wsInput, inWorkspace: true };
+                foundInWorkspace = true;
+                break;
+              }
+            } catch {}
           }
         }
 
@@ -2535,7 +2626,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           for (const ws of wsDirs) {
             if (ws.metadata?.outputPaths) {
               for (const op of ws.metadata.outputPaths) {
-                if (fs.existsSync(op)) processedOutputs.push(op);
+                if (fs.existsSync(op) && path.basename(op) === basename) processedOutputs.push(op);
               }
             }
           }
