@@ -37,8 +37,15 @@ function isSeasonPackTitle(title: string, season: number): boolean {
 }
 
 function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
-  // Primary: prefix match (lookup title is start of torrent title or vice versa)
-  if (torrentNorm.startsWith(lookupNorm) || lookupNorm.startsWith(torrentNorm)) return true;
+  // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
+  if (torrentNorm.startsWith(lookupNorm)) {
+    const suffix = torrentNorm.slice(lookupNorm.length).trimStart();
+    if (!suffix || !/^\d{1,3}\b/.test(suffix)) return true;
+  }
+  if (lookupNorm.startsWith(torrentNorm)) {
+    const suffix = lookupNorm.slice(torrentNorm.length).trimStart();
+    if (!suffix || !/^\d{1,3}\b/.test(suffix)) return true;
+  }
   // Secondary: lookup title appears in torrent, but must be >= 10 chars to avoid false positives
   // like "Dragons" matching "Ninjago Dragons Rising"
   if (lookupNorm.length >= 10 && torrentNorm.includes(lookupNorm)) return true;
