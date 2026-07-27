@@ -86,7 +86,6 @@ export interface TorrentPanelProps {
   onTogglePreprocessing: (checked: boolean) => void;
   onMove: (releaseId: number, workspaceIndex?: number, wsConfig?: { name?: string; notes?: string; scripts?: string[] }) => void;
   onMoveToLibrary: (releaseId: number) => void;
-  onDismiss: (releaseId: number) => void;
   onRemoveFromLibrary: (releaseId: number) => void;
   onPause: (releaseId: number) => void;
   onResume: (releaseId: number) => void;
@@ -106,7 +105,6 @@ export default function TorrentPanel({
   onTogglePreprocessing,
   onMove,
   onMoveToLibrary,
-  onDismiss,
   onRemoveFromLibrary,
   onPause,
   onResume,

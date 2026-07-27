@@ -490,7 +490,6 @@ export default function RequestDetail() {
             onTogglePreprocessing={(checked) => setPreprocessingMap((prev) => ({ ...prev, [ar.id]: checked }))}
             onMove={handleMove}
             onMoveToLibrary={handleMoveToLibrary}
-            onDismiss={handleDismiss}
             onRemoveFromLibrary={handleRemoveFromLibrary}
             onPause={handlePause}
             onResume={handleResume}

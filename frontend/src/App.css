@@ -1571,6 +1571,10 @@ body {
 }
 
 /* Processed Files Card */
+.processed-card {
+  border-style: dashed;
+}
+
 .processed-file-list {
   max-height: 200px;
   overflow-y: auto;

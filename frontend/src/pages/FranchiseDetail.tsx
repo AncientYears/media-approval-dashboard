@@ -619,7 +619,6 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
             onTogglePreprocessing={(checked) => setPreprocessingMap((prev) => ({ ...prev, [ar.id]: checked }))}
             onMove={handleMove}
             onMoveToLibrary={handleMoveToLibrary}
-            onDismiss={handleDismiss}
             onRemoveFromLibrary={handleRemoveFromLibrary}
             onPause={(releaseId) => handlePause(releaseId)}
             onResume={(releaseId) => handleResume(releaseId)}

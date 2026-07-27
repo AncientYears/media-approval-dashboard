@@ -353,17 +353,9 @@ export default function Dashboard() {
                 </div>
               )
             ))}
-          </div>
-        </div>
-      )}
-
-      {processed && (processed.movies.length > 0 || processed.tv.length > 0) && (
-        <div className="dashboard-section">
-          <h3>Processed Files</h3>
-          <div className="requests-grid">
-            {processed.movies.length > 0 && (
-              <div className="request-card managed-card">
-                <h3 className="managed-title">Movies <span className="type-suffix">- Processed</span></h3>
+            {processed && processed.movies.length > 0 && (
+              <div className="request-card managed-card processed-card">
+                <h3 className="managed-title">Processed <span className="type-suffix">- Movies</span></h3>
                 <div className="processed-file-list">
                   {processed.movies.map((f) => (
                     <div key={f.name} className="processed-file-row">
@@ -374,9 +366,9 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
-            {processed.tv.length > 0 && (
-              <div className="request-card managed-card">
-                <h3 className="managed-title">TV Shows <span className="type-suffix">- Processed</span></h3>
+            {processed && processed.tv.length > 0 && (
+              <div className="request-card managed-card processed-card">
+                <h3 className="managed-title">Processed <span className="type-suffix">- TV</span></h3>
                 <div className="processed-file-list">
                   {processed.tv.map((f) => (
                     <div key={f.name} className="processed-file-row">
