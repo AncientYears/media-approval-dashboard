@@ -2574,8 +2574,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {}
       }
 
+      // Determine library path for in-library checks
+      let libraryPath = "";
+      if (request.type === "series" && request.sonarr_id) {
+        try {
+          const series = await sonarr.getSeries(request.sonarr_id);
+          libraryPath = series.path || path.join(process.env.MEDIA_TV || "/media/serialy", series.title);
+        } catch {}
+      } else if (request.radarr_id) {
+        try {
+          const movie = await radarr.getMovie(request.radarr_id);
+          libraryPath = movie.path || movie.folderPath;
+        } catch {}
+      }
+
       const entries = fs.readdirSync(processedDir, { withFileTypes: true });
-      const files: { name: string; size: number; isDir: boolean }[] = [];
+      const files: { name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[] = [];
 
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
@@ -2583,7 +2597,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
-        files.push({ name: entry.name, size, isDir: entry.isDirectory() });
+        const destPath = libraryPath ? path.join(libraryPath, entry.name) : "";
+        const inLibrary = destPath ? fs.existsSync(destPath) : false;
+        files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: inLibrary ? destPath : "" });
       }
 
       res.json({ files, processedDir });
@@ -2620,6 +2636,41 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/processed/:fileName/to-workspace - Hardlink a processed file to workspace
+  router.post("/:id/processed/:fileName/to-workspace", async (req: Request, res: Response) => {
+    try {
+      const { id, fileName } = req.params;
+      const { name, notes, scripts, workspaceIndex } = req.body || {};
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      const filePath = path.join(processedDir, decodeURIComponent(fileName));
+
+      if (!filePath.startsWith(processedDir)) {
+        return res.status(400).json({ error: "Invalid path" });
+      }
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "File not found in processed" });
+      }
+
+      const wsConfig: any = {};
+      if (name) wsConfig.name = name;
+      if (notes) wsConfig.notes = notes;
+      if (scripts) wsConfig.scripts = scripts;
+
+      const result = moveToWorkspaceSync(filePath, request.id, request.title, workspaceIndex, undefined, undefined, Object.keys(wsConfig).length > 0 ? wsConfig : undefined);
+      if (!result.success) return res.status(500).json({ error: result.error });
+
+      console.log(`[ProcessedToWorkspace] ${filePath} → ${result.destination}`);
+      res.json({ success: true, source: filePath, destination: result.destination });
+    } catch (error: any) {
+      console.error("Error moving processed to workspace:", error);
+      res.status(500).json({ error: `Failed to move to workspace: ${error.message}` });
     }
   });
 

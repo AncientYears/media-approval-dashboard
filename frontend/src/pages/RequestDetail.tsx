@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 
@@ -194,7 +194,7 @@ export default function RequestDetail() {
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
-  const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
+  const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[]>([]);
   const [processedDir, setProcessedDir] = useState<string>("");
   const [movingProcessed, setMovingProcessed] = useState(false);
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
@@ -491,17 +491,28 @@ export default function RequestDetail() {
             <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
           </div>
           {processedFiles.map((f) => (
-            <div key={f.name} className="processed-file-row">
-              <span className="processed-file-name" title={`${processedDir}/${f.name}`}>{f.name}</span>
-              <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : (f.isDir ? "folder" : "—")}</span>
-              <div className="processed-file-actions">
-                <button className="btn btn-secondary btn-tiny" onClick={() => handleCopyPath(`${processedDir}/${f.name}`)}>Copy</button>
-                <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(true); try { await moveToLibrary(Number(id)); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setMovingProcessed(false); }} disabled={movingProcessed}>
-                  {movingProcessed ? "..." : "To Library"}
-                </button>
-                <button className="btn btn-danger btn-tiny" onClick={() => handleDeleteProcessedFile(f.name)} disabled={deletingProcessed === f.name}>
-                  {deletingProcessed === f.name ? "..." : "Delete"}
-                </button>
+            <div key={f.name}>
+              <div className="torrent-path-row">
+                <span className="path-label">Processed:</span>
+                <span className="torrent-path" title={`${processedDir}/${f.name}`} onClick={() => handleCopyPath(`${processedDir}/${f.name}`)}>
+                  {f.name}
+                </span>
+                {f.inLibrary && (
+                  <button className="btn btn-tiny btn-library-ok" title={f.libraryPath}>In Library</button>
+                )}
+                <div className="move-actions">
+                  {!f.inLibrary && (
+                    <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(true); try { await moveToLibrary(Number(id)); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setMovingProcessed(false); }} disabled={movingProcessed}>
+                      {movingProcessed ? "..." : "To Library"}
+                    </button>
+                  )}
+                  <button className="btn btn-workspace btn-tiny" onClick={async () => { setMovingProcessed(true); try { await processedToWorkspace(Number(id), f.name); setProcessedFiles((prev) => prev.filter((p) => p.name !== f.name)); } catch {} setMovingProcessed(false); }} disabled={movingProcessed}>
+                    {movingProcessed ? "..." : "To Workspace"}
+                  </button>
+                  <button className="btn btn-danger btn-tiny" onClick={() => handleDeleteProcessedFile(f.name)} disabled={deletingProcessed === f.name}>
+                    {deletingProcessed === f.name ? "..." : "Delete"}
+                  </button>
+                </div>
               </div>
             </div>
           ))}
