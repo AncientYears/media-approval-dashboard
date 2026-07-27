@@ -2846,7 +2846,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/:id/processed/scan - Return ALL files in processed dir (unfiltered) for manual association
+  // POST /api/requests/:id/processed/scan - Return unlinked files in processed dir (exclude files already matched to other requests)
   router.post("/:id/processed/scan", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -2857,10 +2857,38 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const processedDir = getProcessedDir(type);
       if (!fs.existsSync(processedDir)) return res.json({ files: [] });
 
+      // Collect names already matched to OTHER requests
+      const otherNames = new Set<string>();
+      const otherRequests = db.prepare("SELECT id, type FROM media_requests WHERE id != ?").all(id) as any[];
+      for (const other of otherRequests) {
+        const otherType = other.type === "series" ? "series" : "movie";
+        if (otherType !== type) continue;
+        const rels = db.prepare(
+          "SELECT rc.* FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+        ).all(other.id) as any[];
+        for (const rel of rels) {
+          if (!rel.torrent_hash) continue;
+          try {
+            const torrent = await qbittorrent.getTorrentByHash(rel.torrent_hash);
+            if (torrent) otherNames.add(path.basename(torrent.content_path));
+          } catch {}
+        }
+        const otherApprovals = db.prepare(
+          "SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
+        ).all(other.id) as any[];
+        for (const ah of otherApprovals) {
+          try {
+            const names = JSON.parse(ah.processed_files);
+            for (const n of names) otherNames.add(n);
+          } catch {}
+        }
+      }
+
       const entries = fs.readdirSync(processedDir, { withFileTypes: true });
       const files: { name: string; size: number; isDir: boolean }[] = [];
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
+        if (otherNames.has(entry.name)) continue;
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
