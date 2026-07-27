@@ -109,7 +109,23 @@ export default function TorrentPanel({
   }, [mr]);
 
   if (!ar.torrent_hash) return null;
-  if (ts && !ts.found) return null;
+  if (ts && !ts.found) {
+    return (
+      <div className="torrent-panel">
+        <div className="approved-release-info">
+          <span className="approved-label">Installed</span>
+          <span className="approved-title">{ar.title}</span>
+          <span className="rtag rtag-warn">Torrent missing</span>
+        </div>
+        <div className="torrent-meta">
+          <span>Torrent no longer in qBittorrent</span>
+          {onDestroy && (
+            <button className="btn btn-danger btn-tiny" style={{ marginLeft: 8 }} onClick={() => setShowDestroyModal(true)}>Remove</button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const contentBadge = contentInfo ? (() => {
     switch (contentInfo.type) {

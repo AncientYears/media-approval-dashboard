@@ -3739,24 +3739,38 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Create release_candidate
       const radarrReleaseId = addedHash || `imported-${Date.now()}`;
-      const insertRC = db.prepare(`
-        INSERT OR IGNORE INTO release_candidates
-        (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, protocol, info_url)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      const rcResult = insertRC.run(
-        id,
-        radarrReleaseId,
-        addedTitle,
-        "imported",
-        newTorrent ? Math.round(newTorrent.size / (1024 * 1024)) : 0,
-        addedHash,
-        newTorrent?.save_path || downloadDir,
-        "",
-        "torrent",
-        magnetUrl || "",
-      );
-      const releaseId = Number(rcResult.lastInsertRowid);
+      let releaseId: number;
+
+      const existing = db.prepare(
+        "SELECT id FROM release_candidates WHERE request_id = ? AND radarr_release_id = ?"
+      ).get(id, radarrReleaseId) as any;
+
+      if (existing) {
+        releaseId = existing.id;
+        db.prepare(`
+          UPDATE release_candidates SET title = ?, torrent_hash = ?, save_path = ?, size_mb = ?
+          WHERE id = ?
+        `).run(addedTitle, addedHash, newTorrent?.save_path || downloadDir,
+          newTorrent ? Math.round(newTorrent.size / (1024 * 1024)) : 0, releaseId);
+      } else {
+        const rcResult = db.prepare(`
+          INSERT INTO release_candidates
+          (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, protocol, info_url)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          radarrReleaseId,
+          addedTitle,
+          "imported",
+          newTorrent ? Math.round(newTorrent.size / (1024 * 1024)) : 0,
+          addedHash,
+          newTorrent?.save_path || downloadDir,
+          "",
+          "torrent",
+          magnetUrl || "",
+        );
+        releaseId = Number(rcResult.lastInsertRowid);
+      }
 
       if (bypassApproval) {
         db.prepare(`

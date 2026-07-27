@@ -107,7 +107,14 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       const staleRcIds: { id: number; reason: string }[] = [];
       for (const rc of withHashes) {
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
-        if (!t) continue;
+        if (!t) {
+          // Torrent gone from qBittorrent — only clean up if approved (has approval_history)
+          const hasApproval = db.prepare("SELECT 1 FROM approval_history WHERE release_id = ?").get(rc.rc_id);
+          if (hasApproval) {
+            staleRcIds.push({ id: rc.rc_id, reason: "torrent removed from qBittorrent" });
+          }
+          continue;
+        }
         const tnRaw = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
         const tn = tnRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
         const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
