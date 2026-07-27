@@ -2677,11 +2677,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       for (const ws of wsDirs) {
         if (ws.metadata?.outputPaths) {
           for (const op of ws.metadata.outputPaths) {
-            const exists = fs.existsSync(op);
-            const base = path.basename(op);
-            if (exists) matchedNames.add(base);
+            if (fs.existsSync(op)) matchedNames.add(path.basename(op));
           }
         }
+      }
+
+      const approvals = db.prepare(
+        "SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
+      ).all(id) as any[];
+      for (const ah of approvals) {
+        try {
+          const names = JSON.parse(ah.processed_files);
+          for (const n of names) matchedNames.add(n);
+        } catch {}
       }
 
       // Determine library path for in-library checks
@@ -2728,6 +2736,65 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       res.json({ files, processedDir });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/processed/scan - Return ALL files in processed dir (unfiltered) for manual association
+  router.post("/:id/processed/scan", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      if (!fs.existsSync(processedDir)) return res.json({ files: [] });
+
+      const entries = fs.readdirSync(processedDir, { withFileTypes: true });
+      const files: { name: string; size: number; isDir: boolean }[] = [];
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) continue;
+        const fullPath = path.join(processedDir, entry.name);
+        let size = 0;
+        try { size = fs.statSync(fullPath).size; } catch {}
+        files.push({ name: entry.name, size, isDir: entry.isDirectory() });
+      }
+
+      res.json({ files, processedDir });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/processed/associate - Associate processed file(s) with this request
+  router.post("/:id/processed/associate", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { fileNames } = req.body || {};
+      if (!Array.isArray(fileNames) || fileNames.length === 0) {
+        return res.status(400).json({ error: "fileNames array required" });
+      }
+
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const approval = db.prepare(
+        "SELECT ah.id FROM approval_history ah WHERE ah.request_id = ? ORDER BY ah.approved_at DESC LIMIT 1"
+      ).get(id) as any;
+
+      if (!approval) {
+        const ahId = db.prepare(
+          "INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, 0, 'system', ?)"
+        ).run(id, JSON.stringify(fileNames)).lastInsertRowid;
+        res.json({ success: true, approvalId: ahId });
+      } else {
+        const existing = JSON.parse((db.prepare("SELECT processed_files FROM approval_history WHERE id = ?").get(approval.id) as any)?.processed_files || "[]");
+        const merged = [...new Set([...existing, ...fileNames])];
+        db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(merged), approval.id);
+        res.json({ success: true });
+      }
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -2851,6 +2918,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const type = request.type === "series" ? "series" : "movie";
       const result = completeWorkspace(ws.path, type);
       if (!result.success) return res.status(400).json({ error: result.error });
+
+      const outputBasenames = result.processedPaths.map((p) => path.basename(p));
+
+      const approval = db.prepare(
+        "SELECT ah.id FROM approval_history ah WHERE ah.request_id = ? ORDER BY ah.approved_at DESC LIMIT 1"
+      ).get(id) as any;
+      if (approval) {
+        const existing = JSON.parse((db.prepare("SELECT processed_files FROM approval_history WHERE id = ?").get(approval.id) as any)?.processed_files || "[]");
+        const merged = [...new Set([...existing, ...outputBasenames])];
+        db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(merged), approval.id);
+      }
 
       const processedDir = getProcessedDir(type);
       if (type === "movie" && request.radarr_id) {

@@ -143,6 +143,16 @@ export async function deleteProcessedFile(requestId: number, fileName: string) {
   return response.data;
 }
 
+export async function scanProcessedDir(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/processed/scan`);
+  return response.data;
+}
+
+export async function associateProcessedFiles(requestId: number, fileNames: string[]) {
+  const response = await api.post(`/requests/${requestId}/processed/associate`, { fileNames });
+  return response.data;
+}
+
 export async function processedToWorkspace(requestId: number, fileName: string, wsConfig?: { name?: string; notes?: string; scripts?: string[]; workspaceIndex?: number }) {
   const response = await api.post(`/requests/${requestId}/processed/${encodeURIComponent(fileName)}/to-workspace`, wsConfig || {});
   return response.data;

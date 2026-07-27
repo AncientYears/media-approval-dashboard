@@ -190,6 +190,13 @@ export function initializeDatabase(dbPath: string): DBInstance {
       db.exec(`ALTER TABLE media_requests ADD COLUMN last_searched_at TEXT`);
     }
 
+    // Migration: add processed_files to approval_history
+    const ahCols = db.prepare("PRAGMA table_info(approval_history)").all() as any[];
+    const ahColNames = ahCols.map((c: any) => c.name);
+    if (!ahColNames.includes("processed_files")) {
+      db.exec(`ALTER TABLE approval_history ADD COLUMN processed_files TEXT DEFAULT '[]'`);
+    }
+
   return {
     db,
     close: () => db.close(),

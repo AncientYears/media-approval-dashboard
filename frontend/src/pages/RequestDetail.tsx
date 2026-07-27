@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -201,6 +201,10 @@ export default function RequestDetail() {
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanFiles, setScanFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
+  const [scanSelected, setScanSelected] = useState<Set<string>>(new Set());
+  const [scanning, setScanning] = useState(false);
 
   const refreshMoveStatus = async () => {
     try {
@@ -497,6 +501,28 @@ export default function RequestDetail() {
     } catch {}
   };
 
+  const handleScanProcessed = async () => {
+    setScanning(true);
+    try {
+      const data = await scanProcessedDir(Number(id));
+      const currentNames = new Set(processedFiles.map((f) => f.name));
+      setScanFiles(data.files || []);
+      setScanSelected(new Set((data.files || []).filter((f: any) => currentNames.has(f.name)).map((f: any) => f.name)));
+      setScanOpen(true);
+    } catch {}
+    setScanning(false);
+  };
+
+  const handleAssociateSelected = async () => {
+    const names = [...scanSelected];
+    if (names.length === 0) return;
+    try {
+      await associateProcessedFiles(Number(id), names);
+      await refreshProcessedAndWorkspaces();
+      setScanOpen(false);
+    } catch {}
+  };
+
   const openProcWsPicker = async (fileName: string) => {
     setProcWsPickerFile(fileName);
     try {
@@ -529,13 +555,59 @@ export default function RequestDetail() {
         busy={movingProcessed === procWsPickerFile}
       />
 
-      {processedFiles.length > 0 && (
-        <div className="torrent-panel processed-panel">
-          <div className="section-divider">Processed</div>
-          <div className="processed-header">
-            <span className="rtag rtag-content-ok">Processed</span>
-            <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
+      {scanOpen && (
+        <div className="modal-overlay" onClick={() => setScanOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>Scan Processed Folder</span>
+              <button className="modal-close" onClick={() => setScanOpen(false)}>&times;</button>
+            </div>
+            <div className="modal-body" style={{ maxHeight: 400, overflowY: "auto" }}>
+              {scanFiles.length === 0 ? (
+                <div style={{ padding: 16, color: "var(--text-muted)" }}>No files found in processed folder</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {scanFiles.map((f) => (
+                    <label key={f.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: scanSelected.has(f.name) ? "var(--accent-bg)" : "transparent", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={scanSelected.has(f.name)}
+                        onChange={(e) => {
+                          const next = new Set(scanSelected);
+                          if (e.target.checked) next.add(f.name); else next.delete(f.name);
+                          setScanSelected(next);
+                        }}
+                      />
+                      <span style={{ flex: 1, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{f.isDir ? "dir" : `${(f.size / 1048576).toFixed(1)} MB`}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setScanOpen(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleAssociateSelected} disabled={scanSelected.size === 0}>
+                Link Selected ({scanSelected.size})
+              </button>
+            </div>
           </div>
+        </div>
+      )}
+
+      <div className="torrent-panel processed-panel">
+        <div className="section-divider">
+          Processed
+          <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 8 }} onClick={handleScanProcessed} disabled={scanning}>
+            {scanning ? "Scanning..." : "Scan Folder"}
+          </button>
+        </div>
+        {processedFiles.length > 0 && (
+          <>
+            <div className="processed-header">
+              <span className="rtag rtag-content-ok">Processed</span>
+              <span className="rtag">{processedFiles.length} file{processedFiles.length !== 1 ? "s" : ""}</span>
+            </div>
           {processedFiles.map((f) => {
             const wsForFile = procWorkspaces.find((ws: any) => {
               return ws.inputFiles?.some((inf: any) => inf.name === f.name);
@@ -574,8 +646,9 @@ export default function RequestDetail() {
               </div>
             );
           })}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {approvedReleases.length > 0 && (
         <div className="section-divider">Torrents</div>
