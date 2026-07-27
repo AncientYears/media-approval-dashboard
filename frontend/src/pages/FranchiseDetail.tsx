@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, dismissRequest, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus } from "../api";
+import { fetchFranchise, fetchReleases, fetchTorrentStatuses, fetchSeasonEpisodes, approveRelease, pauseTorrent, resumeTorrent, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, fetchMoveStatus } from "../api";
 import TorrentPanel from "../components/TorrentPanel";
 
 const SEARCH_MODES = ["season", "episodes"] as const;
@@ -506,12 +506,6 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const handleResume = async (releaseId?: number) => {
     await resumeTorrent(season.request_id, releaseId);
     loadTorrentStatuses();
-  };
-
-  const handleDismiss = async (releaseId: number) => {
-    await dismissRequest(season.request_id, releaseId);
-    await loadData();
-    setTorrentStatuses([]);
   };
 
   const handleCopyPath = async (text: string) => {

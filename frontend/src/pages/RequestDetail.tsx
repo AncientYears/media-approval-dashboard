@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, dismissRequest, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, deleteRequest, fetchMoveStatus } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 
@@ -383,13 +383,6 @@ export default function RequestDetail() {
     } finally {
       setMoving(null);
     }
-  };
-
-  const handleDismiss = async (releaseId?: number) => {
-    if (!confirm("Permanently delete? This cannot be undone.")) return;
-    await dismissRequest(Number(id), releaseId);
-    toast("Release deleted", "success");
-    navigate("/");
   };
 
   const handleDelete = async () => {
