@@ -50,6 +50,8 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 
 ### Data Flow
 
+/Processed is the **source of truth**. Files there are independent — not linked to any torrent.
+
 ```
 qBittorrent
      │
@@ -57,6 +59,7 @@ qBittorrent
 /Download (immutable, always seeds from here)
      │
      ├────── [no processing needed] ────── hardlink to /Processed ──┐
+     │     (treated as independent file, not linked to torrent)     │
      │                                                              │
      └────── [processing needed] ── hardlink to /Workspace          │
               │                                                     │
@@ -64,34 +67,53 @@ qBittorrent
          /Workspace/{id}-{name}/                                    │
               inputs/  →  mkvmerge/ffmpeg  →  output/              │
               │                                                     │
-              └──── hardlink output to /Processed ──┘               │
-                                                                     │
-                                                      /Processed    │
-                                                         │          │
-                                                         ▼          │
-                                                   Sonarr/Radarr import
-                                                         │          │
-                                                         ▼          │
-                                                       /Library     │
+              └──── delete inputs, MOVE output to /Processed ───────┘
+                    (outputs are new files, different inodes, truly independent)
+                                                                      │
+                                                       /Processed    │
+                                                          │          │
+                                                          ▼          │
+                                                    Sonarr/Radarr import
+                                                          │          │
+                                                          ▼          │
+                                                        /Library     │
 ```
 
 ### Manual Preprocessing Flow (TorrentPanel UI)
 ```
 Download (100% complete)
      │
-     ├── [checkbox OFF] "Move to Processed" → Processed/{Filmy|Serialy}/{name}/
-     │                                          └── Sonarr/Radarr import
+     ├── [checkbox OFF] "Move to Processed"
+     │     → hardlink Download/* to /Processed/
+     │     → file appears in processed panel as independent
+     │     → "To Library" button sends to Radarr/Sonarr
      │
-     └── [checkbox ON]  "Move to Workspace" → Workspace/{id}-{name}/inputs/
-                                                ├── output/ (pre-created)
-                                                └── Manual mux/merge → Processed
+     └── [checkbox ON] "To Workspace" → opens WorkspacePickerModal
+           → select existing workspace or create new (name, notes, scripts)
+           → hardlink Download/* to workspace/inputs/
+           → user processes files manually (mux/merge)
+           → "Complete & Import" deletes inputs, MOVEs outputs to /Processed/
+           → file appears in processed panel as independent (different inode)
+           → "To Library" button sends to Radarr/Sonarr
+```
+
+### Re-processing Flow
+```
+/Processed file (independent)
+     │
+     └── "To Workspace" → opens WorkspacePickerModal
+           → hardlink /Processed/* to workspace/inputs/
+           → user re-processes (different mux, audio tracks, etc.)
+           → "Complete & Import" MOVEs outputs to /Processed/
+           → file replaced as independent
 ```
 
 ### Key Principles
 - **Download is immutable**: never modify, never delete while seeding
 - **Workspace is ephemeral**: cleaned up after each processing job
-- **Processed is staging**: Sonarr/Radarr import from here and rename
-- **Hardlinks everywhere**: zero extra disk space, original untouched
+- **Processed is the source of truth**: independent files, not linked to torrents
+- **Workspace outputs are MOVED** (renameSync) to Processed — not hardlinked — different inodes
+- **No-preprocess hardlinks** are treated as independent even though they share inodes with Download
 - **Library managed by Sonarr/Radarr**: they handle renaming and organization
 
 ## Search Flow
@@ -193,6 +215,8 @@ Download (100% complete)
 | `src/db/index.ts` | Schema, migrations, auto-repair |
 | `src/server.ts` | App entry, startup stale RC cleanup |
 | `frontend/src/components/TorrentPanel.tsx` | Shared torrent panel (progress, stats, move actions) |
+| `frontend/src/components/WorkspacePickerModal.tsx` | Shared workspace picker modal (select existing + create new) |
+| `frontend/src/components/ScriptDropdown.tsx` | Multi-select dropdown for workspace scripts |
 | `frontend/src/pages/FranchiseDetail.tsx` | Franchise overview + SeasonDetail |
 | `frontend/src/pages/RequestDetail.tsx` | Single request view (movies) |
 | `frontend/src/pages/Dashboard.tsx` | Requests list + filters + managed media |

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { fetchContentInfo, fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, deleteWorkspaceFile, deleteWorkspace } from "../api";
+import WorkspacePickerModal from "./WorkspacePickerModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -70,10 +71,7 @@ export default function TorrentPanel({
 }: TorrentPanelProps) {
   const [contentInfo, setContentInfo] = useState<any>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
-  const [selectedWorkspace, setSelectedWorkspace] = useState<number | "new">("new");
-  const [editingWs, setEditingWs] = useState<number | null>(null);
-  const [editName, setEditName] = useState("");
-  const editInputRef = useRef<HTMLInputElement>(null);
+  const [wsPickerOpen, setWsPickerOpen] = useState(false);
   const [wsManagerOpen, setWsManagerOpen] = useState(false);
   const [wsManagerData, setWsManagerData] = useState<any[]>([]);
   const [wsEditIdx, setWsEditIdx] = useState<number | null>(null);
@@ -82,23 +80,10 @@ export default function TorrentPanel({
   const prevMrRef = useRef<any>(null);
 
   const defaultName = requestTitle || ar.title || "";
-  const [newWsName, setNewWsName] = useState(defaultName);
-  const [newWsNotes, setNewWsNotes] = useState("");
-  const [newWsScripts, setNewWsScripts] = useState<string[]>([]);
 
   const loadWorkspaces = () => {
     fetchWorkspaces(requestId).then((data) => {
-      const list = data.workspaces || [];
-      setWorkspaces(list);
-      if (selectedWorkspace !== "new") {
-        const stillExists = list.some((w: any) => w.index === selectedWorkspace);
-        if (!stillExists) {
-          if (list.length > 0) setSelectedWorkspace(list[list.length - 1].index);
-          else setSelectedWorkspace("new");
-        }
-      } else if (list.length > 0) {
-        setSelectedWorkspace(list[list.length - 1].index);
-      }
+      setWorkspaces(data.workspaces || []);
     }).catch(() => {});
   };
 
@@ -114,7 +99,7 @@ export default function TorrentPanel({
     }).catch(() => {});
   };
 
-  const managedWs = wsManagerData.find((w: any) => w.index === (typeof selectedWorkspace === "number" ? selectedWorkspace : null));
+  const managedWs = wsManagerData[0] || null;
 
   const handleFileDelete = async (wsIndex: number, subDir: "inputs" | "output", fileName: string) => {
     await deleteWorkspaceFile(requestId, wsIndex, subDir, fileName);
@@ -142,16 +127,16 @@ export default function TorrentPanel({
   };
 
   useEffect(() => {
+    loadWorkspaces();
+  }, [requestId]);
+
+  useEffect(() => {
     if (ts?.progress === 100 && ts?.found) {
       setContentInfo(null);
       fetchContentInfo(requestId, ar.id).then(setContentInfo).catch(() => {});
       loadWorkspaces();
     }
   }, [ts?.progress, ts?.found, requestId, ar.id]);
-
-  useEffect(() => {
-    if (editingWs !== null && editInputRef.current) editInputRef.current.focus();
-  }, [editingWs]);
 
   useEffect(() => {
     if (wsEditIdx !== null && wsEditRef.current) wsEditRef.current.focus();
@@ -302,82 +287,24 @@ export default function TorrentPanel({
                     <span className="preprocessing-label">Needs preprocessing</span>
                   </label>
                   {contentBadge}
-                  {preprocessing && (
-                    <div className="workspace-picker">
-                      {editingWs !== null ? (
-                        <div className="workspace-edit-inline">
-                          <input
-                            ref={editInputRef}
-                            className="workspace-edit-input"
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            onBlur={async () => {
-                              if (editName.trim()) {
-                                await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
-                                refreshAll();
-                              }
-                              setEditingWs(null);
-                            }}
-                            onKeyDown={async (e) => {
-                              if (e.key === "Enter" && editName.trim()) {
-                                await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
-                                refreshAll();
-                                setEditingWs(null);
-                              }
-                              if (e.key === "Escape") setEditingWs(null);
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <>
-                          <select
-                            className="workspace-select"
-                            value={selectedWorkspace}
-                            onChange={(e) => {
-                              const val = e.target.value === "new" ? "new" : Number(e.target.value);
-                              setSelectedWorkspace(val);
-                              setWsManagerOpen(false);
-                            }}
-                          >
-                            {workspaces.map((ws) => {
-                              const label = ws.metadata?.name || `Job ${ws.index}`;
-                              return (
-                                <option key={ws.index} value={ws.index}>
-                                  {label} ({ws.inputCount} in / {ws.outputCount} out)
-                                </option>
-                              );
-                            })}
-                            <option value="new">+ New workspace</option>
-                          </select>
-                          {selectedWorkspace !== "new" && (
-                            <button
-                              className="btn btn-secondary btn-tiny"
-                              title="Rename workspace"
-                              onClick={() => {
-                                const ws = workspaces.find((w: any) => w.index === selectedWorkspace);
-                                setEditName(ws?.metadata?.name || `Job ${ws?.index}`);
-                                setEditingWs(selectedWorkspace as number);
-                              }}
-                            >&#9998;</button>
-                          )}
-                          <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
-                        </>
-                      )}
-                    </div>
-                  )}
                   <div style={{ display: "flex", gap: 4 }}>
-                    <button
-                      className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
-                      onClick={() => {
-                        const wsConfig = preprocessing && selectedWorkspace === "new"
-                          ? { name: newWsName || undefined, notes: newWsNotes || undefined, scripts: newWsScripts.length > 0 ? newWsScripts : undefined }
-                          : undefined;
-                        onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined, wsConfig);
-                      }}
-                      disabled={isMoving}
-                    >
-                      {isMoving ? "Moving..." : preprocessing ? "Move to Workspace" : "Move to Processed"}
-                    </button>
+                    {preprocessing ? (
+                      <button
+                        className="btn btn-workspace btn-tiny"
+                        onClick={() => setWsPickerOpen(true)}
+                        disabled={isMoving}
+                      >
+                        {isMoving ? "Moving..." : "To Workspace"}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-primary btn-tiny"
+                        onClick={() => onMove(ar.id)}
+                        disabled={isMoving}
+                      >
+                        {isMoving ? "Moving..." : "Move to Processed"}
+                      </button>
+                    )}
                     <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
                       {isMoving ? "Moving..." : "Move to Library"}
                     </button>
@@ -519,46 +446,18 @@ export default function TorrentPanel({
       </div>
     )}
 
-    {wsManagerOpen && selectedWorkspace === "new" && (
-      <div className="modal-overlay" onClick={() => setWsManagerOpen(false)}>
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <div className="modal-header">
-            <h3 style={{ margin: 0 }}>New Workspace</h3>
-            <button className="modal-close" onClick={() => setWsManagerOpen(false)}>&times;</button>
-          </div>
-          <div className="modal-body">
-            <div className="ws-manager-section-label">Name</div>
-            <input
-              className="ws-manager-notes-input"
-              placeholder="Workspace name"
-              value={newWsName}
-              onChange={(e) => setNewWsName(e.target.value)}
-            />
-            <div className="ws-manager-section-label">Notes</div>
-            <textarea
-              className="ws-manager-notes-input"
-              rows={2}
-              placeholder="Add notes about this workspace..."
-              value={newWsNotes}
-              onChange={(e) => setNewWsNotes(e.target.value)}
-            />
-            <div className="ws-manager-section-label">Scripts</div>
-            <ScriptDropdown
-              value={newWsScripts}
-              onChange={setNewWsScripts}
-              placeholder="Select scripts..."
-            />
-            <div className="ws-manager-section">
-              <div className="ws-manager-section-label">Outputs</div>
-              <div className="ws-manager-empty">Place processed files in workspace/output/</div>
-            </div>
-            <div className="ws-manager-actions">
-              <button className="btn btn-primary btn-tiny" onClick={() => setWsManagerOpen(false)}>Done</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
+    <WorkspacePickerModal
+      open={wsPickerOpen}
+      fileName={undefined}
+      workspaces={workspaces}
+      defaultName={defaultName}
+      onMove={(config) => {
+        setWsPickerOpen(false);
+        onMove(ar.id, config.workspaceIndex, config);
+      }}
+      onCancel={() => setWsPickerOpen(false)}
+      busy={isMoving}
+    />
     </>
   );
 }
