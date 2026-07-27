@@ -407,7 +407,7 @@ export default function RequestDetail() {
 
   const handleDestroy = async (deleteFiles: boolean) => {
     if (deleteConfirm < 2) { setDeleteConfirm(deleteConfirm + 1); return; }
-    const label = deleteFiles ? "DESTROY request, torrent, AND library files?" : "DESTROY request and torrent? (library files kept)";
+    const label = deleteFiles ? "DESTROY request AND delete downloaded files from disk?" : "DESTROY request? (downloaded files kept on disk)";
     if (!confirm(label + "\n\nThis will export the .torrent file + trackers before deleting. This CANNOT be undone.")) return;
     try {
       const result = await destroyRequest(Number(id), deleteFiles);
@@ -734,8 +734,8 @@ export default function RequestDetail() {
           </div>
         ) : (
           <div style={{ display: "flex", gap: 4 }}>
-            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(false)}>Keep Library</button>
-            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(true)}>Delete Library</button>
+            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(false)}>Keep Files</button>
+            <button className="btn btn-danger btn-tiny" onClick={() => handleDestroy(true)}>Delete Files</button>
             <button className="btn btn-secondary btn-tiny" onClick={() => setDeleteConfirm(0)}>Cancel</button>
           </div>
         )}

@@ -2039,18 +2039,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try { deleteWorkspace(ws.path); } catch {}
       }
 
-      // Delete from Sonarr/Radarr
-      const sUrl = process.env.SONARR_URL || "";
-      const sKey = process.env.SONARR_API_KEY || "";
-      const rUrl = process.env.RADARR_URL || "";
-      const rKey = process.env.RADARR_API_KEY || "";
-      if (request.sonarr_id && sUrl) {
-        try { await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=${!!deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
-      }
-      if (request.radarr_id && rUrl) {
-        try { await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=${!!deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": rKey } }); } catch {}
-      }
-
       // Clean DB
       db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
