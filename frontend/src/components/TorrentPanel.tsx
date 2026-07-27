@@ -262,7 +262,7 @@ export default function TorrentPanel({
                 <div className="torrent-path-row">
                   <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
                   <span className="move-result">
-                    <span>Hardlinked &rarr;</span>
+                    <span>{mr.processedOutputs && !mr.inWorkspace ? "Processed" : "Hardlinked"} &rarr;</span>
                     <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(mr.destination)}>{mr.destination}</span>
                   </span>
                   {mr?.inWorkspace && (

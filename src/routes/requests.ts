@@ -2592,7 +2592,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         const processedPath = path.join(processedDir, basename);
         if (fs.existsSync(processedPath)) {
-          // Verify it's actually the same file (same inode) — not a workspace output with the same name
           try {
             const contentStat = fs.statSync(contentPath);
             const processedStat = fs.statSync(processedPath);
@@ -2601,7 +2600,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               continue;
             }
           } catch {}
-          // Different file with same name (workspace output) — fall through to workspace check
         }
 
         const wsDirs = listWorkspaces(request.id, request.title);
@@ -2632,6 +2630,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
           if (processedOutputs.length > 0) {
             results[rel.id] = { source: contentPath, destination: processedOutputs[0], processedOutputs };
+          } else if (fs.existsSync(processedPath)) {
+            results[rel.id] = { source: contentPath, destination: processedPath, processedOutputs: [processedPath] };
           } else {
             results[rel.id] = null;
           }
