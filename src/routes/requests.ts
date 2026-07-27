@@ -57,7 +57,9 @@ function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   const longerSet = new Set(longer.split(/\s+/));
   if (shorterWords.length >= 2) {
     const matched = shorterWords.filter((w: string) => longerSet.has(w));
-    if (matched.length === shorterWords.length) return true;
+    // Allow 1 missing word for 3+ word titles (handles "LEGO" prefix differences, episode titles appended, etc.)
+    const tolerance = shorterWords.length >= 3 ? 1 : 0;
+    if (matched.length >= shorterWords.length - tolerance) return true;
   }
 
   return false;
