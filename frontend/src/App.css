@@ -1570,6 +1570,43 @@ body {
   align-items: center;
 }
 
+/* Processed Files Card */
+.processed-file-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.processed-file-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.processed-file-row:last-child {
+  border-bottom: none;
+}
+
+.processed-file-name {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.processed-file-size {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .franchise-season {
   margin-bottom: 16px;
 }
@@ -1805,7 +1842,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1863,6 +1900,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .modal-header {
@@ -2113,6 +2151,14 @@ body {
 .script-dropdown-item input[type="checkbox"] {
   accent-color: var(--primary);
   margin: 0;
+}
+
+.script-dropdown-empty {
+  padding: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+  opacity: 0.6;
 }
 
 .ws-file-exists {

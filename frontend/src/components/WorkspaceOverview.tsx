@@ -49,7 +49,7 @@ export default function WorkspaceOverview() {
                   key={`${w.requestId}-${w.index}`}
                   className={`ws-overview-row ${isCompleted ? "ws-overview-row-completed" : ""}`}
                   onClick={() => {
-                    navigate(w.mediaType === "tv" ? `/managed/${w.requestId}` : `/requests/${w.requestId}`);
+                    navigate(w.mediaType === "series" ? `/managed/${w.requestId}` : `/requests/${w.requestId}`);
                     setOpen(false);
                   }}
                 >

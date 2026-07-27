@@ -487,6 +487,32 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/processed - List files in Processed folders
+  router.get("/processed", (req: Request, res: Response) => {
+    try {
+      const listDir = (dir: string): { name: string; size: number; isDir: boolean }[] => {
+        if (!fs.existsSync(dir)) return [];
+        return fs.readdirSync(dir, { withFileTypes: true }).map((entry) => {
+          const fullPath = path.join(dir, entry.name);
+          let size = 0;
+          try {
+            const stat = fs.statSync(fullPath);
+            size = stat.isDirectory() ? 0 : stat.size;
+          } catch {}
+          return { name: entry.name, size, isDir: entry.isDirectory() };
+        }).filter((f) => !f.name.startsWith("."));
+      };
+
+      const moviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/Processed/Filmy";
+      const tvDir = process.env.PROCESSED_TV || "/media/Torrents/Processed/Serialy";
+      const movies = listDir(moviesDir);
+      const tv = listDir(tvDir);
+      res.json({ movies, tv, moviesDir, tvDir });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // GET /api/requests/managed - Grouped managed media (series by franchise, movies individual)
   router.get("/managed", async (req: Request, res: Response) => {
     try {

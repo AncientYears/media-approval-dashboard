@@ -25,7 +25,7 @@ function formatDuration(seconds: number): string {
   return `${s}s`;
 }
 
-const SCRIPT_OPTIONS = ["remux", "repack", "extract-subtitles", "convert-audio", "downmix-audio", "hdr-to-sdr", "custom"];
+const SCRIPT_OPTIONS: string[] = [];
 
 function ScriptDropdown({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
   const [open, setOpen] = useState(false);
@@ -60,7 +60,9 @@ function ScriptDropdown({ value, onChange, placeholder }: { value: string[]; onC
       </button>
       {open && (
         <div className="script-dropdown-menu">
-          {SCRIPT_OPTIONS.map((script) => (
+          {SCRIPT_OPTIONS.length === 0 ? (
+            <div className="script-dropdown-empty">No scripts available yet</div>
+          ) : SCRIPT_OPTIONS.map((script) => (
             <label key={script} className="script-dropdown-item">
               <input type="checkbox" checked={value.includes(script)} onChange={() => toggle(script)} />
               <span>{script}</span>
@@ -298,7 +300,6 @@ export default function TorrentPanel({
                 <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(ts.content_path)}>
                   {ts.content_path}
                 </span>
-                <button className="btn btn-danger btn-tiny" onClick={() => onDismiss(ar.id)}>Delete</button>
               </div>
               {ts.in_library && (
                 <div className="torrent-path-row">
@@ -311,7 +312,7 @@ export default function TorrentPanel({
                   </button>
                 </div>
               )}
-              {mr?.source ? (
+              {mr?.source && (
                 <div className="torrent-path-row">
                   <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
                   <span className="move-result">
@@ -324,105 +325,105 @@ export default function TorrentPanel({
                     </div>
                   )}
                 </div>
-              ) : mr?.error ? (
+              )}
+              {mr?.error && (
                 <div className="torrent-path-row">
                   <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
                   <span className="move-error">{mr.error}</span>
                 </div>
-              ) : (
-                <div className="torrent-path-row">
-                  <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
-                  <label className="preprocessing-toggle">
-                    <input
-                      type="checkbox"
-                      checked={preprocessing}
-                      onChange={(e) => onTogglePreprocessing(e.target.checked)}
-                    />
-                    <span className="preprocessing-label">Needs preprocessing</span>
-                  </label>
-                  {contentBadge}
-                  {preprocessing && (
-                    <div className="workspace-picker">
-                      {editingWs !== null ? (
-                        <div className="workspace-edit-inline">
-                          <input
-                            ref={editInputRef}
-                            className="workspace-edit-input"
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            onBlur={async () => {
-                              if (editName.trim()) {
-                                await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
-                                refreshAll();
-                              }
-                              setEditingWs(null);
-                            }}
-                            onKeyDown={async (e) => {
-                              if (e.key === "Enter" && editName.trim()) {
-                                await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
-                                refreshAll();
-                                setEditingWs(null);
-                              }
-                              if (e.key === "Escape") setEditingWs(null);
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <>
-                          <select
-                            className="workspace-select"
-                            value={selectedWorkspace}
-                            onChange={(e) => {
-                              const val = e.target.value === "new" ? "new" : Number(e.target.value);
-                              setSelectedWorkspace(val);
-                              setWsManagerOpen(false);
-                            }}
-                          >
-                            {workspaces.map((ws) => {
-                              const label = ws.metadata?.name || `Job ${ws.index}`;
-                              return (
-                                <option key={ws.index} value={ws.index}>
-                                  {label} ({ws.inputCount} in / {ws.outputCount} out)
-                                </option>
-                              );
-                            })}
-                            <option value="new">+ New workspace</option>
-                          </select>
-                          {selectedWorkspace !== "new" && (
-                            <button
-                              className="btn btn-secondary btn-tiny"
-                              title="Rename workspace"
-                              onClick={() => {
-                                const ws = workspaces.find((w: any) => w.index === selectedWorkspace);
-                                setEditName(ws?.metadata?.name || `Job ${ws?.index}`);
-                                setEditingWs(selectedWorkspace as number);
-                              }}
-                            >&#9998;</button>
-                          )}
-                          <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
-                        </>
-                      )}
-                    </div>
-                  )}
-                  <div style={{ display: "flex", gap: 4 }}>
-                    <button
-                      className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
-                      onClick={() => {
-                        const wsConfig = preprocessing && selectedWorkspace === "new"
-                          ? { name: newWsName || undefined, notes: newWsNotes || undefined, scripts: newWsScripts.length > 0 ? newWsScripts : undefined }
-                          : undefined;
-                        onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined, wsConfig);
-                      }}
-                      disabled={isMoving}
-                    >
-                      {isMoving ? "Moving..." : preprocessing ? "Move to Workspace" : "Move to Processed"}
-                    </button>
-                    <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
-                      {isMoving ? "Moving..." : "Move to Library"}
-                    </button>
-                  </div>
-                </div>
               )}
+              <div className="torrent-path-row">
+                <span className="path-label">{mr?.source ? "Also:" : ts.in_library ? "Also:" : "Move:"}</span>
+                <label className="preprocessing-toggle">
+                  <input
+                    type="checkbox"
+                    checked={preprocessing}
+                    onChange={(e) => onTogglePreprocessing(e.target.checked)}
+                  />
+                  <span className="preprocessing-label">Needs preprocessing</span>
+                </label>
+                {contentBadge}
+                {preprocessing && (
+                  <div className="workspace-picker">
+                    {editingWs !== null ? (
+                      <div className="workspace-edit-inline">
+                        <input
+                          ref={editInputRef}
+                          className="workspace-edit-input"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          onBlur={async () => {
+                            if (editName.trim()) {
+                              await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
+                              refreshAll();
+                            }
+                            setEditingWs(null);
+                          }}
+                          onKeyDown={async (e) => {
+                            if (e.key === "Enter" && editName.trim()) {
+                              await updateWorkspaceMetadata(requestId, editingWs, { name: editName.trim() });
+                              refreshAll();
+                              setEditingWs(null);
+                            }
+                            if (e.key === "Escape") setEditingWs(null);
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <select
+                          className="workspace-select"
+                          value={selectedWorkspace}
+                          onChange={(e) => {
+                            const val = e.target.value === "new" ? "new" : Number(e.target.value);
+                            setSelectedWorkspace(val);
+                            setWsManagerOpen(false);
+                          }}
+                        >
+                          {workspaces.map((ws) => {
+                            const label = ws.metadata?.name || `Job ${ws.index}`;
+                            return (
+                              <option key={ws.index} value={ws.index}>
+                                {label} ({ws.inputCount} in / {ws.outputCount} out)
+                              </option>
+                            );
+                          })}
+                          <option value="new">+ New workspace</option>
+                        </select>
+                        {selectedWorkspace !== "new" && (
+                          <button
+                            className="btn btn-secondary btn-tiny"
+                            title="Rename workspace"
+                            onClick={() => {
+                              const ws = workspaces.find((w: any) => w.index === selectedWorkspace);
+                              setEditName(ws?.metadata?.name || `Job ${ws?.index}`);
+                              setEditingWs(selectedWorkspace as number);
+                            }}
+                          >&#9998;</button>
+                        )}
+                        <button className="btn btn-secondary btn-tiny" onClick={openWsManager}>Manage</button>
+                      </>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    className={`btn btn-tiny ${preprocessing ? "btn-workspace" : "btn-primary"}`}
+                    onClick={() => {
+                      const wsConfig = preprocessing && selectedWorkspace === "new"
+                        ? { name: newWsName || undefined, notes: newWsNotes || undefined, scripts: newWsScripts.length > 0 ? newWsScripts : undefined }
+                        : undefined;
+                      onMove(ar.id, preprocessing && selectedWorkspace !== "new" ? selectedWorkspace : undefined, wsConfig);
+                    }}
+                    disabled={isMoving}
+                  >
+                    {isMoving ? "Moving..." : preprocessing ? "Move to Workspace" : "Move to Processed"}
+                  </button>
+                  <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
+                    {isMoving ? "Moving..." : "Move to Library"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </>

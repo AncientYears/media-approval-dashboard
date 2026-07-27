@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise } from "../api";
+import { fetchRequests, fetchManaged, fetchProcessed, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -77,13 +77,15 @@ export default function Dashboard() {
   const [modal, setModal] = useState<{ title?: string; lines: string[] } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
+  const [processed, setProcessed] = useState<{ movies: any[]; tv: any[]; moviesDir: string; tvDir: string } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [reqData, managedData] = await Promise.all([fetchRequests(), fetchManaged()]);
+      const [reqData, managedData, processedData] = await Promise.all([fetchRequests(), fetchManaged(), fetchProcessed()]);
       setRequests(reqData);
       setManaged(managedData);
+      setProcessed(processedData);
       setError(null);
     } catch (err) {
       setError("Failed to load requests");
@@ -351,6 +353,40 @@ export default function Dashboard() {
                 </div>
               )
             ))}
+          </div>
+        </div>
+      )}
+
+      {processed && (processed.movies.length > 0 || processed.tv.length > 0) && (
+        <div className="dashboard-section">
+          <h3>Processed Files</h3>
+          <div className="requests-grid">
+            {processed.movies.length > 0 && (
+              <div className="request-card managed-card">
+                <h3 className="managed-title">Movies <span className="type-suffix">- Processed</span></h3>
+                <div className="processed-file-list">
+                  {processed.movies.map((f) => (
+                    <div key={f.name} className="processed-file-row">
+                      <span className="processed-file-name" title={f.name}>{f.name}</span>
+                      <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : "folder"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {processed.tv.length > 0 && (
+              <div className="request-card managed-card">
+                <h3 className="managed-title">TV Shows <span className="type-suffix">- Processed</span></h3>
+                <div className="processed-file-list">
+                  {processed.tv.map((f) => (
+                    <div key={f.name} className="processed-file-row">
+                      <span className="processed-file-name" title={f.name}>{f.name}</span>
+                      <span className="processed-file-size">{f.size > 0 ? formatSize(f.size / (1024 * 1024)) : "folder"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -19,6 +19,11 @@ export async function fetchManaged() {
   return response.data;
 }
 
+export async function fetchProcessed() {
+  const response = await api.get("/requests/processed");
+  return response.data;
+}
+
 export async function fetchFranchise(sonarrId: number) {
   const response = await api.get(`/requests/managed/${sonarrId}`);
   return response.data;
