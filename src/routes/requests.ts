@@ -1207,6 +1207,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             seasonFixed++;
           }
         }
+        // Fix title mismatches: RCs attached to wrong-title requests (e.g. Moana 2 torrent matched to Moana)
+        const allRcWithTitle = db.prepare(
+          "SELECT rc.id as rc_id, rc.request_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, mr.type " +
+          "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
+          "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
+        ).all() as any[];
+        let titleFixed = 0;
+        for (const rc of allRcWithTitle) {
+          if (!qbitHashes.has(rc.torrent_hash)) continue;
+          const torrent = allTorrents.find((t: any) => t.hash === rc.torrent_hash);
+          if (!torrent) continue;
+          const torrentNorm = normalizeTitleForMatch(torrent.name);
+          const reqNorm = normalizeTitleForMatch(rc.req_title);
+          if (!titlesMatch(reqNorm, torrentNorm)) {
+            db.prepare("DELETE FROM approval_history WHERE release_id = ?").run(rc.rc_id);
+            db.prepare("DELETE FROM release_candidates WHERE id = ?").run(rc.rc_id);
+            console.log(`[ScanDownloads] Title mismatch: RC ${rc.rc_id} (request "${rc.req_title}") <- torrent "${torrent.name.slice(0, 60)}"`);
+            titleFixed++;
+          }
+        }
         // Sync request statuses — any request with approved RCs in qBittorrent should be DOWNLOADING/SEEDING
         let staleFixed = 0;
         const staleStatus = db.prepare(
@@ -1250,12 +1270,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         if (backfilled > 0) console.log(`[ScanDownloads] Backfilled ${backfilled} orphaned RC(s) with approval_history`);
         if (seasonFixed > 0) console.log(`[ScanDownloads] Removed ${seasonFixed} season-mismatched RC(s) — re-importing...`);
+        if (titleFixed > 0) console.log(`[ScanDownloads] Removed ${titleFixed} title-mismatched RC(s) — re-importing...`);
 
-        // If season mismatches were cleaned, don't return — fall through to import the freed torrents
-        if (seasonFixed === 0) {
-          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleFixed, seasonFixed, rcFixed });
+        // If season or title mismatches were cleaned, don't return — fall through to import the freed torrents
+        if (seasonFixed === 0 && titleFixed === 0) {
+          return res.json({ success: true, imported: 0, skipped: 0, noMatch: 0, errors: 0, total: allTorrents.length, results: [], backfilled, staleRemoved: toRemove.length, statusFixed: staleFixed, seasonFixed, titleFixed, rcFixed });
         }
-        // Season mismatches cleaned — recompute which torrents need importing
+        // Mismatches cleaned — recompute which torrents need importing
         const freshHashes = new Set(
           db.prepare("SELECT torrent_hash FROM release_candidates WHERE torrent_hash != ''")
             .all().map((r: any) => r.torrent_hash)
