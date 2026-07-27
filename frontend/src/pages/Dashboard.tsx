@@ -120,6 +120,21 @@ export default function Dashboard() {
       }
     });
 
+  // Group series requests by sonarr_id for franchise grouping
+  const groupedFranchises: { [key: number]: { title: string; sonarr_id: number; seasons: any[] } } = {};
+  const ungroupedRequests: any[] = [];
+  for (const req of requestsList) {
+    if (req.type === "series" && req.sonarr_id) {
+      if (!groupedFranchises[req.sonarr_id]) {
+        const franchiseTitle = req.title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        groupedFranchises[req.sonarr_id] = { title: franchiseTitle, sonarr_id: req.sonarr_id, seasons: [] };
+      }
+      groupedFranchises[req.sonarr_id].seasons.push(req);
+    } else {
+      ungroupedRequests.push(req);
+    }
+  }
+
   if (loading && requests.length === 0) {
     return <div className="container"><p>Loading requests...</p></div>;
   }
@@ -306,11 +321,36 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {requestsList.length > 0 && (
+      {(Object.keys(groupedFranchises).length > 0 || ungroupedRequests.length > 0) && (
         <div className="dashboard-section">
           <h3>Requests — {requestsList.length}</h3>
           <div className="requests-grid">
-            {requestsList.map((req: any) => (
+            {Object.values(groupedFranchises).map((franchise) => (
+              <div key={`franchise-${franchise.sonarr_id}`} className="request-card managed-card">
+                <div className="request-header">
+                  <h3>{franchise.title} <span className="type-suffix">- Series ({franchise.seasons.length} season{franchise.seasons.length !== 1 ? "s" : ""})</span></h3>
+                </div>
+                <div className="managed-seasons">
+                  {franchise.seasons.map((s: any) => (
+                    <div key={s.season ?? s.id} className="managed-season" onClick={() => navigate(`/requests/${s.id}`)}>
+                      <span className="season-label">S{String(s.season ?? 0).padStart(2, "0")}</span>
+                      <span className={`season-status ${s.status === "AWAITING_APPROVAL" ? "has-content" : "empty"}`}>
+                        {s.status.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="request-actions">
+                  <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${franchise.sonarr_id}`)}>View Franchise</button>
+                  <button className="btn btn-danger btn-tiny" onClick={() => {
+                    if (window.confirm(`Delete "${franchise.title}" from DB + Sonarr?`)) {
+                      deleteFranchise(franchise.sonarr_id).then(() => loadData());
+                    }
+                  }}>Delete</button>
+                </div>
+              </div>
+            ))}
+            {ungroupedRequests.map((req: any) => (
               <div key={req.id} className="request-card">
                 <div className="request-header">
                   <h3>{req.title}</h3>
