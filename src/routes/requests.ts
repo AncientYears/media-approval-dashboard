@@ -161,7 +161,7 @@ function hardlinkDirRecursive(srcDir: string, destDir: string) {
   }
 }
 
-export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService, prowlarr: ProwlarrService) {
+export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService, prowlarr: ProwlarrService, deletedFranchiseIds?: Set<number>) {
   const router = Router();
 
   // GET /api/requests - List all pending requests
@@ -679,6 +679,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       console.log(`[Delete] Deleted franchise sonarr_id=${sonarrId}: ${rows[0].title} (${rows.length} requests)`);
+      deletedFranchiseIds?.add(sonarrId);
       res.json({ success: true, deleted: rows.length, title: rows[0].title });
     } catch (error: any) {
       console.error("Error deleting franchise:", error);
@@ -692,7 +693,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sonarrId = Number(req.params.sonarrId);
       const series = await sonarr.getSeries(sonarrId).catch(() => null);
       if (!series) return res.status(404).json({ error: "Series not found in Sonarr" });
-      const sonarrSeasons = (series.seasons || []).map((s: any) => s.seasonNumber);
+      const sonarrSeasons = (series.seasons || []).map((s: any) => s.seasonNumber).filter((sn: number) => sn > 0);
 
       const requestedSeasons = db.prepare(
         "SELECT season, id, status, title FROM media_requests WHERE sonarr_id = ? AND type = 'series'"
@@ -1402,6 +1403,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             });
           } else if (type === "series") {
             matchedSonarr = [...existingSonarrByTitle.values()].find((s: any) => {
+              if (deletedFranchiseIds?.has(s.id)) return false;
               const sNorm = normalizeTitleForMatch(s.title);
               return titlesMatch(sNorm, tNorm);
             });
@@ -1521,6 +1523,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           } else if (type === "series" && (matchedSonarr || sonarrId)) {
             const finalSonarrId = matchedSonarr?.id || sonarrId!;
+            if (deletedFranchiseIds?.has(finalSonarrId)) continue;
             const title = matchedSonarr?.title || matchedTitle;
             const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(finalSonarrId, season) as any;
             if (!existingReq) {

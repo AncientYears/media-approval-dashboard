@@ -37,13 +37,16 @@ const radarr = new RadarrService(
 const radarrPollInterval = parseInt(process.env.POLL_INTERVAL_RADARR || "60", 10);
 const radarrPoller = createRadarrPoller(db, radarr, radarrPollInterval);
 
+// Track recently deleted franchise IDs to prevent poller from re-importing them
+const deletedFranchiseIds = new Set<number>();
+
 // Initialize Sonarr service and start polling
 const sonarr = new SonarrService(
   process.env.SONARR_URL || "http://localhost:8989",
   process.env.SONARR_API_KEY || ""
 );
 const sonarrPollInterval = parseInt(process.env.POLL_INTERVAL_SONARR || "60", 10);
-const sonarrPoller = createSonarrPoller(db, sonarr, sonarrPollInterval);
+const sonarrPoller = createSonarrPoller(db, sonarr, sonarrPollInterval, deletedFranchiseIds);
 
 const qbittorrent = new QBittorrentService(
   process.env.QBIT_URL || "http://localhost:8080",
@@ -185,7 +188,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // API Routes
-app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent, prowlarr));
+app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent, prowlarr, deletedFranchiseIds));
 
 // DB viewer endpoint - returns all tables, their schema, and rows
 app.get("/api/db", (_req, res) => {

@@ -1,7 +1,7 @@
 import { Database } from "better-sqlite3";
 import { SonarrService } from "../services/sonarr";
 
-export function createSonarrPoller(db: Database, sonarr: SonarrService, intervalSeconds: number) {
+export function createSonarrPoller(db: Database, sonarr: SonarrService, intervalSeconds: number, deletedFranchiseIds?: Set<number>) {
   let running = false;
 
   async function poll() {
@@ -29,6 +29,10 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
       `);
 
       for (const season of filtered) {
+        if (deletedFranchiseIds?.has(season.seriesId)) {
+          continue;
+        }
+
         const existing = existingStmt.get(season.seriesId, season.seasonNumber) as any;
         const requestTitle = season.seasonNumber === 0
           ? `${season.title} - Specials`
