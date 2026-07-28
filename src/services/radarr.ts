@@ -161,18 +161,23 @@ export class RadarrService {
 
   async manualImport(filePath: string, movieId: number) {
     try {
-      await this.client.post("/api/v3/command", {
+      const body = {
         name: "ManualImport",
         importMode: "hardlink",
         files: [{
           path: filePath,
           movieId,
+          quality: { quality: { id: 0, name: "Unknown" }, revision: { version: 1, real: 0, isRepack: false } },
+          languages: [{ id: 1, name: "English" }],
         }],
-      });
-      console.log(`[Radarr] manualimport: triggered import for ${filePath}`);
+      };
+      console.log(`[Radarr] manualimport POST body:`, JSON.stringify(body));
+      const resp = await this.client.post("/api/v3/command", body);
+      console.log(`[Radarr] manualimport: triggered import for ${filePath}`, resp.data);
       return { success: true };
     } catch (error: any) {
-      console.error(`[Radarr] manualimport failed for ${filePath}:`, error.message || error);
+      const errBody = error?.response?.data;
+      console.error(`[Radarr] manualimport failed for ${filePath}:`, error.message, errBody ? JSON.stringify(errBody) : "");
       return { success: false, error: error.message };
     }
   }
