@@ -230,26 +230,29 @@ export class SonarrService {
     }
   }
 
-  async manualImport(folder: string, seriesId?: number, seasonNumber?: number) {
+  async manualImport(filePath: string, seriesId: number, seasonNumber: number) {
     try {
-      const params: any = { folder, filterExistingFiles: false };
-      if (seriesId) params.seriesId = seriesId;
-      if (seasonNumber) params.seasonNumber = seasonNumber;
-      const response = await this.client.get("/api/v3/manualimport", { params });
-      const files = response.data;
-      if (!Array.isArray(files) || files.length === 0) {
-        console.log(`[Sonarr] manualimport: no files found in ${folder}`);
-        return { success: true, imported: 0 };
-      }
+      // Get episode IDs for this season to include in the import
+      let episodeIds: number[] = [];
+      try {
+        const episodes = await this.getSeasonEpisodes(seriesId, seasonNumber);
+        episodeIds = episodes.map((e: any) => e.id);
+      } catch {}
+
       await this.client.post("/api/v3/command", {
         name: "ManualImport",
-        files,
         importMode: "hardlink",
+        files: [{
+          path: filePath,
+          seriesId,
+          seasonNumber,
+          ...(episodeIds.length > 0 ? { episodeIds } : {}),
+        }],
       });
-      console.log(`[Sonarr] manualimport: triggered import of ${files.length} file(s) from ${folder}`);
-      return { success: true, imported: files.length };
+      console.log(`[Sonarr] manualimport: triggered import for ${filePath}`);
+      return { success: true };
     } catch (error: any) {
-      console.error(`[Sonarr] manualimport failed for ${folder}:`, error.message || error);
+      console.error(`[Sonarr] manualimport failed for ${filePath}:`, error.message || error);
       return { success: false, error: error.message };
     }
   }

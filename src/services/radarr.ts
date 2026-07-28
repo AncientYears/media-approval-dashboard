@@ -159,25 +159,20 @@ export class RadarrService {
     }
   }
 
-  async manualImport(folder: string, movieId?: number) {
+  async manualImport(filePath: string, movieId: number) {
     try {
-      const params: any = { folder, filterExistingFiles: false };
-      if (movieId) params.movieId = movieId;
-      const response = await this.client.get("/api/v3/manualimport", { params });
-      const files = response.data;
-      if (!Array.isArray(files) || files.length === 0) {
-        console.log(`[Radarr] manualimport: no files found in ${folder}`);
-        return { success: true, imported: 0 };
-      }
       await this.client.post("/api/v3/command", {
         name: "ManualImport",
-        files,
         importMode: "hardlink",
+        files: [{
+          path: filePath,
+          movieId,
+        }],
       });
-      console.log(`[Radarr] manualimport: triggered import of ${files.length} file(s) from ${folder}`);
-      return { success: true, imported: files.length };
+      console.log(`[Radarr] manualimport: triggered import for ${filePath}`);
+      return { success: true };
     } catch (error: any) {
-      console.error(`[Radarr] manualimport failed for ${folder}:`, error.message || error);
+      console.error(`[Radarr] manualimport failed for ${filePath}:`, error.message || error);
       return { success: false, error: error.message };
     }
   }

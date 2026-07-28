@@ -3499,13 +3499,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // Tell Radarr/Sonarr to import the file (manual import with rename/reprocess)
       if (request.type === "series" && request.sonarr_id) {
         try {
-          await sonarr.manualImport(destFolder, request.sonarr_id, request.season || 1);
+          await sonarr.manualImport(destPath, request.sonarr_id, request.season || 1);
         } catch (e: any) {
           console.warn(`[MoveToLibrary] Sonarr manual import failed: ${e.message}`);
         }
       } else if (request.radarr_id) {
         try {
-          await radarr.manualImport(destFolder, request.radarr_id);
+          await radarr.manualImport(destPath, request.radarr_id);
         } catch (e: any) {
           console.warn(`[MoveToLibrary] Radarr manual import failed: ${e.message}`);
         }
