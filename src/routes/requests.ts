@@ -14,6 +14,8 @@ import path from "path";
 const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10, XI: 11, XII: 12, XIII: 13, XIV: 14, XV: 15, XVI: 16, XVII: 17, XVIII: 18, XIX: 19, XX: 20 };
 
 function parseSeasonNumber(dirName: string): number | null {
+  // Specials, Season 00, etc.
+  if (/^specials$/i.test(dirName)) return 0;
   // S01, S02, etc.
   let m = dirName.match(/\bS(\d{1,2})\b/i);
   if (m) return parseInt(m[1], 10);
@@ -551,7 +553,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
 
             // Create new entry
-            if (seasonNum === 0) continue; // Skip specials
             const title = `${detail.title} S${String(seasonNum).padStart(2, "0")}`;
             const status = epFileCount > 0 ? "COMPLETED" : "NEW";
             const result = db.prepare(
