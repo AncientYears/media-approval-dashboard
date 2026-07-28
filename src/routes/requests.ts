@@ -1756,9 +1756,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                   try { return fs.statSync(srcPath).ino === fs.statSync(destPath).ino; } catch { return false; }
                 })();
                 if (!alreadyImported) {
-                  fs.linkSync(srcPath, destPath);
-                  console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} → processed/serialy`);
-                  results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
+                  try {
+                    fs.linkSync(srcPath, destPath);
+                    console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} → processed/serialy`);
+                    results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
+                  } catch (linkErr: any) {
+                    console.error(`[ImportLibrary] Failed to hardlink ${s.title} ${entry.name}/${f}:`, linkErr.message);
+                    results.push({ title: `${s.title} ${entry.name}/${f}`, status: "error", error: linkErr.message });
+                    continue;
+                  }
                 }
                 // Always try association, even for already-imported files
                 try {
