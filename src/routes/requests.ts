@@ -671,7 +671,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
-        const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const franchiseTitleSeason = seasons.find((s: any) => s.season !== 0) || seasons[0];
+      const franchiseTitle = franchiseTitleSeason.title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         const firstRequestId = seasons[0].id;
         // Compute total size from processed files (source of truth), fall back to torrent sizes
         const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
@@ -791,6 +792,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           }
           mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+        }
+        if (processedBytes === 0) {
+          franchiseSize = mappedSeasons.reduce((sum: number, s: any) => sum + (s.total_size_mb || 0), 0);
         }
         const totalCovered = mappedSeasons.reduce((sum: number, s: any) => sum + (s.covered_episodes?.length || 0), 0);
         managed.push({
@@ -931,7 +935,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(404).json({ error: "Franchise not found" });
       }
 
-      const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        const franchiseTitleSeason = seasons.find((s: any) => s.season !== 0) || seasons[0];
+        const franchiseTitle = franchiseTitleSeason.title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
 
       const seasonDetails: any[] = [];
       for (const s of seasons) {
