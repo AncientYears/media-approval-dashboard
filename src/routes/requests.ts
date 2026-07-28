@@ -941,7 +941,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
-        // Also count library-imported files — parse episode numbers from processed_files paths
+        // Also count library-imported files — parse episode numbers from processed_files paths (verify on disk)
+        const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
         const processedAh = db.prepare(`
           SELECT processed_files FROM approval_history
           WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
@@ -950,6 +951,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const pa of processedAh) {
           const files: string[] = JSON.parse(pa.processed_files || "[]");
           for (const pf of files) {
+            const fullPath = path.join(processedTvDir, franchiseTitle, pf);
+            if (!fs.existsSync(fullPath)) continue;
             const epNum = extractEpisodeFromFilename(pf);
             if (epNum != null) coveredEps.add(epNum);
           }
@@ -1004,6 +1007,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
               }
             } catch {}
+            // Use filesystem count if Sonarr returns 0 but files exist
+            let actualEpCount = epCount;
+            if (!actualEpCount && coveredEps3.size > 0) actualEpCount = coveredEps3.size;
             seasonDetails.push({
               season: sn.seasonNumber,
               request_id: null,
@@ -1011,7 +1017,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               total_size_mb: folderSize / (1024 * 1024),
               release_count: 0,
               title: franchiseTitle,
-              episode_count: epCount,
+              episode_count: actualEpCount,
               covered_episodes: Array.from(coveredEps3).sort((a, b) => a - b),
               releases: [],
             });

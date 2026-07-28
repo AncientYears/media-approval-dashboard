@@ -273,11 +273,15 @@ export default function FranchiseDetail() {
                   <span className={`season-label ${season.season === 0 ? "season-special" : ""}`}>{season.season === 0 ? "Special" : `S${String(season.season).padStart(2, "0")}`}</span>
                   {isSearching ? (
                     <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>
-                  ) : epCount > 0 ? (
+                  ) : filledCount > 0 ? (
                     <>
-                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{filledCount}/{epCount}</span>
+                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{filledCount}{epCount > 0 ? `/${epCount}` : ""}</span>
                       {missingCount > 0 && <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>}
                     </>
+                  ) : epCount > 0 ? (
+                    <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
+                      {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
+                    </span>
                   ) : (
                     <span className={`season-status ${hasReleases ? "has-content" : "empty"}`}>
                       {season.total_candidates > 0 ? `${season.total_candidates} releases` : "no releases"}
