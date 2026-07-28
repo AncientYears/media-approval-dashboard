@@ -1718,14 +1718,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
             // Always try association, even for already-imported files
             try {
-              let req = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
+              let req = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
               if (!req) {
-                req = db.prepare("SELECT id FROM media_requests WHERE title = ? AND type = 'movie'").get(m.title) as any;
+                req = db.prepare("SELECT id, status FROM media_requests WHERE title = ? AND type = 'movie'").get(m.title) as any;
               }
               if (!req) {
                 const result = db.prepare("INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'COMPLETED', '[]')").run(m.title, m.id);
                 console.log(`[ImportLibrary] Created media_request for ${m.title} (COMPLETED)`);
-                req = { id: Number(result.lastInsertRowid) };
+                req = { id: Number(result.lastInsertRowid), status: 'COMPLETED' };
+              }
+              if (req.status !== 'COMPLETED' && req.status !== 'DOWNLOADING' && req.status !== 'SEEDING') {
+                db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(req.id);
+                console.log(`[ImportLibrary] Updated ${m.title} status to COMPLETED (was ${req.status})`);
               }
               const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
               if (ah) {
@@ -1750,14 +1754,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Helper: ensure media_requests exists for a series season, create COMPLETED if not
       function ensureSeriesRequest(sonarrId: number, seasonNum: number, title: string): number | null {
-        let req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(sonarrId, seasonNum) as any;
+        let req = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(sonarrId, seasonNum) as any;
         if (!req) {
-          req = db.prepare("SELECT id FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${title}%`, seasonNum) as any;
+          req = db.prepare("SELECT id, status FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${title}%`, seasonNum) as any;
         }
         if (!req) {
           const result = db.prepare("INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by, episode_count) VALUES (?, 'series', ?, ?, 'COMPLETED', '[]', ?)").run(title, sonarrId, seasonNum, null);
           console.log(`[ImportLibrary] Created media_request for ${title} S${String(seasonNum).padStart(2, "0")} (COMPLETED)`);
           return Number(result.lastInsertRowid);
+        }
+        if (req.status !== 'COMPLETED' && req.status !== 'DOWNLOADING' && req.status !== 'SEEDING') {
+          db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(req.id);
+          console.log(`[ImportLibrary] Updated ${title} S${String(seasonNum).padStart(2, "0")} status to COMPLETED (was ${req.status})`);
         }
         return req.id;
       }
