@@ -2863,6 +2863,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Determine library files for per-file in-library checks
       const libraryFiles = new Set<string>();
+      const librarySizes = new Map<string, number>(); // name → size for fuzzy matching
       if (request.type === "series" && request.sonarr_id) {
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
@@ -2873,7 +2874,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           );
           if (fs.existsSync(seasonFolder)) {
             for (const f of fs.readdirSync(seasonFolder)) {
-              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) libraryFiles.add(f);
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                libraryFiles.add(f);
+                try { librarySizes.set(f, fs.statSync(path.join(seasonFolder, f)).size); } catch {}
+              }
             }
           }
         } catch {}
@@ -2883,11 +2887,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const movieFolder = movie.path || movie.folderPath;
           if (movieFolder && fs.existsSync(movieFolder)) {
             for (const f of fs.readdirSync(movieFolder)) {
-              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) libraryFiles.add(f);
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                libraryFiles.add(f);
+                try { librarySizes.set(f, fs.statSync(path.join(movieFolder, f)).size); } catch {}
+              }
             }
           }
         } catch {}
       }
+      const librarySizeValues = [...librarySizes.values()];
 
       const entries = fs.readdirSync(processedDir, { withFileTypes: true });
       const files: { name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[] = [];
@@ -2898,8 +2906,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
-        const inLibrary = libraryFiles.has(entry.name) || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)));
-        const libraryMatch = inLibrary ? [...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || "" : "";
+        const inLibrary = libraryFiles.has(entry.name)
+          || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)))
+          || (size > 0 && librarySizeValues.some((ls) => ls > 0 && Math.abs(ls - size) < size * 0.01));
+        const libraryMatch = inLibrary ? ([...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || (size > 0 ? [...librarySizes.entries()].find(([_, ls]) => Math.abs(ls - size) < size * 0.01)?.[0] || "" : "")) : "";
         files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: libraryMatch });
       }
 
