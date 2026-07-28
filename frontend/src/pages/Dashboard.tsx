@@ -229,6 +229,9 @@ export default function Dashboard() {
             const lines = [
               `Imported ${result.imported} new request(s).`,
             ];
+            if (result.fixed > 0) {
+              lines.push(`Fixed ${result.fixed} existing request(s) NEW→SEEDING.`);
+            }
             if (result.orphaned > 0) {
               lines.push(`Removed ${result.orphaned} orphaned request(s).`);
             }

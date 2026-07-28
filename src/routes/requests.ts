@@ -402,17 +402,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.post("/import-missing", async (req: Request, res: Response) => {
     try {
       const imported: Array<{ title: string; id: number }> = [];
-      const skipped: Array<{ title: string; radarr_id: number; reason: string }> = [];
-
-      // Diagnostic: log all Moana-related requests for debugging
-      const allMoana = db.prepare("SELECT id, title, radarr_id, sonarr_id, type, status FROM media_requests WHERE title LIKE '%oana%'").all() as any[];
-      if (allMoana.length > 0) {
-        for (const m of allMoana) {
-          console.log(`[Import] DEBUG Moana request: id=${m.id}, title="${m.title}", radarr_id=${m.radarr_id}, sonarr_id=${m.sonarr_id}, type=${m.type}, status=${m.status}`);
-        }
-      } else {
-        console.log(`[Import] DEBUG No Moana request found in DB at all`);
-      }
+      const skipped: Array<{ title: string; radarr_id?: number; sonarr_id?: number; reason: string }> = [];
+      let fixed = 0;
 
       // Import movies from Radarr
       const radarrMovies = await radarr.getAllMovies();
@@ -425,11 +416,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .all().map((r: any) => r.title.toLowerCase())
       );
 
-      console.log(`[Import] Radarr returned ${radarrMovies.length} movies. DB has ${existingRadarrIds.size} radarr_ids, ${existingTitles.size} movie titles.`);
+      // Fetch qBittorrent torrents once for all torrent detection
+      let allTorrents: any[] = [];
+      try { allTorrents = await qbittorrent.getTorrents(); } catch {}
 
       for (const movie of radarrMovies) {
-        if (existingRadarrIds.has(movie.id)) {
-          skipped.push({ title: movie.title, radarr_id: movie.id, reason: "radarr_id exists in DB" });
+        // Fix existing entries: update NEW→SEEDING if Radarr says hasFile
+        const existing = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ?").get(movie.id) as any;
+        if (existing) {
+          if (movie.hasFile && existing.status === "NEW") {
+            db.prepare("UPDATE media_requests SET status = 'SEEDING' WHERE id = ?").run(existing.id);
+            fixed++;
+            console.log(`[Import] Fixed ${movie.title}: NEW→SEEDING (Radarr hasFile)`);
+          }
           continue;
         }
         if (existingTitles.has(movie.title.toLowerCase())) {
@@ -440,48 +439,72 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const result = db.prepare(
           "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, ?, '[]')"
         ).run(movie.title, movie.id, status);
-        const requestId = result.lastInsertRowid as number;
+        const requestId = Number(result.lastInsertRowid);
         console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id}, status=${status})`);
 
         // If SEEDING (hasFile=true), try to detect torrent hash from qBittorrent
-        if (status === "SEEDING") {
-          try {
-            const torrents = await qbittorrent.getTorrents();
-            const normTitle = movie.title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-            const match = torrents.find((t) => {
-              const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-              return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
-            });
-            if (match) {
-              const quality = parseQualityFromName(match.name);
-              db.prepare(
-                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, ?)"
-              ).run(requestId, `imported-${movie.id}`, match.name, match.hash, fromQBittorrentPath(match.save_path), quality);
-              db.prepare(
-                "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
-              ).run(requestId, requestId);
-              console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}`);
-            }
-          } catch {}
+        if (status === "SEEDING" && allTorrents.length > 0) {
+          const normTitle = movie.title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+          const match = allTorrents.find((t: any) => {
+            const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+            return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
+          });
+          if (match) {
+            const quality = parseQualityFromName(match.name);
+            db.prepare(
+              "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, ?)"
+            ).run(requestId, `imported-${movie.id}`, match.name, match.hash, fromQBittorrentPath(match.save_path), quality);
+            db.prepare(
+              "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
+            ).run(requestId, requestId);
+            console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}`);
+          }
         }
 
         imported.push({ title: movie.title, id: requestId });
       }
 
-      // Import series seasons from Sonarr
-      const sonarrSeries = await sonarr.getWantedMissing();
-      const existingSonarrSeasons = db.prepare("SELECT sonarr_id, season FROM media_requests WHERE sonarr_id IS NOT NULL")
-        .all().map((r: any) => `${r.sonarr_id}-${r.season}`);
+      // Import ALL series from Sonarr (not just wanted/missing)
+      const allSeries = await sonarr.getAllSeries();
+      const existingSonarrKeys = new Set(
+        db.prepare("SELECT sonarr_id, season FROM media_requests WHERE sonarr_id IS NOT NULL")
+          .all().map((r: any) => `${r.sonarr_id}-${r.season}`)
+      );
 
-      for (const s of sonarrSeries) {
-        const key = `${s.seriesId}-${s.seasonNumber}`;
-        if (existingSonarrSeasons.includes(key)) continue;
-        const title = s.seasonNumber === 0 ? `${s.title} - Specials` : `${s.title} S${String(s.seasonNumber).padStart(2, "0")}`;
-        const result = db.prepare(
-          "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by, episode_count) VALUES (?, 'series', ?, ?, 'NEW', '[]', ?)"
-        ).run(title, s.seriesId, s.seasonNumber, s.episodeCount || null);
-        console.log(`[Import] Created series request: ${title} (sonarr_id=${s.seriesId})`);
-        imported.push({ title, id: result.lastInsertRowid as number });
+      for (const s of allSeries) {
+        try {
+          const detail = await sonarr.getSeries(s.id);
+          const seasons = detail.seasons || [];
+          for (const season of seasons) {
+            const seasonNum = season.seasonNumber;
+            const key = `${s.id}-${seasonNum}`;
+            const epFileCount = season.statistics?.episodeFileCount || 0;
+            const epCount = season.statistics?.episodeCount || 0;
+
+            // Fix existing: update status based on whether files exist
+            const existing = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(s.id, seasonNum) as any;
+            if (existing) {
+              if (epFileCount > 0 && existing.status === "NEW") {
+                db.prepare("UPDATE media_requests SET status = 'SEEDING', episode_count = ? WHERE id = ?").run(epCount || null, existing.id);
+                fixed++;
+                console.log(`[Import] Fixed ${detail.title} S${String(seasonNum).padStart(2, "0")}: NEW→SEEDING (${epFileCount}/${epCount} episodes)`);
+              }
+              continue;
+            }
+
+            // Create new entry
+            if (seasonNum === 0) continue; // Skip specials
+            const title = `${detail.title} S${String(seasonNum).padStart(2, "0")}`;
+            const status = epFileCount > 0 ? "SEEDING" : "NEW";
+            const result = db.prepare(
+              "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by, episode_count) VALUES (?, 'series', ?, ?, ?, '[]', ?)"
+            ).run(title, s.id, seasonNum, status, epCount || null);
+            console.log(`[Import] Created series request: ${title} (sonarr_id=${s.id}, status=${status}, ${epFileCount}/${epCount} episodes)`);
+            imported.push({ title, id: Number(result.lastInsertRowid) });
+          }
+        } catch (e: any) {
+          console.error(`[Import] Failed to process series ${s.title}: ${e.message}`);
+        }
       }
 
       // Clean up orphaned requests (radarr_id exists in DB but not in Radarr)
@@ -500,7 +523,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
 
-      res.json({ success: true, imported: imported.length, skipped: skipped.length, orphaned: orphanedMovies.length, items: imported, skippedItems: skipped, removedOrphans: orphanedMovies.map((o: any) => o.title) });
+      res.json({ success: true, imported: imported.length, skipped: skipped.length, fixed, orphaned: orphanedMovies.length, items: imported, skippedItems: skipped, removedOrphans: orphanedMovies.map((o: any) => o.title) });
     } catch (error) {
       console.error("Error importing missing requests:", error);
       res.status(500).json({ error: "Failed to import missing requests" });
