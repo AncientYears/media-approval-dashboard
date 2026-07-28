@@ -465,7 +465,7 @@ export default function Dashboard() {
                 <div key={item.request_id} className="request-card managed-card">
                   <h3 className="managed-title">{item.title} <span className="type-suffix">- Movie</span></h3>
                   <div className="managed-footer">
-                    <span className="rtag">{(() => { const vc = item.release_count + (item.processed_count || 0); if (vc > 0) return `${vc} version${vc !== 1 ? "s" : ""}${item.release_count > 0 ? " · " + formatSize(item.total_size_mb) : " · In Library"}`; if (item.status === 'COMPLETED') return 'In Library'; return `· ${item.status}`; })()}</span>
+                    <span className="rtag">{(() => { const vc = item.release_count + (item.processed_count || 0); if (vc > 0) return `${vc} version${vc !== 1 ? "s" : ""}${item.release_count > 0 ? " · " + formatSize(item.total_size_mb) : ""}`; if (item.status === 'COMPLETED') return 'In Library'; return `· ${item.status}`; })()}</span>
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
                     <button className="btn btn-danger btn-tiny" onClick={() => {
                       if (window.confirm(`Delete "${item.title}" from DB + Radarr?`)) {
