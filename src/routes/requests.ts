@@ -689,6 +689,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
               }
             }
+            // Also count library-imported files (processed_files without release_candidate) as full season coverage
+            const processedAh = db.prepare(`
+              SELECT id FROM approval_history
+              WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
+              AND processed_files IS NOT NULL AND processed_files != '[]'
+            `).all(s.id) as any[];
+            if (processedAh.length > 0 && s.episode_count) {
+              for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
+            }
             return {
               season: s.season,
               request_id: s.id,
@@ -855,6 +864,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
+        // Also count library-imported files as full season coverage
+        const processedAh = db.prepare(`
+          SELECT id FROM approval_history
+          WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
+          AND processed_files IS NOT NULL AND processed_files != '[]'
+        `).all(s.id) as any[];
+        if (processedAh.length > 0 && episodeCount) {
+          for (let i = 1; i <= episodeCount; i++) coveredEps.add(i);
+        }
+
         seasonDetails.push({
           season: s.season,
           request_id: s.id,
@@ -957,6 +976,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
             }
           }
+        }
+      }
+
+      // Also count library-imported files (no RC) as full season coverage
+      const processedAh2 = db.prepare(`
+        SELECT id FROM approval_history
+        WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
+        AND processed_files IS NOT NULL AND processed_files != '[]'
+      `).all(row.id) as any[];
+      if (processedAh2.length > 0) {
+        hasSeasonPack = true;
+        const quality = "WEB-DL";
+        for (let i = 1; i <= (sonarrEpisodes.length || row.episode_count || 0); i++) {
+          if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
         }
       }
 
