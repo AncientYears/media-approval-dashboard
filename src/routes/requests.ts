@@ -2814,8 +2814,38 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
 
+      // Fallback: scan processed dir for files matching request title, use their sizes
       if (!destPath) {
-        console.log(`[RemoveFromLib] No match found in ${libraryDir} (contentIno=${contentIno}, torrentSize=${torrent.size})`);
+        const procDirs = [
+          path.join(process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy"),
+          path.join(process.env.PROCESSED_TV || "/media/Torrents/processed/serialy"),
+        ];
+        for (const procDir of procDirs) {
+          if (!fs.existsSync(procDir)) continue;
+          for (const f of fs.readdirSync(procDir)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            if (!titlesMatch(request.title, f)) continue;
+            const fPath = path.join(procDir, f);
+            try {
+              const procSize = fs.statSync(fPath).size;
+              if (procSize > 0) {
+                for (const lf of fs.readdirSync(libraryDir)) {
+                  if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(lf)) continue;
+                  const lfPath = path.join(libraryDir, lf);
+                  try {
+                    if (fs.statSync(lfPath).size === procSize) { destPath = lfPath; break; }
+                  } catch {}
+                }
+              }
+              if (destPath) break;
+            } catch {}
+          }
+          if (destPath) break;
+        }
+      }
+
+      if (!destPath) {
+        console.log(`[RemoveFromLib] No match in ${libraryDir} (contentIno=${contentIno}, torrentSize=${torrent.size})`);
         const libFiles = fs.readdirSync(libraryDir).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).map((f: string) => {
           try { const s = fs.statSync(path.join(libraryDir, f)); return `${f} size=${s.size} ino=${s.ino}`; } catch { return f; }
         });
