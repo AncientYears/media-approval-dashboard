@@ -3940,6 +3940,100 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/:id/import-from-library - Import a single movie from Radarr library into /processed
+  router.post("/:id/import-from-library", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (request.type !== "movie" || !request.radarr_id) {
+        return res.status(400).json({ error: "Only movie requests with radarr_id can be imported" });
+      }
+
+      const processedDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+      const imported: string[] = [];
+      const skipped: string[] = [];
+
+      try {
+        const movie = await radarr.getMovie(request.radarr_id);
+        // Import Radarr-managed file
+        const filePath = movie.movieFile?.path;
+        if (filePath && fs.existsSync(filePath)) {
+          const fileName = path.basename(filePath);
+          const destPath = path.join(processedDir, fileName);
+          const srcIno = (() => { try { return fs.statSync(filePath).ino; } catch { return 0; } })();
+          let already = false;
+          if (srcIno > 0) {
+            for (const existing of fs.readdirSync(processedDir)) {
+              try {
+                if (fs.statSync(path.join(processedDir, existing)).ino === srcIno) {
+                  already = true; break;
+                }
+              } catch {}
+            }
+          } else if (fs.existsSync(destPath)) {
+            already = true;
+          }
+          if (!already) {
+            fs.linkSync(filePath, destPath);
+            imported.push(fileName);
+          } else {
+            skipped.push(fileName);
+          }
+        }
+
+        // Import extra files in movie folder
+        const movieFolder = movie.path || path.dirname(filePath || "");
+        if (fs.existsSync(movieFolder)) {
+          for (const entry of fs.readdirSync(movieFolder)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+            if (entry === path.basename(filePath || "")) continue;
+            const extraPath = path.join(movieFolder, entry);
+            const extraDest = path.join(processedDir, entry);
+            const extraIno = (() => { try { return fs.statSync(extraPath).ino; } catch { return 0; } })();
+            let alreadyExtra = false;
+            if (extraIno > 0) {
+              for (const existing of fs.readdirSync(processedDir)) {
+                try {
+                  if (fs.statSync(path.join(processedDir, existing)).ino === extraIno) {
+                    alreadyExtra = true; break;
+                  }
+                } catch {}
+              }
+            } else if (fs.existsSync(extraDest)) {
+              alreadyExtra = true;
+            }
+            if (!alreadyExtra) {
+              try { fs.linkSync(extraPath, extraDest); imported.push(entry); } catch {}
+            }
+          }
+        }
+
+        // Update DB
+        if (imported.length > 0 || skipped.length > 0) {
+          if (request.status !== 'COMPLETED' && request.status !== 'DOWNLOADING' && request.status !== 'SEEDING') {
+            db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(request.id);
+          }
+          const allFiles = [...imported, ...skipped];
+          const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(request.id) as any;
+          if (ah) {
+            const existing = JSON.parse(ah.processed_files || "[]");
+            for (const f of allFiles) { if (!existing.includes(f)) existing.push(f); }
+            db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+          } else {
+            db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(request.id, JSON.stringify(allFiles));
+          }
+        }
+
+        res.json({ success: true, imported: imported.length, skipped: skipped.length, files: imported });
+      } catch (e: any) {
+        res.status(500).json({ error: `Failed to import from Radarr: ${e.message}` });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // POST /api/requests/:id/processed/scan - Return unlinked files in processed dir (exclude files already matched to other requests)
   router.post("/:id/processed/scan", async (req: Request, res: Response) => {
     try {

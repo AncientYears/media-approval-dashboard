@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, importFromLibrary } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -612,6 +612,16 @@ export default function RequestDetail() {
           <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 8 }} onClick={handleScanProcessed} disabled={scanning}>
             {scanning ? "Scanning..." : "Scan Folder"}
           </button>
+          {request?.type === "movie" && request?.radarr_id && (
+            <button className="btn btn-primary btn-tiny" style={{ marginLeft: 4 }} onClick={async () => {
+              try {
+                const result = await importFromLibrary(Number(id));
+                await refreshProcessedAndWorkspaces();
+              } catch (e: any) {
+                toast.show(e.response?.data?.error || e.message, "error");
+              }
+            }}>Import from Library</button>
+          )}
         </div>
         {processedFiles.length > 0 && (
           <>
