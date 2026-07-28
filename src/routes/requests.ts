@@ -1264,7 +1264,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
 
-      // Also count files on disk in the season folder
+      // Also count files on disk in the season folder (prefer disk over RC)
+      const diskEps2 = new Set<number>();
       try {
         const series = await sonarr.getSeries(row.sonarr_id);
         const fTitle = series.title;
@@ -1274,13 +1275,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           for (const f of fs.readdirSync(seasonFolder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
             const epNum = extractEpisodeFromFilename(f);
-            if (epNum != null) {
-              coveredEps.add(epNum);
-              if (!epQuality[epNum]) epQuality[epNum] = "WEB-DL";
-            }
+            if (epNum != null) diskEps2.add(epNum);
+          }
+          // Prefer disk coverage over RC coverage when season folder exists
+          for (const ep of coveredEps) {
+            if (diskEps2.has(ep)) continue;
+            coveredEps.delete(ep);
           }
         }
       } catch {}
+      // Add disk-only episodes
+      for (const ep of diskEps2) {
+        coveredEps.add(ep);
+        if (!epQuality[ep]) epQuality[ep] = "WEB-DL";
+      }
 
       if (sonarrEpisodes.length > 0) {
         if (hasSeasonPack) {
