@@ -680,65 +680,59 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           }
         } catch {}
+        const mappedSeasons = seasons.map((s: any) => {
+          // Get covered episodes from parsed_episodes on approved releases
+          const coveredRows = db.prepare(`
+            SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
+            JOIN approval_history ah ON ah.release_id = rc.id
+            WHERE ah.request_id = ? AND rc.torrent_hash != ''
+          `).all(s.id) as any[];
+          const coveredEps = new Set<number>();
+          for (const cr of coveredRows) {
+            if (cr.parsed_episodes) {
+              const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
+              if (epMatches) {
+                for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+              }
+              const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+              if (rangeMatch) {
+                for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+              }
+            } else if (s.episode_count && s.season != null && isSeasonPackTitle(cr.title || '', s.season)) {
+              for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
+            }
+          }
+          // Also count library-imported files — parse episode numbers from processed_files paths
+          const processedAh = db.prepare(`
+            SELECT processed_files FROM approval_history
+            WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
+            AND processed_files IS NOT NULL AND processed_files != '[]'
+          `).all(s.id) as any[];
+          for (const pa of processedAh) {
+            const files: string[] = JSON.parse(pa.processed_files || "[]");
+            for (const pf of files) {
+              const epMatch = pf.match(/[Ee](\d{1,3})/);
+              if (epMatch) coveredEps.add(parseInt(epMatch[1], 10));
+            }
+          }
+          return {
+            season: s.season,
+            request_id: s.id,
+            status: s.status,
+            total_size_mb: s.total_size_mb,
+            release_count: s.release_count,
+            title: s.title,
+            episode_count: s.episode_count,
+            covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+          };
+        }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+        const totalCovered = mappedSeasons.reduce((sum: number, s: any) => sum + (s.covered_episodes?.length || 0), 0);
         managed.push({
           title: franchiseTitle,
           type: "series",
           sonarr_id: sonarrId,
           first_request_id: firstRequestId,
-          seasons: seasons.map((s: any) => {
-            // Get covered episodes from parsed_episodes on approved releases
-            const coveredRows = db.prepare(`
-              SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
-              JOIN approval_history ah ON ah.release_id = rc.id
-              WHERE ah.request_id = ? AND rc.torrent_hash != ''
-            `).all(s.id) as any[];
-            const coveredEps = new Set<number>();
-            for (const cr of coveredRows) {
-              if (cr.parsed_episodes) {
-                const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
-                if (epMatches) {
-                  for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
-                }
-                const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
-                if (rangeMatch) {
-                  for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
-                }
-              } else if (s.episode_count && s.season != null && isSeasonPackTitle(cr.title || '', s.season)) {
-                for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
-              }
-            }
-            // Also count library-imported files — parse episode numbers from processed_files paths
-            const processedAh = db.prepare(`
-              SELECT processed_files FROM approval_history
-              WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
-              AND processed_files IS NOT NULL AND processed_files != '[]'
-            `).all(s.id) as any[];
-            for (const pa of processedAh) {
-              const files: string[] = JSON.parse(pa.processed_files || "[]");
-              for (const pf of files) {
-                const epMatch = pf.match(/[Ee](\d{1,3})/);
-                if (epMatch) coveredEps.add(parseInt(epMatch[1], 10));
-              }
-            }
-            return {
-              season: s.season,
-              request_id: s.id,
-              status: s.status,
-              total_size_mb: s.total_size_mb,
-              release_count: s.release_count,
-              title: s.title,
-              episode_count: s.episode_count,
-              covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-            };
-          }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0)),
-          total_size_mb: franchiseSize,
-          total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
-          total_covered: (() => {
-            let covered = 0;
-            for (const s of seasons) covered += (s.covered_episodes?.length || 0);
-            return covered;
-          })(),
-        });
+          seasons: mappedSeasons,
       }
 
       // Add individual movies
