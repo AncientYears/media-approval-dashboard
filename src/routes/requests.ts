@@ -3295,7 +3295,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           return res.status(404).json({ error: `Processed file not found: ${fileName}` });
         }
       } else {
-        // Legacy: derive from torrent hash
+        // TorrentPanel: hardlink directly from download content to library (no processed entry)
         const release = db.prepare(
           "SELECT rc.* FROM release_candidates rc " +
           "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
@@ -3316,17 +3316,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
         }
 
-        const baseName = path.basename(contentPath);
-        const processedPath = path.join(processedDir, baseName);
-
-        if (!fs.existsSync(processedPath)) {
-          moveToProcessedSync(contentPath, type);
-        }
-
-        sourcePath = processedPath;
-        if (!fs.existsSync(sourcePath)) {
-          sourcePath = contentPath;
-        }
+        sourcePath = contentPath;
       }
 
       if (request.type === "series" && request.sonarr_id) {
