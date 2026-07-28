@@ -569,11 +569,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
              WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
             (SELECT COUNT(*) FROM release_candidates rc3 
              JOIN approval_history ah3 ON ah3.release_id = rc3.id 
-             WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
+             WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count,
+            (SELECT COUNT(*) FROM approval_history ah4 
+             WHERE ah4.request_id = mr.id AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
           FROM media_requests mr
           WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
         ) sub
-        WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.status = 'COMPLETED'
+        WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.processed_count > 0 OR sub.status = 'COMPLETED'
         ORDER BY sub.title
       `).all() as any[];
 
@@ -1645,28 +1647,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const fileName = path.basename(filePath);
             const destPath = path.join(processedMoviesDir, fileName);
             // Dedup: check by inode across ALL files in processed dir (Radarr renames files)
+            let alreadyImported = false;
             const srcIno = (() => { try { return fs.statSync(filePath).ino; } catch { return 0; } })();
             if (srcIno > 0) {
-              let alreadyExists = false;
               for (const existing of fs.readdirSync(processedMoviesDir)) {
                 try {
                   if (fs.statSync(path.join(processedMoviesDir, existing)).ino === srcIno) {
-                    alreadyExists = true;
+                    alreadyImported = true;
                     break;
                   }
                 } catch {}
               }
-              if (alreadyExists) {
-                results.push({ title: m.title, status: "exists", path: filePath });
-                continue;
-              }
             } else if (fs.existsSync(destPath)) {
-              results.push({ title: m.title, status: "exists", path: destPath });
-              continue;
+              alreadyImported = true;
             }
-            fs.linkSync(filePath, destPath);
-            console.log(`[ImportLibrary] Hardlinked ${fileName} → processed/filmy`);
-            // Associate with matching request
+            if (!alreadyImported) {
+              fs.linkSync(filePath, destPath);
+              console.log(`[ImportLibrary] Hardlinked ${fileName} → processed/filmy`);
+              results.push({ title: m.title, status: "imported", path: destPath });
+            } else {
+              results.push({ title: m.title, status: "exists", path: filePath });
+            }
+            // Always try association, even for already-imported files
             try {
               const req = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
               if (req) {
@@ -1684,7 +1686,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             } catch (e: any) {
               console.error(`[ImportLibrary] Failed to associate ${m.title}:`, e.message);
             }
-            results.push({ title: m.title, status: "imported", path: destPath });
           } catch (e: any) {
             results.push({ title: m.title, status: "error", error: e.message });
           }
@@ -1716,14 +1717,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 const srcPath = path.join(seasonDir, f);
                 const destPath = path.join(seasonDest, f);
                 const relPath = path.join(s.title, entry.name, f);
-                if (fs.existsSync(destPath)) {
-                  try {
-                    if (fs.statSync(srcPath).ino === fs.statSync(destPath).ino) continue;
-                  } catch {}
+                const alreadyImported = (() => {
+                  if (!fs.existsSync(destPath)) return false;
+                  try { return fs.statSync(srcPath).ino === fs.statSync(destPath).ino; } catch { return false; }
+                })();
+                if (!alreadyImported) {
+                  fs.linkSync(srcPath, destPath);
+                  console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} → processed/serialy`);
+                  results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
                 }
-                fs.linkSync(srcPath, destPath);
-                console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} → processed/serialy`);
-                // Associate with matching request (parse season from dir name)
+                // Always try association, even for already-imported files
                 try {
                   const seasonMatch = entry.name.match(/S(\d+)/i);
                   if (seasonMatch) {
@@ -1745,7 +1748,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 } catch (e: any) {
                   console.error(`[ImportLibrary] Failed to associate ${s.title} ${f}:`, e.message);
                 }
-                results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
               }
             }
           } catch (e: any) {
