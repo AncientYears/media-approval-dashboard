@@ -230,7 +230,7 @@ export default function Dashboard() {
               `Imported ${result.imported} new request(s).`,
             ];
             if (result.fixed > 0) {
-              lines.push(`Fixed ${result.fixed} existing request(s) NEW→SEEDING.`);
+              lines.push(`Fixed ${result.fixed} existing request(s) NEW→COMPLETED.`);
             }
             if (result.orphaned > 0) {
               lines.push(`Removed ${result.orphaned} orphaned request(s).`);

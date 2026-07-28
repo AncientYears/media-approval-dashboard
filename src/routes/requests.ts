@@ -421,13 +421,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       try { allTorrents = await qbittorrent.getTorrents(); } catch {}
 
       for (const movie of radarrMovies) {
-        // Fix existing entries: update NEW→SEEDING if Radarr says hasFile
+        // Fix existing entries: update NEW→COMPLETED if Radarr says hasFile
         const existing = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ?").get(movie.id) as any;
         if (existing) {
           if (movie.hasFile && existing.status === "NEW") {
-            db.prepare("UPDATE media_requests SET status = 'SEEDING' WHERE id = ?").run(existing.id);
+            db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(existing.id);
             fixed++;
-            console.log(`[Import] Fixed ${movie.title}: NEW→SEEDING (Radarr hasFile)`);
+            console.log(`[Import] Fixed ${movie.title}: NEW→COMPLETED (Radarr hasFile)`);
           }
           continue;
         }
@@ -435,21 +435,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           skipped.push({ title: movie.title, radarr_id: movie.id, reason: "title exists in DB" });
           continue;
         }
-        const status = movie.hasFile ? "SEEDING" : "NEW";
+        const status = movie.hasFile ? "COMPLETED" : "NEW";
         const result = db.prepare(
           "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, ?, '[]')"
         ).run(movie.title, movie.id, status);
         const requestId = Number(result.lastInsertRowid);
         console.log(`[Import] Created movie request: ${movie.title} (radarr_id=${movie.id}, status=${status})`);
 
-        // If SEEDING (hasFile=true), try to detect torrent hash from qBittorrent
-        if (status === "SEEDING" && allTorrents.length > 0) {
+        // If hasFile=true, try to detect torrent hash from qBittorrent
+        if (status === "COMPLETED" && allTorrents.length > 0) {
           const normTitle = movie.title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
           const match = allTorrents.find((t: any) => {
             const tn = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").replace(/\s+/g, " ").trim();
             return tn === normTitle || tn.startsWith(normTitle + " ") || tn.startsWith(normTitle + ".");
           });
           if (match) {
+            db.prepare("UPDATE media_requests SET status = 'SEEDING' WHERE id = ?").run(requestId);
             const quality = parseQualityFromName(match.name);
             db.prepare(
               "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'import', ?, ?, ?)"
@@ -457,7 +458,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             db.prepare(
               "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
             ).run(requestId, requestId);
-            console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}`);
+            console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}, status→SEEDING`);
           }
         }
 
@@ -485,9 +486,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const existing = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(s.id, seasonNum) as any;
             if (existing) {
               if (epFileCount > 0 && existing.status === "NEW") {
-                db.prepare("UPDATE media_requests SET status = 'SEEDING', episode_count = ? WHERE id = ?").run(epCount || null, existing.id);
+                db.prepare("UPDATE media_requests SET status = 'COMPLETED', episode_count = ? WHERE id = ?").run(epCount || null, existing.id);
                 fixed++;
-                console.log(`[Import] Fixed ${detail.title} S${String(seasonNum).padStart(2, "0")}: NEW→SEEDING (${epFileCount}/${epCount} episodes)`);
+                console.log(`[Import] Fixed ${detail.title} S${String(seasonNum).padStart(2, "0")}: NEW→COMPLETED (${epFileCount}/${epCount} episodes)`);
               }
               continue;
             }
@@ -495,7 +496,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             // Create new entry
             if (seasonNum === 0) continue; // Skip specials
             const title = `${detail.title} S${String(seasonNum).padStart(2, "0")}`;
-            const status = epFileCount > 0 ? "SEEDING" : "NEW";
+            const status = epFileCount > 0 ? "COMPLETED" : "NEW";
             const result = db.prepare(
               "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by, episode_count) VALUES (?, 'series', ?, ?, ?, '[]', ?)"
             ).run(title, s.id, seasonNum, status, epCount || null);
