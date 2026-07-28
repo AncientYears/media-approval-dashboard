@@ -3347,6 +3347,34 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.json({ success: true, message: "File already exists in library", source: sourcePath, destination: destPath, alreadyExists: true });
       }
 
+      // Check if any file in library folder has the same inode (already there, possibly renamed)
+      try {
+        const srcStat = fs.statSync(sourcePath);
+        if (srcStat.ino > 0) {
+          const libFiles = fs.readdirSync(destFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv|bdmv)$/i.test(f));
+          for (const lf of libFiles) {
+            try {
+              const lfStat = fs.statSync(path.join(destFolder, lf));
+              if (lfStat.ino === srcStat.ino && lfStat.ino > 0) {
+                return res.json({ success: true, message: "File already in library", source: sourcePath, destination: path.join(destFolder, lf), alreadyExists: true });
+              }
+            } catch {}
+          }
+          // Also check BDMV directories
+          for (const lf of libFiles) {
+            if (lf === "BDMV") {
+              try {
+                const bdPath = path.join(destFolder, lf);
+                const bdStat = fs.statSync(bdPath);
+                if (bdStat.ino === srcStat.ino && bdStat.ino > 0) {
+                  return res.json({ success: true, message: "File already in library", source: sourcePath, destination: path.join(destFolder, lf), alreadyExists: true });
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+
       const stat = fs.statSync(sourcePath);
       if (stat.isDirectory()) {
         hardlinkDirRecursive(sourcePath, path.join(destFolder, path.basename(sourcePath)));
