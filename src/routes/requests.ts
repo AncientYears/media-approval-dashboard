@@ -1644,18 +1644,46 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
             const fileName = path.basename(filePath);
             const destPath = path.join(processedMoviesDir, fileName);
-            if (fs.existsSync(destPath)) {
-              try {
-                const srcIno = fs.statSync(filePath).ino;
-                const dstIno = fs.statSync(destPath).ino;
-                if (srcIno === dstIno) {
-                  results.push({ title: m.title, status: "exists", path: destPath });
-                  continue;
-                }
-              } catch {}
+            // Dedup: check by inode across ALL files in processed dir (Radarr renames files)
+            const srcIno = (() => { try { return fs.statSync(filePath).ino; } catch { return 0; } })();
+            if (srcIno > 0) {
+              let alreadyExists = false;
+              for (const existing of fs.readdirSync(processedMoviesDir)) {
+                try {
+                  if (fs.statSync(path.join(processedMoviesDir, existing)).ino === srcIno) {
+                    alreadyExists = true;
+                    break;
+                  }
+                } catch {}
+              }
+              if (alreadyExists) {
+                results.push({ title: m.title, status: "exists", path: filePath });
+                continue;
+              }
+            } else if (fs.existsSync(destPath)) {
+              results.push({ title: m.title, status: "exists", path: destPath });
+              continue;
             }
             fs.linkSync(filePath, destPath);
             console.log(`[ImportLibrary] Hardlinked ${fileName} → processed/filmy`);
+            // Associate with matching request
+            try {
+              const req = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
+              if (req) {
+                const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
+                if (ah) {
+                  const existing = JSON.parse(ah.processed_files || "[]");
+                  if (!existing.includes(fileName)) {
+                    existing.push(fileName);
+                    db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+                  }
+                } else {
+                  db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, 0, 'system', ?)").run(req.id, JSON.stringify([fileName]));
+                }
+              }
+            } catch (e: any) {
+              console.error(`[ImportLibrary] Failed to associate ${m.title}:`, e.message);
+            }
             results.push({ title: m.title, status: "imported", path: destPath });
           } catch (e: any) {
             results.push({ title: m.title, status: "error", error: e.message });
@@ -1673,21 +1701,50 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const detail = await sonarr.getSeries(s.id);
             const seriesPath = detail.path || path.join(process.env.MEDIA_TV || "/media/Serialy", s.title);
             if (!seriesPath || !fs.existsSync(seriesPath)) continue;
+            // Create series subfolder in processed
+            const seriesDest = path.join(processedTvDir, s.title);
+            if (!fs.existsSync(seriesDest)) fs.mkdirSync(seriesDest, { recursive: true });
             // Walk season dirs for video files
             for (const entry of fs.readdirSync(seriesPath, { withFileTypes: true })) {
               if (!entry.isDirectory()) continue;
               if (!/^S\d+$/i.test(entry.name)) continue;
               const seasonDir = path.join(seriesPath, entry.name);
+              const seasonDest = path.join(seriesDest, entry.name);
+              if (!fs.existsSync(seasonDest)) fs.mkdirSync(seasonDest, { recursive: true });
               for (const f of fs.readdirSync(seasonDir)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
                 const srcPath = path.join(seasonDir, f);
-                const destPath = path.join(processedTvDir, f);
+                const destPath = path.join(seasonDest, f);
+                const relPath = path.join(s.title, entry.name, f);
                 if (fs.existsSync(destPath)) {
                   try {
                     if (fs.statSync(srcPath).ino === fs.statSync(destPath).ino) continue;
                   } catch {}
                 }
                 fs.linkSync(srcPath, destPath);
+                console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} → processed/serialy`);
+                // Associate with matching request (parse season from dir name)
+                try {
+                  const seasonMatch = entry.name.match(/S(\d+)/i);
+                  if (seasonMatch) {
+                    const seasonNum = parseInt(seasonMatch[1], 10);
+                    const req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, seasonNum) as any;
+                    if (req) {
+                      const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
+                      if (ah) {
+                        const existing = JSON.parse(ah.processed_files || "[]");
+                        if (!existing.includes(relPath)) {
+                          existing.push(relPath);
+                          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+                        }
+                      } else {
+                        db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, 0, 'system', ?)").run(req.id, JSON.stringify([relPath]));
+                      }
+                    }
+                  }
+                } catch (e: any) {
+                  console.error(`[ImportLibrary] Failed to associate ${s.title} ${f}:`, e.message);
+                }
                 results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
               }
             }
@@ -1697,6 +1754,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       } catch (e: any) {
         results.push({ title: "(Sonarr)", status: "error", error: `Failed to fetch series: ${e.message}` });
+      }
+
+      // Cleanup: remove flat video files in processed/serialy that are now inside subfolders (duplicates from first import)
+      try {
+        const topEntries = fs.readdirSync(processedTvDir, { withFileTypes: true });
+        for (const te of topEntries) {
+          if (te.isDirectory() || !/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(te.name)) continue;
+          const flatPath = path.join(processedTvDir, te.name);
+          const flatIno = (() => { try { return fs.statSync(flatPath).ino; } catch { return 0; } })();
+          // Check if this file exists inside any series subfolder (same inode = duplicate)
+          for (const se of topEntries) {
+            if (!se.isDirectory()) continue;
+            const seasonBase = path.join(processedTvDir, se.name);
+            for (const sub of fs.readdirSync(seasonBase, { withFileTypes: true })) {
+              if (!sub.isDirectory() || !/^S\d+$/i.test(sub.name)) continue;
+              const seasonDir = path.join(seasonBase, sub.name);
+              for (const f of fs.readdirSync(seasonDir)) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+                const subPath = path.join(seasonDir, f);
+                const subIno = (() => { try { return fs.statSync(subPath).ino; } catch { return 0; } })();
+                if (flatIno > 0 && flatIno === subIno) {
+                  fs.unlinkSync(flatPath);
+                  console.log(`[ImportLibrary] Cleaned up flat duplicate: ${te.name}`);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        console.error(`[ImportLibrary] Cleanup error:`, e.message);
       }
 
       const imported = results.filter(r => r.status === "imported").length;
@@ -3158,13 +3246,41 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {}
       }
 
-      const entries = fs.readdirSync(processedDir, { withFileTypes: true });
+      const requestTitleNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+      // Collect all files from processedDir — flat or nested (series use SeriesName/S##/ structure)
+      type ProcessedEntry = { name: string; relPath: string; fullPath: string; isDir: boolean };
+      const allEntries: ProcessedEntry[] = [];
+      for (const entry of fs.readdirSync(processedDir, { withFileTypes: true })) {
+        if (entry.name.startsWith(".")) continue;
+        const fullPath = path.join(processedDir, entry.name);
+        if (entry.isDirectory()) {
+          // Series subfolder — scan for season subdirs and video files
+          for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
+            if (!sub.isDirectory()) continue;
+            if (!/^S\d+$/i.test(sub.name)) continue;
+            const seasonDir = path.join(fullPath, sub.name);
+            for (const f of fs.readdirSync(seasonDir)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              allEntries.push({ name: f, relPath: path.join(entry.name, sub.name, f), fullPath: path.join(seasonDir, f), isDir: false });
+            }
+          }
+          // Also check if the dir itself is a workspace or other relevant dir
+          allEntries.push({ name: entry.name, relPath: entry.name, fullPath, isDir: true });
+        } else {
+          allEntries.push({ name: entry.name, relPath: entry.name, fullPath, isDir: false });
+        }
+      }
+
       const files: { name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[] = [];
 
-      for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue;
-        if (!matchedNames.has(entry.name)) continue;
-        const fullPath = path.join(processedDir, entry.name);
+      for (const e of allEntries) {
+        // Match by: exact name in matchedNames, relative path in matchedNames, or title-match fallback
+        if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath)) {
+          const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
+        }
+        const fullPath = e.fullPath;
         let size = 0;
         let ino = 0;
         try {
@@ -3173,14 +3289,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ino = st.ino;
         } catch {}
         const inLibrary = (ino > 0 && libraryInodes.has(ino))
-          || libraryFiles.has(entry.name)
-          || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)))
+          || libraryFiles.has(e.name)
+          || (e.isDir && [...libraryFiles].some((lf) => lf.startsWith(e.name)))
           || (size > 0 && librarySizes.has(size));
         let libraryMatch = "";
         if (inLibrary) {
-          libraryMatch = libraryNameByInode.get(ino) || [...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || librarySizes.get(size) || "";
+          libraryMatch = libraryNameByInode.get(ino) || [...libraryFiles].find((lf) => lf === e.name || lf.startsWith(e.name)) || librarySizes.get(size) || "";
         }
-        files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: libraryMatch });
+        files.push({ name: e.relPath, size, isDir: e.isDir, inLibrary, libraryPath: libraryMatch });
       }
 
       res.json({ files, processedDir });
