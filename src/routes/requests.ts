@@ -5163,5 +5163,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     res.json({ success: true, status });
   });
 
+  // GET /api/requests/:id/debug - Dump raw DB data for a request
+  router.get("/:id/debug", (req: Request, res: Response) => {
+    const { id } = req.params;
+    const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id);
+    const rcs = db.prepare("SELECT rc.* FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").all(id);
+    const ahs = db.prepare("SELECT * FROM approval_history WHERE request_id = ?").all(id);
+    res.json({ request, release_candidates: rcs, approval_history: ahs });
+  });
+
   return router;
 }
