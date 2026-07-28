@@ -3477,41 +3477,40 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       } catch {}
 
       const stat = fs.statSync(sourcePath);
-      if (stat.isDirectory()) {
-        hardlinkDirRecursive(sourcePath, path.join(destFolder, path.basename(sourcePath)));
-      } else {
-        fs.mkdirSync(destFolder, { recursive: true });
-        try {
-          fs.linkSync(sourcePath, destPath);
-        } catch (linkErr: any) {
-          if (linkErr.code === "EXDEV") {
-            console.warn(`[MoveToLibrary] Cross-device link, falling back to copy`);
-            fs.copyFileSync(sourcePath, destPath);
-          } else {
-            throw linkErr;
+
+      // Let Radarr/Sonarr handle the file placement + rename
+      let importResult = { success: false, error: "" };
+      if (request.type === "series" && request.sonarr_id) {
+        importResult = await sonarr.manualImport(sourcePath, request.sonarr_id, request.season || 1) as any;
+      } else if (request.radarr_id) {
+        importResult = await radarr.manualImport(sourcePath, request.radarr_id) as any;
+      }
+
+      if (!importResult.success) {
+        // Fallback: hardlink ourselves
+        console.log(`[MoveToLibrary] Manual import failed, falling back to hardlink`);
+        if (stat.isDirectory()) {
+          hardlinkDirRecursive(sourcePath, path.join(destFolder, path.basename(sourcePath)));
+        } else {
+          fs.mkdirSync(destFolder, { recursive: true });
+          try {
+            fs.linkSync(sourcePath, destPath);
+          } catch (linkErr: any) {
+            if (linkErr.code === "EXDEV") {
+              console.warn(`[MoveToLibrary] Cross-device link, falling back to copy`);
+              fs.copyFileSync(sourcePath, destPath);
+            } else {
+              throw linkErr;
+            }
           }
         }
       }
 
-      const method = fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied";
-      console.log(`[MoveToLibrary] ${method} ${sourcePath} → ${destPath}`);
+      const finalDest = importResult.success ? sourcePath : destPath;
+      const method = importResult.success ? "imported via Radarr/Sonarr" : (fs.existsSync(destPath) && fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied");
+      console.log(`[MoveToLibrary] ${method} ${sourcePath}`);
 
-      // Tell Radarr/Sonarr to import the file (manual import with rename/reprocess)
-      if (request.type === "series" && request.sonarr_id) {
-        try {
-          await sonarr.manualImport(destPath, request.sonarr_id, request.season || 1);
-        } catch (e: any) {
-          console.warn(`[MoveToLibrary] Sonarr manual import failed: ${e.message}`);
-        }
-      } else if (request.radarr_id) {
-        try {
-          await radarr.manualImport(destPath, request.radarr_id);
-        } catch (e: any) {
-          console.warn(`[MoveToLibrary] Radarr manual import failed: ${e.message}`);
-        }
-      }
-
-      res.json({ success: true, message: `Files ${method} to library`, source: sourcePath, destination: destPath });
+      res.json({ success: true, message: `Files ${method} to library`, source: sourcePath, destination: finalDest });
     } catch (error: any) {
       console.error("Error moving to library:", error);
       res.status(500).json({ error: `Failed to move to library: ${error.message}` });

@@ -249,6 +249,8 @@ export class SonarrService {
           ...(episodeIds.length > 0 ? { episodeIds } : {}),
         }],
       });
+      // Force Sonarr to re-scan after import
+      await this.refreshSeries(seriesId);
       console.log(`[Sonarr] manualimport: triggered import for ${filePath}`);
       return { success: true };
     } catch (error: any) {

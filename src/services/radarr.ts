@@ -171,11 +171,13 @@ export class RadarrService {
           languages: [{ id: 1, name: "English" }],
         }],
       });
+      // Force Radarr to re-scan and rename after import
+      await this.refreshMovie(movieId);
       console.log(`[Radarr] manualimport: triggered import for ${filePath}`);
       return { success: true };
     } catch (error: any) {
       console.error(`[Radarr] manualimport failed for ${filePath}:`, error.message);
       return { success: false, error: error.message };
+    }
   }
-}
 }
