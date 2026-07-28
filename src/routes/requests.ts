@@ -793,11 +793,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
               } catch {}
               let actualEpCount = epCount;
-              if (!actualEpCount && coveredEps.size > 0) {
-                try {
-                  const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, sn.seasonNumber);
-                  actualEpCount = Math.max(sonarrEps.length, coveredEps.size);
-                } catch { actualEpCount = coveredEps.size; }
+              try {
+                const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, sn.seasonNumber);
+                actualEpCount = Math.max(sonarrEps.length, coveredEps.size);
+              } catch {
+                if (!actualEpCount && coveredEps.size > 0) actualEpCount = coveredEps.size;
               }
               mappedSeasons.push({
                 season: sn.seasonNumber,
@@ -2048,34 +2048,69 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             } else {
               results.push({ title: m.title, status: "exists", path: filePath });
             }
-            // Always try association, even for already-imported files
-            try {
-              let req = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
-              if (!req) {
-                req = db.prepare("SELECT id, status FROM media_requests WHERE title = ? AND type = 'movie'").get(m.title) as any;
-              }
-              if (!req) {
-                const result = db.prepare("INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'COMPLETED', '[]')").run(m.title, m.id);
-                console.log(`[ImportLibrary] Created media_request for ${m.title} (COMPLETED)`);
-                req = { id: Number(result.lastInsertRowid), status: 'COMPLETED' };
-              }
-              if (req.status !== 'COMPLETED' && req.status !== 'DOWNLOADING' && req.status !== 'SEEDING') {
-                db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(req.id);
-                console.log(`[ImportLibrary] Updated ${m.title} status to COMPLETED (was ${req.status})`);
-              }
-              const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
-              if (ah) {
-                const existing = JSON.parse(ah.processed_files || "[]");
-                if (!existing.includes(fileName)) {
-                  existing.push(fileName);
-                  db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
-                }
-              } else {
-                db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify([fileName]));
-              }
-            } catch (e: any) {
-              console.error(`[ImportLibrary] Failed to associate ${m.title}:`, e.message);
+          try {
+            let req = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
+            if (!req) {
+              req = db.prepare("SELECT id, status FROM media_requests WHERE title = ? AND type = 'movie'").get(m.title) as any;
             }
+            if (!req) {
+              const result = db.prepare("INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'COMPLETED', '[]')").run(m.title, m.id);
+              console.log(`[ImportLibrary] Created media_request for ${m.title} (COMPLETED)`);
+              req = { id: Number(result.lastInsertRowid), status: 'COMPLETED' };
+            }
+            if (req.status !== 'COMPLETED' && req.status !== 'DOWNLOADING' && req.status !== 'SEEDING') {
+              db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(req.id);
+              console.log(`[ImportLibrary] Updated ${m.title} status to COMPLETED (was ${req.status})`);
+            }
+            const processedFiles: string[] = [];
+            // Add Radarr-managed file
+            if (!processedFiles.includes(fileName)) processedFiles.push(fileName);
+            // Also scan movie folder for additional video files not tracked by Radarr
+            const movieFolder = movie.path || path.dirname(filePath);
+            if (fs.existsSync(movieFolder)) {
+              for (const entry of fs.readdirSync(movieFolder)) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+                if (entry === fileName) continue; // already imported above
+                const extraPath = path.join(movieFolder, entry);
+                const extraDest = path.join(processedMoviesDir, entry);
+                const extraIno = (() => { try { return fs.statSync(extraPath).ino; } catch { return 0; } })();
+                let alreadyExtra = false;
+                if (extraIno > 0) {
+                  for (const existing of fs.readdirSync(processedMoviesDir)) {
+                    try {
+                      if (fs.statSync(path.join(processedMoviesDir, existing)).ino === extraIno) {
+                        alreadyExtra = true;
+                        break;
+                      }
+                    } catch {}
+                  }
+                } else if (fs.existsSync(extraDest)) {
+                  alreadyExtra = true;
+                }
+                if (!alreadyExtra) {
+                  try {
+                    fs.linkSync(extraPath, extraDest);
+                    console.log(`[ImportLibrary] Hardlinked extra ${entry} → processed/filmy`);
+                  } catch (e2: any) {
+                    console.error(`[ImportLibrary] Failed to hardlink extra ${entry}: ${e2.message}`);
+                  }
+                }
+                if (!processedFiles.includes(entry)) processedFiles.push(entry);
+              }
+            }
+            const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
+            if (ah) {
+              const existing = JSON.parse(ah.processed_files || "[]");
+              for (const pf of processedFiles) {
+                if (!existing.includes(pf)) existing.push(pf);
+              }
+              db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+            } else {
+              db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify(processedFiles));
+            }
+          } catch (e: any) {
+            console.error(`[ImportLibrary] Failed to associate ${m.title}:`, e.message);
+          }
           } catch (e: any) {
             results.push({ title: m.title, status: "error", error: e.message });
           }
