@@ -740,17 +740,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
           // Also scan the season folder on disk for files not yet in approval_history
           let folderSizeBytes = 0;
+          const diskEps = new Set<number>();
           try {
             const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(s.season).padStart(2, "0")}`);
             if (fs.existsSync(seasonFolder)) {
               for (const f of fs.readdirSync(seasonFolder)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
                 const epNum = extractEpisodeFromFilename(f);
-                if (epNum != null) coveredEps.add(epNum);
+                if (epNum != null) diskEps.add(epNum);
                 try { folderSizeBytes += fs.statSync(path.join(seasonFolder, f)).size; } catch {}
+              }
+              // Prefer disk coverage over RC coverage when season folder exists
+              for (const ep of coveredEps) {
+                if (diskEps.has(ep)) continue;
+                // Keep RC coverage only if the episode also exists in this season's folder
+                // (RC coverage without a matching disk file is stale — file was moved)
+                coveredEps.delete(ep);
               }
             }
           } catch {}
+          // Also add disk-only episodes (files without RC)
+          for (const ep of diskEps) coveredEps.add(ep);
           const folderSizeMb = folderSizeBytes / (1024 * 1024);
           const totalSizeMb = Math.max(s.total_size_mb || 0, folderSizeMb);
           return {
@@ -1006,17 +1016,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
         // Also scan the season folder on disk for files not yet in approval_history
         let folderSizeBytes = 0;
+        const diskEps = new Set<number>();
         try {
           const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(s.season).padStart(2, "0")}`);
           if (fs.existsSync(seasonFolder)) {
             for (const f of fs.readdirSync(seasonFolder)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
               const epNum = extractEpisodeFromFilename(f);
-              if (epNum != null) coveredEps.add(epNum);
+              if (epNum != null) diskEps.add(epNum);
               try { folderSizeBytes += fs.statSync(path.join(seasonFolder, f)).size; } catch {}
+            }
+            // Prefer disk coverage over RC coverage when season folder exists
+            for (const ep of coveredEps) {
+              if (diskEps.has(ep)) continue;
+              coveredEps.delete(ep);
             }
           }
         } catch {}
+        // Also add disk-only episodes (files without RC)
+        for (const ep of diskEps) coveredEps.add(ep);
         const folderSizeMb = folderSizeBytes / (1024 * 1024);
         const totalSizeMb = Math.max(s.total_size_mb || 0, folderSizeMb);
 
