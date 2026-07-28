@@ -3688,19 +3688,33 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const linkedFiles: string[] = [];
       const srcStat = fs.existsSync(contentPath) ? fs.statSync(contentPath) : null;
 
-      // Collect inodes of ALL existing processed files for this request (from all AH rows)
-      const existingInodes = new Set<number>();
-      const allAhRows = db.prepare("SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(request.id) as any[];
-      for (const ahRow of allAhRows) {
+      // First: clean dangling processed_files entries for this request (files no longer on disk)
+      const allCleanRows = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(request.id) as any[];
+      for (const cr of allCleanRows) {
         try {
-          for (const f of JSON.parse(ahRow.processed_files)) {
-            try {
-              const st = fs.statSync(path.join(processedDir, f));
-              if (st.ino > 0) existingInodes.add(st.ino);
-            } catch {}
+          const arr = JSON.parse(cr.processed_files);
+          const filtered = arr.filter((f: string) => fs.existsSync(path.join(processedDir, f)));
+          if (filtered.length !== arr.length) {
+            db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(filtered), cr.id);
+            console.log(`[MoveToProcessed] Cleaned dangling: AH id=${cr.id} ${arr.length}->${filtered.length}`);
           }
         } catch {}
       }
+
+      // Collect inodes of ALL remaining existing processed files for this request
+      const existingInodes = new Set<number>();
+      const allAhRows = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(request.id) as any[];
+      console.log(`[MoveToProcessed] After cleanup: ${allAhRows.length} AH rows:`);
+      for (const ahRow of allAhRows) {
+        try {
+          const arr = JSON.parse(ahRow.processed_files);
+          console.log(`[MoveToProcessed]   AH id=${ahRow.id} files=${arr.join(", ")}`);
+          for (const f of arr) {
+            try { const st = fs.statSync(path.join(processedDir, f)); if (st.ino > 0) existingInodes.add(st.ino); } catch {}
+          }
+        } catch {}
+      }
+      console.log(`[MoveToProcessed] existingInodes=${[...existingInodes].join(",")}`);
 
       if (srcStat?.isDirectory()) {
         const prefix = type === "series" ? path.basename(contentPath) : "";
@@ -3711,7 +3725,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             // Skip if same inode as existing processed file (hardlink duplicate)
             try {
               const st = fs.statSync(destPath);
-              if (st.ino > 0 && existingInodes.has(st.ino)) continue;
+              if (st.ino > 0 && existingInodes.has(st.ino)) { console.log(`[MoveToProcessed] SKIP ${entry}: inode ${st.ino} already tracked`); continue; }
             } catch {}
             linkedFiles.push(prefix ? path.join(prefix, entry) : entry);
           }
