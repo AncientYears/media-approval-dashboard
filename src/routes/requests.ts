@@ -632,7 +632,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             (SELECT COUNT(*) FROM approval_history ah4 
              WHERE ah4.request_id = mr.id AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
           FROM media_requests mr
-          WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+          WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED', 'NEW')
         ) sub
         WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.processed_count > 0 OR sub.status = 'COMPLETED'
         ORDER BY sub.title
@@ -666,6 +666,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (sn?.statistics?.episodeCount) {
                 s.episode_count = sn.statistics.episodeCount;
                 db.prepare("UPDATE media_requests SET episode_count = ? WHERE id = ?").run(sn.statistics.episodeCount, s.id);
+              } else {
+                try {
+                  const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, s.season);
+                  if (sonarrEps.length > 0) {
+                    s.episode_count = sonarrEps.length;
+                    db.prepare("UPDATE media_requests SET episode_count = ? WHERE id = ?").run(sonarrEps.length, s.id);
+                  }
+                } catch {}
               }
             }
           }
