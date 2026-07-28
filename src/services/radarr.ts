@@ -154,8 +154,31 @@ export class RadarrService {
     try {
       await this.client.post("/api/v3/command", { name: "RefreshMovie", movieIds: [movieId] });
       return { success: true };
-    } catch (error) {
-      return { success: false, error: String(error) };
+    } catch {
+      return { success: false };
+    }
+  }
+
+  async manualImport(folder: string, movieId?: number) {
+    try {
+      const params: any = { folder, filterExistingFiles: false };
+      if (movieId) params.movieId = movieId;
+      const response = await this.client.get("/api/v3/manualimport", { params });
+      const files = response.data;
+      if (!Array.isArray(files) || files.length === 0) {
+        console.log(`[Radarr] manualimport: no files found in ${folder}`);
+        return { success: true, imported: 0 };
+      }
+      await this.client.post("/api/v3/command", {
+        name: "ManualImport",
+        files,
+        importMode: "hardlink",
+      });
+      console.log(`[Radarr] manualimport: triggered import of ${files.length} file(s) from ${folder}`);
+      return { success: true, imported: files.length };
+    } catch (error: any) {
+      console.error(`[Radarr] manualimport failed for ${folder}:`, error.message || error);
+      return { success: false, error: error.message };
     }
   }
 }

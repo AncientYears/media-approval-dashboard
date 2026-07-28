@@ -3496,20 +3496,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const method = fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied";
       console.log(`[MoveToLibrary] ${method} ${sourcePath} → ${destPath}`);
 
-      // Tell Radarr/Sonarr to scan and pick up the new file
+      // Tell Radarr/Sonarr to import the file (manual import with rename/reprocess)
       if (request.type === "series" && request.sonarr_id) {
         try {
-          await sonarr.scanDownloadedEpisodes(destFolder, request.sonarr_id);
-          console.log(`[MoveToLibrary] Triggered Sonarr scan for ${destFolder}`);
+          await sonarr.manualImport(destFolder, request.sonarr_id, request.season || 1);
         } catch (e: any) {
-          console.warn(`[MoveToLibrary] Sonarr scan failed: ${e.message}`);
+          console.warn(`[MoveToLibrary] Sonarr manual import failed: ${e.message}`);
         }
       } else if (request.radarr_id) {
         try {
-          await radarr.scanDownloadedMovie(destFolder, request.radarr_id);
-          console.log(`[MoveToLibrary] Triggered Radarr scan for ${destFolder}`);
+          await radarr.manualImport(destFolder, request.radarr_id);
         } catch (e: any) {
-          console.warn(`[MoveToLibrary] Radarr scan failed: ${e.message}`);
+          console.warn(`[MoveToLibrary] Radarr manual import failed: ${e.message}`);
         }
       }
 
