@@ -1671,7 +1671,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
             // Always try association, even for already-imported files
             try {
-              const req = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
+              let req = db.prepare("SELECT id FROM media_requests WHERE radarr_id = ? AND type = 'movie'").get(m.id) as any;
+              if (!req) {
+                req = db.prepare("SELECT id FROM media_requests WHERE title = ? AND type = 'movie'").get(m.title) as any;
+              }
               if (req) {
                 const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
                 if (ah) {
@@ -1732,7 +1735,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                   const seasonMatch = entry.name.match(/S(\d+)/i);
                   if (seasonMatch) {
                     const seasonNum = parseInt(seasonMatch[1], 10);
-                    const req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, seasonNum) as any;
+                    let req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, seasonNum) as any;
+                    if (!req) {
+                      req = db.prepare("SELECT id FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${s.title}%`, seasonNum) as any;
+                    }
                     if (req) {
                       const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
                       if (ah) {
@@ -1788,6 +1794,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       } catch (e: any) {
         console.error(`[ImportLibrary] Cleanup error:`, e.message);
+      }
+
+      // Cleanup: remove empty season dirs and series dirs in processed/serialy
+      try {
+        const topEntries2 = fs.readdirSync(processedTvDir, { withFileTypes: true });
+        for (const se of topEntries2) {
+          if (!se.isDirectory()) continue;
+          const seriesDir = path.join(processedTvDir, se.name);
+          const seasonDirs = fs.readdirSync(seriesDir, { withFileTypes: true }).filter(d => d.isDirectory() && /^S\d+$/i.test(d.name));
+          for (const sd of seasonDirs) {
+            const seasonDir = path.join(seriesDir, sd.name);
+            const hasFiles = fs.readdirSync(seasonDir).some(f => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+            if (!hasFiles) {
+              fs.rmSync(seasonDir, { recursive: true, force: true });
+              console.log(`[ImportLibrary] Removed empty season dir: ${se.name}/${sd.name}`);
+            }
+          }
+          // Remove series dir if now empty
+          if (fs.readdirSync(seriesDir).length === 0) {
+            fs.rmSync(seriesDir, { recursive: true, force: true });
+            console.log(`[ImportLibrary] Removed empty series dir: ${se.name}`);
+          }
+        }
+      } catch (e: any) {
+        console.error(`[ImportLibrary] Empty dir cleanup error:`, e.message);
       }
 
       const imported = results.filter(r => r.status === "imported").length;
