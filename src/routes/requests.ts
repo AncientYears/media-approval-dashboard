@@ -53,6 +53,15 @@ function isSeasonPackTitle(title: string, season: number): boolean {
   return seasonPattern.test(title) && !/\bE\d{1,3}\b/i.test(title);
 }
 
+function extractEpisodeFromFilename(filePath: string): number | null {
+  const m = filePath.match(/[Ee](\d{1,3})/);
+  if (m) return parseInt(m[1], 10);
+  const base = filePath.split(/[/\\]/).pop() || filePath;
+  const lead = base.match(/^(\d{1,3})\s/);
+  if (lead) return parseInt(lead[1], 10);
+  return null;
+}
+
 function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
   if (torrentNorm.startsWith(lookupNorm)) {
@@ -714,8 +723,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           for (const pa of processedAh) {
             const files: string[] = JSON.parse(pa.processed_files || "[]");
             for (const pf of files) {
-              const epMatch = pf.match(/[Ee](\d{1,3})/);
-              if (epMatch) coveredEps.add(parseInt(epMatch[1], 10));
+              const epNum = extractEpisodeFromFilename(pf);
+              if (epNum != null) coveredEps.add(epNum);
             }
           }
           return {
@@ -940,8 +949,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const pa of processedAh) {
           const files: string[] = JSON.parse(pa.processed_files || "[]");
           for (const pf of files) {
-            const epMatch = pf.match(/[Ee](\d{1,3})/);
-            if (epMatch) coveredEps.add(parseInt(epMatch[1], 10));
+            const epNum = extractEpisodeFromFilename(pf);
+            if (epNum != null) coveredEps.add(epNum);
           }
         }
 
@@ -1059,9 +1068,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       for (const pa of processedAh2) {
         const files: string[] = JSON.parse(pa.processed_files || "[]");
         for (const pf of files) {
-          const epMatch = pf.match(/[Ee](\d{1,3})/);
-          if (epMatch) {
-            const epNum = parseInt(epMatch[1], 10);
+          const epNum = extractEpisodeFromFilename(pf);
+          if (epNum != null) {
             coveredEps.add(epNum);
             const quality = "WEB-DL";
             if (!epQuality[epNum] || quality.toLowerCase().includes("remux")) epQuality[epNum] = quality;
