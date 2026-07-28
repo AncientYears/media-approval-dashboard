@@ -3741,22 +3741,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
       if (linkedFiles.length > 0) {
-        if (request.status !== 'COMPLETED' && request.status !== 'DOWNLOADING' && request.status !== 'SEEDING') {
-          db.prepare("UPDATE media_requests SET status = 'SEEDING' WHERE id = ?").run(request.id);
-        }
-        const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(request.id) as any;
-        if (ah) {
-          const existing = JSON.parse(ah.processed_files || "[]");
-          for (const f of linkedFiles) { if (!existing.includes(f)) existing.push(f); }
-          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
-        } else {
-          db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(request.id, JSON.stringify(linkedFiles));
-        }
+        console.log(`[MoveToProcessed] ${contentPath} → ${result.destination} (${linkedFiles.length} files linked, not added to DB — tracked via torrent association)`);
       } else {
         console.log(`[MoveToProcessed] All files already linked via inode, nothing to add`);
       }
 
-      console.log(`[MoveToProcessed] ${contentPath} → ${result.destination} (${linkedFiles.length} files linked)`);
       res.json({ success: true, source: contentPath, destination: result.destination, files: linkedFiles });
     } catch (error: any) {
       console.error("Error moving to processed:", error);
@@ -3791,18 +3780,38 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (!fs.existsSync(contentPath)) { results[rel.id] = null; continue; }
 
         const basename = path.basename(contentPath);
+        const contentStat2 = fs.statSync(contentPath);
+        const isDir = contentStat2.isDirectory();
+
+        // Collect all video filenames inside contentPath (for dirs) or just the file itself
+        const contentFileNames: string[] = [];
+        if (isDir) {
+          for (const e of fs.readdirSync(contentPath)) {
+            if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e)) contentFileNames.push(e);
+          }
+        } else {
+          contentFileNames.push(basename);
+        }
+
+        // Check if any of the video files is already hardlinked in processed dir
+        let foundProcessed = false;
+        for (const cfn of contentFileNames) {
+          const pp = path.join(processedDir, cfn);
+          if (fs.existsSync(pp)) {
+            try {
+              const cfStat = fs.statSync(path.join(contentPath, isDir ? cfn : ""));
+              const ppStat = fs.statSync(pp);
+              if (cfStat.ino === ppStat.ino && cfStat.dev === ppStat.dev) {
+                results[rel.id] = { source: contentPath, destination: pp };
+                foundProcessed = true;
+                break;
+              }
+            } catch {}
+          }
+        }
+        if (foundProcessed) continue;
 
         const processedPath = path.join(processedDir, basename);
-        if (fs.existsSync(processedPath)) {
-          try {
-            const contentStat = fs.statSync(contentPath);
-            const processedStat = fs.statSync(processedPath);
-            if (contentStat.ino === processedStat.ino && contentStat.dev === processedStat.dev) {
-              results[rel.id] = { source: contentPath, destination: processedPath };
-              continue;
-            }
-          } catch {}
-        }
 
         const wsDirs = listWorkspaces(request.id, request.title);
         let foundInWorkspace = false;
@@ -3870,7 +3879,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try {
           const torrent = await qbittorrent.getTorrentByHash(rel.torrent_hash);
           if (torrent) {
-            matchedNames.add(path.basename(torrent.content_path));
+            const cp = fromQBittorrentPath(torrent.content_path);
+            if (fs.existsSync(cp)) {
+              const st = fs.statSync(cp);
+              if (st.isDirectory()) {
+                for (const e of fs.readdirSync(cp)) {
+                  if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e)) matchedNames.add(e);
+                }
+              } else {
+                matchedNames.add(path.basename(cp));
+              }
+            }
           }
         } catch {}
       }
