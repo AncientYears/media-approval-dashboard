@@ -745,7 +745,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const processedMoviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
       for (const movie of movies) {
         let pSize = movie.total_size_mb;
-        if (movie.release_count === 0 && (movie.processed_count || 0) > 0) {
+        if ((movie.processed_count || 0) > 0) {
           try {
             const ahRows = db.prepare(`
               SELECT processed_files FROM approval_history
