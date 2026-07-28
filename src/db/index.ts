@@ -243,7 +243,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
     const processedMoviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
     const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
     const ahWithRequest = db.prepare(`
-      SELECT ah.id, ah.processed_files, mr.type FROM approval_history ah
+      SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id FROM approval_history ah
       JOIN media_requests mr ON mr.id = ah.request_id
       WHERE ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
     `).all() as any[];
@@ -258,6 +258,29 @@ export function initializeDatabase(dbPath: string): DBInstance {
           console.log(`[DB] Cleaned dangling processed_files for approval_history id=${r.id}: ${arr.length} -> ${filtered.length}`);
         }
       } catch {}
+    }
+
+    // Merge multiple release_id IS NULL AH rows per request into one (old scan-import + move-to-processed rows)
+    const multiAhRequests = db.prepare(`
+      SELECT request_id, COUNT(*) as cnt FROM approval_history
+      WHERE release_id IS NULL AND processed_files IS NOT NULL AND processed_files != '[]'
+      GROUP BY request_id HAVING cnt > 1
+    `).all() as any[];
+    for (const mr of multiAhRequests) {
+      const rows = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL AND processed_files IS NOT NULL AND processed_files != '[]' ORDER BY approved_at ASC").all(mr.request_id) as any[];
+      if (rows.length < 2) continue;
+      const mergedSet = new Set<string>();
+      for (const r of rows) {
+        try { JSON.parse(r.processed_files).forEach((f: string) => mergedSet.add(f)); } catch {}
+      }
+      if (mergedSet.size === 0) continue;
+      const keepId = rows[0].id;
+      const deleteIds = rows.slice(1).map((r: any) => r.id);
+      db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify([...mergedSet]), keepId);
+      for (const did of deleteIds) {
+        db.prepare("UPDATE approval_history SET processed_files = '[]' WHERE id = ?").run(did);
+      }
+      console.log(`[DB] Merged ${rows.length} release_id IS NULL rows for request ${mr.request_id} into id=${keepId} (${mergedSet.size} unique files)`);
     }
 
   return {
