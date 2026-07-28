@@ -571,9 +571,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
              JOIN approval_history ah3 ON ah3.release_id = rc3.id 
              WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
           FROM media_requests mr
-          WHERE mr.status IN ('DOWNLOADING', 'SEEDING')
+          WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
         ) sub
-        WHERE sub.type = 'series' OR sub.release_count > 0
+        WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.status = 'COMPLETED'
         ORDER BY sub.title
       `).all() as any[];
 
@@ -1678,7 +1678,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                     db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
                   }
                 } else {
-                  db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, 0, 'system', ?)").run(req.id, JSON.stringify([fileName]));
+                  db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify([fileName]));
                 }
               }
             } catch (e: any) {
@@ -1738,7 +1738,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                           db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
                         }
                       } else {
-                        db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, 0, 'system', ?)").run(req.id, JSON.stringify([relPath]));
+                        db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify([relPath]));
                       }
                     }
                   }
@@ -3273,12 +3273,19 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const files: { name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[] = [];
+      const hasExplicitAssociations = matchedNames.size > 0;
 
       for (const e of allEntries) {
-        // Match by: exact name in matchedNames, relative path in matchedNames, or title-match fallback
+        // Match by: exact name in matchedNames, relative path in matchedNames
         if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath)) {
-          const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-          if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
+          // Title-match fallback ONLY when request has zero explicit associations
+          // (avoids sequel bleed like NeverEnding Story I matching II and III files)
+          if (!hasExplicitAssociations) {
+            const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
+          } else {
+            continue;
+          }
         }
         const fullPath = e.fullPath;
         let size = 0;
@@ -3378,7 +3385,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       if (!approval) {
         const ahId = db.prepare(
-          "INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, 0, 'system', ?)"
+          "INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)"
         ).run(id, JSON.stringify(fileNames)).lastInsertRowid;
         res.json({ success: true, approvalId: ahId });
       } else {
