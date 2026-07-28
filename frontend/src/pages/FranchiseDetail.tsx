@@ -687,7 +687,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                   )}
                   <div className="move-actions">
                     {!f.inLibrary && (
-                      <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(f.name); try { await moveToLibrary(season.request_id, f.name); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed(null); }} disabled={movingProcessed === f.name}>
+                      <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(f.name); try { await moveToLibrary(season.request_id, f.name); await new Promise(r => setTimeout(r, 3000)); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed(null); }} disabled={movingProcessed === f.name}>
                         {movingProcessed === f.name ? "..." : "To Library"}
                       </button>
                     )}
