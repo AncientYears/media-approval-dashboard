@@ -759,7 +759,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 try { totalBytes += fs.statSync(fullPath).size; } catch {}
               }
             }
-            if (totalBytes > 0) pSize = totalBytes / (1024 * 1024);
+            if (totalBytes > 0) pSize = movie.total_size_mb + totalBytes / (1024 * 1024);
           } catch {}
         }
         managed.push({
