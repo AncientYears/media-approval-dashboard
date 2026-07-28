@@ -683,7 +683,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                     {f.name}
                   </span>
                   {f.inLibrary && (
-                    <button className="btn btn-tiny btn-library-ok" title={f.libraryPath}>In Library</button>
+                    <button className="btn btn-tiny btn-library-ok" title={`Remove ${f.name} from library`} onClick={async () => { try { await removeFromLibrary(season.request_id, f.name); await refreshProcessedAndWorkspaces(); } catch {} }}>In Library</button>
                   )}
                   <div className="move-actions">
                     {!f.inLibrary && (

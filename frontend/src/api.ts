@@ -239,8 +239,8 @@ export async function deleteFranchise(sonarrId: number) {
   return response.data;
 }
 
-export async function removeFromLibrary(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/remove-from-library`);
+export async function removeFromLibrary(requestId: number, fileName?: string) {
+  const response = await api.post(`/requests/${requestId}/remove-from-library`, { fileName });
   return response.data;
 }
 

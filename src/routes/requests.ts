@@ -2632,9 +2632,67 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.post("/:id/remove-from-library", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const { fileName } = req.body || {};
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
 
+      // If fileName is provided, find the processed file and match by inode to library
+      if (fileName) {
+        const type = request.type === "series" ? "series" : "movie";
+        const processedDir = getProcessedDir(type);
+        const processedFile = path.join(processedDir, fileName);
+
+        if (!fs.existsSync(processedFile)) {
+          return res.status(404).json({ error: "Processed file not found" });
+        }
+
+        const processedIno = fs.statSync(processedFile).ino;
+
+        // Find library folder
+        let libraryDir = "";
+        if (request.sonarr_id) {
+          try {
+            const series = await sonarr.getSeries(request.sonarr_id);
+            const seasonNum = request.season || 1;
+            const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title);
+            libraryDir = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
+          } catch {}
+        } else if (request.radarr_id) {
+          try {
+            const movie = await radarr.getMovie(request.radarr_id);
+            libraryDir = movie.path || movie.folderPath;
+          } catch {}
+        }
+
+        if (!libraryDir || !fs.existsSync(libraryDir)) {
+          return res.status(500).json({ error: "Could not determine library path" });
+        }
+
+        // Match by inode or filename
+        let destPath = "";
+        for (const f of fs.readdirSync(libraryDir)) {
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+          const fPath = path.join(libraryDir, f);
+          try {
+            if (fs.statSync(fPath).ino === processedIno) { destPath = fPath; break; }
+          } catch {}
+        }
+        if (!destPath) {
+          // Fallback: exact filename match
+          const candidate = path.join(libraryDir, fileName);
+          if (fs.existsSync(candidate)) destPath = candidate;
+        }
+
+        if (!destPath) {
+          return res.json({ success: true, message: "File not in library", path: "" });
+        }
+
+        fs.rmSync(destPath, { recursive: false, force: true });
+        console.log(`[RemoveFromLibrary] Deleted ${destPath}`);
+        return res.json({ success: true, message: "Removed from library", path: destPath });
+      }
+
+      // Legacy path: remove torrent content from library (no fileName)
       const release = db.prepare(
         "SELECT rc.torrent_hash FROM release_candidates rc " +
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
@@ -2651,7 +2709,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       let destPath = "";
 
       if (request.sonarr_id) {
-        // Sonarr series — target season folder
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
@@ -2662,11 +2719,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             if (files.length > 0) destPath = path.join(seasonFolder, files[0]);
             else destPath = seasonFolder;
           }
-        } catch {
-          // ignore
-        }
+        } catch {}
       } else if (request.radarr_id) {
-        // Radarr movie
         const movie = await radarr.getMovie(request.radarr_id);
         const movieFolder = movie.path || movie.folderPath;
         if (movieFolder) destPath = path.join(movieFolder, path.basename(contentPath));
