@@ -2861,9 +2861,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {}
       }
 
-      // Determine library files for per-file in-library checks
+      // Determine library files for per-file in-library checks — match by inode (hardlinks share inode)
+      const libraryInodes = new Set<number>();
+      const libraryNameByInode = new Map<number, string>();
       const libraryFiles = new Set<string>();
-      const librarySizes = new Map<string, number>(); // name → size for fuzzy matching
       if (request.type === "series" && request.sonarr_id) {
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
@@ -2876,7 +2877,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             for (const f of fs.readdirSync(seasonFolder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
                 libraryFiles.add(f);
-                try { librarySizes.set(f, fs.statSync(path.join(seasonFolder, f)).size); } catch {}
+                try {
+                  const st = fs.statSync(path.join(seasonFolder, f));
+                  libraryInodes.add(st.ino);
+                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, f);
+                } catch {}
               }
             }
           }
@@ -2889,13 +2894,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             for (const f of fs.readdirSync(movieFolder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
                 libraryFiles.add(f);
-                try { librarySizes.set(f, fs.statSync(path.join(movieFolder, f)).size); } catch {}
+                try {
+                  const st = fs.statSync(path.join(movieFolder, f));
+                  libraryInodes.add(st.ino);
+                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, f);
+                } catch {}
               }
             }
           }
         } catch {}
       }
-      const librarySizeValues = [...librarySizes.values()];
 
       const entries = fs.readdirSync(processedDir, { withFileTypes: true });
       const files: { name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[] = [];
@@ -2905,11 +2913,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (!matchedNames.has(entry.name)) continue;
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
-        try { size = fs.statSync(fullPath).size; } catch {}
-        const inLibrary = libraryFiles.has(entry.name)
-          || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)))
-          || (size > 0 && librarySizeValues.some((ls) => ls > 0 && Math.abs(ls - size) < size * 0.01));
-        const libraryMatch = inLibrary ? ([...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || (size > 0 ? [...librarySizes.entries()].find(([_, ls]) => Math.abs(ls - size) < size * 0.01)?.[0] || "" : "")) : "";
+        let ino = 0;
+        try {
+          const st = fs.statSync(fullPath);
+          size = st.size;
+          ino = st.ino;
+        } catch {}
+        const inLibrary = (ino > 0 && libraryInodes.has(ino))
+          || libraryFiles.has(entry.name)
+          || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)));
+        const libraryMatch = inLibrary ? (libraryNameByInode.get(ino) || [...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || "") : "";
         files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: libraryMatch });
       }
 
