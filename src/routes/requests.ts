@@ -719,13 +719,32 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       // Add individual movies
+      const processedMoviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
       for (const movie of movies) {
+        let pSize = movie.total_size_mb;
+        if (movie.release_count === 0 && (movie.processed_count || 0) > 0) {
+          try {
+            const ahRows = db.prepare(`
+              SELECT processed_files FROM approval_history
+              WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'
+            `).all(movie.id) as any[];
+            let totalBytes = 0;
+            for (const ah of ahRows) {
+              const files: string[] = JSON.parse(ah.processed_files || "[]");
+              for (const f of files) {
+                const fullPath = path.join(processedMoviesDir, f);
+                try { totalBytes += fs.statSync(fullPath).size; } catch {}
+              }
+            }
+            if (totalBytes > 0) pSize = totalBytes / (1024 * 1024);
+          } catch {}
+        }
         managed.push({
           title: movie.title,
           type: "movie",
           request_id: movie.id,
           status: movie.status,
-          total_size_mb: movie.total_size_mb,
+          total_size_mb: pSize,
           release_count: movie.release_count,
           processed_count: movie.processed_count || 0,
         });
