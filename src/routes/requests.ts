@@ -191,6 +191,24 @@ function hardlinkDirRecursive(srcDir: string, destDir: string) {
   }
 }
 
+function getContentVideoInodes(contentPath: string): { inodes: Set<number>; names: Set<string> } {
+  const inodes = new Set<number>();
+  const names = new Set<string>();
+  if (!fs.existsSync(contentPath)) return { inodes, names };
+  const stat = fs.statSync(contentPath);
+  if (stat.isDirectory()) {
+    for (const entry of fs.readdirSync(contentPath)) {
+      if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+      const fullPath = path.join(contentPath, entry);
+      try { const st = fs.statSync(fullPath); inodes.add(st.ino); names.add(entry); } catch {}
+    }
+  } else {
+    inodes.add(stat.ino);
+    names.add(path.basename(contentPath));
+  }
+  return { inodes, names };
+}
+
 export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService, prowlarr: ProwlarrService, deletedFranchiseIds?: Set<number>) {
   const router = Router();
 
@@ -1372,12 +1390,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             if (fs.existsSync(seasonFolder)) {
               let contentPath = fromQBittorrentPath(torrent.content_path);
               if (!fs.existsSync(contentPath)) contentPath = torrent.content_path;
-              const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
+              const { inodes: contentInodes, names: contentNames } = getContentVideoInodes(contentPath);
               for (const f of fs.readdirSync(seasonFolder)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
                 const fPath = path.join(seasonFolder, f);
                 try {
-                  if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) {
+                  if (contentInodes.size > 0 && contentInodes.has(fs.statSync(fPath).ino)) {
                     inLibrary = true;
                     libraryPath = fPath;
                     break;
@@ -1386,8 +1404,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               }
               // Fallback: filename match
               if (!inLibrary) {
-                const contentBase = path.basename(contentPath);
-                const match = fs.readdirSync(seasonFolder).find((f: string) => f === contentBase);
+                const match = fs.readdirSync(seasonFolder).find((f: string) => contentNames.has(f));
                 if (match) { inLibrary = true; libraryPath = path.join(seasonFolder, match); }
               }
             }
@@ -3036,19 +3053,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       let destPath = "";
       let inLibrary = false;
+      const { inodes: contentInodes, names: contentNames } = getContentVideoInodes(contentPath);
       if (request?.radarr_id) {
         try {
           const movie = await radarr.getMovie(request.radarr_id);
           const movieFolder = movie.path || movie.movieFile?.folderPath || movie.folderPath || "";
           if (movieFolder && fs.existsSync(movieFolder)) {
-            const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
-            const contentBase = path.basename(contentPath);
             for (const f of fs.readdirSync(movieFolder)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
               const fPath = path.join(movieFolder, f);
               try {
                 const st = fs.statSync(fPath);
-                if ((contentIno > 0 && st.ino === contentIno) || f === contentBase) {
+                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
                   destPath = fPath;
                   inLibrary = true;
                   break;
@@ -3067,14 +3083,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title);
           const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
           if (fs.existsSync(seasonFolder)) {
-            const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
-            const contentBase = path.basename(contentPath);
             for (const f of fs.readdirSync(seasonFolder)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
               const fPath = path.join(seasonFolder, f);
               try {
                 const st = fs.statSync(fPath);
-                if ((contentIno > 0 && st.ino === contentIno) || f === contentBase) {
+                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
                   destPath = fPath;
                   inLibrary = true;
                   break;
@@ -3173,16 +3187,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         let destPath = "";
         let inLibrary = false;
 
+        const { inodes: contentInodes, names: contentNames } = getContentVideoInodes(contentPath);
+
         if (isSonarr) {
           // Series: inode match against season folder
           destPath = seriesSeasonFolder;
           if (seriesSeasonFolder && fs.existsSync(seriesSeasonFolder)) {
-            const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
             for (const f of fs.readdirSync(seriesSeasonFolder)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
               const fPath = path.join(seriesSeasonFolder, f);
               try {
-                if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) {
+                if (contentInodes.size > 0 && contentInodes.has(fs.statSync(fPath).ino)) {
                   destPath = fPath;
                   inLibrary = true;
                   break;
@@ -3191,8 +3206,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
             // Fallback: filename match
             if (!inLibrary) {
-              const contentBase = path.basename(contentPath);
-              const match = fs.readdirSync(seriesSeasonFolder).find((f: string) => f === contentBase);
+              const match = fs.readdirSync(seriesSeasonFolder).find((f: string) => contentNames.has(f));
               if (match) { destPath = path.join(seriesSeasonFolder, match); inLibrary = true; }
             }
           }
@@ -3200,14 +3214,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // Movie: scan library dir for actual video files, match by inode/filename
           destPath = movieFolderPath ? path.join(movieFolderPath, "") : "";
           if (movieFolderPath && fs.existsSync(movieFolderPath)) {
-            const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
-            const contentBase = path.basename(contentPath);
             for (const f of fs.readdirSync(movieFolderPath)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
               const fPath = path.join(movieFolderPath, f);
               try {
                 const st = fs.statSync(fPath);
-                if ((contentIno > 0 && st.ino === contentIno) || f === contentBase) {
+                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
                   destPath = fPath;
                   inLibrary = true;
                   break;
@@ -3553,19 +3565,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Match by inode, filename, or file size (copies don't share inodes)
       let destPath = "";
-      const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
-      console.log(`[RemoveFromLib] contentIno=${contentIno}`);
+      const { inodes: contentInodes, names: contentNames } = getContentVideoInodes(contentPath);
+      console.log(`[RemoveFromLib] contentInodes=${[...contentInodes].join(",")}`);
       for (const f of fs.readdirSync(libraryDir)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
         const fPath = path.join(libraryDir, f);
         try {
           const st = fs.statSync(fPath);
-          if (contentIno > 0 && st.ino === contentIno) { destPath = fPath; break; }
+          if (contentInodes.size > 0 && contentInodes.has(st.ino)) { destPath = fPath; break; }
         } catch {}
       }
       if (!destPath) {
-        const contentBase = path.basename(contentPath);
-        const match = fs.readdirSync(libraryDir).find((f: string) => f === contentBase);
+        const match = fs.readdirSync(libraryDir).find((f: string) => contentNames.has(f));
         if (match) destPath = path.join(libraryDir, match);
       }
       if (!destPath && torrent.size > 0) {
@@ -3619,7 +3630,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       if (!destPath) {
-        console.log(`[RemoveFromLib] No match in ${libraryDir} (contentIno=${contentIno}, torrentSize=${torrent.size})`);
+        console.log(`[RemoveFromLib] No match in ${libraryDir} (contentInodes=${contentInodes.size}, torrentSize=${torrent.size})`);
         const libFiles = fs.readdirSync(libraryDir).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).map((f: string) => {
           try { const s = fs.statSync(path.join(libraryDir, f)); return `${f} size=${s.size} ino=${s.ino}`; } catch { return f; }
         });
