@@ -744,6 +744,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
           for (const sn of (seriesObj.seasons || [])) {
             if (!existingSeasons.has(sn.seasonNumber)) {
+              const epCount = sn.statistics?.episodeCount || 0;
+              const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(sn.seasonNumber).padStart(2, "0")}`);
+              const coveredEps = new Set<number>();
+              try {
+                if (fs.existsSync(seasonFolder)) {
+                  for (const f of fs.readdirSync(seasonFolder)) {
+                    const epNum = extractEpisodeFromFilename(f);
+                    if (epNum != null) coveredEps.add(epNum);
+                  }
+                }
+              } catch {}
+              let actualEpCount = epCount;
+              if (!actualEpCount && coveredEps.size > 0) {
+                try {
+                  const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, sn.seasonNumber);
+                  actualEpCount = Math.max(sonarrEps.length, coveredEps.size);
+                } catch { actualEpCount = coveredEps.size; }
+              }
               mappedSeasons.push({
                 season: sn.seasonNumber,
                 request_id: null,
@@ -751,8 +769,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 total_size_mb: 0,
                 release_count: 0,
                 title: franchiseTitle,
-                episode_count: sn.statistics?.episodeCount || 0,
-                covered_episodes: [],
+                episode_count: actualEpCount,
+                covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
               });
             }
           }
@@ -1009,7 +1027,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             } catch {}
             // Use filesystem count if Sonarr returns 0 but files exist
             let actualEpCount = epCount;
-            if (!actualEpCount && coveredEps3.size > 0) actualEpCount = coveredEps3.size;
+            if (!actualEpCount && coveredEps3.size > 0) {
+              try {
+                const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, sn.seasonNumber);
+                actualEpCount = Math.max(sonarrEps.length, coveredEps3.size);
+              } catch { actualEpCount = coveredEps3.size; }
+            }
             seasonDetails.push({
               season: sn.seasonNumber,
               request_id: null,

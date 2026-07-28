@@ -289,16 +289,20 @@ export default function FranchiseDetail() {
                   )}
                 </div>
                 <div className="fr-season-right" style={{ gap: 6 }}>
-                  <button className="btn btn-secondary btn-tiny" onClick={(e) => {
-                    e.stopPropagation();
-                    setInitialSearch({ term: season.title, mode: "season" });
-                    setSelectedSeason(season);
-                  }}>
-                    Search
-                  </button>
-                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
-                    Open Season &rsaquo;
-                  </button>
+                  {season.request_id != null && (
+                    <button className="btn btn-secondary btn-tiny" onClick={(e) => {
+                      e.stopPropagation();
+                      setInitialSearch({ term: season.title, mode: "season" });
+                      setSelectedSeason(season);
+                    }}>
+                      Search
+                    </button>
+                  )}
+                  {season.request_id != null && (
+                    <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
+                      Open Season &rsaquo;
+                    </button>
+                  )}
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
                 </div>
               </div>
@@ -320,19 +324,21 @@ export default function FranchiseDetail() {
                               <>
                                 <span className="ep-title">{ep.title}</span>
                                 <span className="ep-badge ep-missed">MISSING</span>
-                                <button className="btn btn-secondary btn-tiny" style={{ fontSize: 9, padding: "1px 5px" }} onClick={(e) => {
-                                  e.stopPropagation();
-                                  const epCode = `S${String(season.season).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
-                                  setInitialSearch({ term: `${epCode} ${ep.title}`, mode: "episodes" });
-                                  setSelectedSeason(season);
-                                }}>Search</button>
+                                {season.request_id != null && (
+                                  <button className="btn btn-secondary btn-tiny" style={{ fontSize: 9, padding: "1px 5px" }} onClick={(e) => {
+                                    e.stopPropagation();
+                                    const epCode = `S${String(season.season).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
+                                    setInitialSearch({ term: `${epCode} ${ep.title}`, mode: "episodes" });
+                                    setSelectedSeason(season);
+                                  }}>Search</button>
+                                )}
                               </>
                             )}
                           </div>
                         ))}
                       </div>
                       <div className="episode-actions">
-                        {filledCount < epCount && (
+                        {season.request_id != null && filledCount < epCount && (
                           <button className="btn btn-secondary btn-tiny" onClick={(e) => {
                             e.stopPropagation();
                             setInitialSearch({ term: "", mode: "season" });
