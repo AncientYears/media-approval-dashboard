@@ -298,11 +298,9 @@ export default function FranchiseDetail() {
                       Search
                     </button>
                   )}
-                  {season.request_id != null && (
-                    <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
-                      Open Season &rsaquo;
-                    </button>
-                  )}
+                  <button className="btn btn-primary btn-tiny" onClick={(e) => { e.stopPropagation(); setSelectedSeason(season); }}>
+                    Open Season &rsaquo;
+                  </button>
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
                 </div>
               </div>

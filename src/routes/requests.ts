@@ -1202,6 +1202,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
 
+      // Also count files on disk in the season folder
+      try {
+        const series = await sonarr.getSeries(row.sonarr_id);
+        const fTitle = series.title;
+        const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+        const seasonFolder = path.join(processedTvDir, fTitle, `S${String(seasonNum).padStart(2, "0")}`);
+        if (fs.existsSync(seasonFolder)) {
+          for (const f of fs.readdirSync(seasonFolder)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            const epNum = extractEpisodeFromFilename(f);
+            if (epNum != null) {
+              coveredEps.add(epNum);
+              if (!epQuality[epNum]) epQuality[epNum] = "WEB-DL";
+            }
+          }
+        }
+      } catch {}
+
       if (sonarrEpisodes.length > 0) {
         if (hasSeasonPack) {
           for (const e of sonarrEpisodes) coveredEps.add(e.episodeNumber);
@@ -3681,6 +3699,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try {
           const names = JSON.parse(ah.processed_files);
           for (const n of names) matchedNames.add(n);
+        } catch {}
+      }
+
+      // Fallback: scan the season-specific folder when no explicit associations
+      if (matchedNames.size === 0 && request.sonarr_id != null && request.type === 'series') {
+        try {
+          const series = await sonarr.getSeries(request.sonarr_id);
+          const fTitle = series.title;
+          const seasonFolder = path.join(processedDir, fTitle, `S${String(request.season).padStart(2, "0")}`);
+          if (fs.existsSync(seasonFolder)) {
+            for (const f of fs.readdirSync(seasonFolder)) {
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                matchedNames.add(f);
+                matchedNames.add(path.join(fTitle, `S${String(request.season).padStart(2, "0")}`, f));
+              }
+            }
+          }
         } catch {}
       }
 
