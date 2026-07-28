@@ -61,6 +61,8 @@ function extractEpisodeFromFilename(filePath: string): number | null {
   const base = filePath.split(/[/\\]/).pop() || filePath;
   const lead = base.match(/^(\d{1,3})\s/);
   if (lead) return parseInt(lead[1], 10);
+  const ep = base.match(/[Ee]pisode\s*(\d{1,3})/);
+  if (ep) return parseInt(ep[1], 10);
   return null;
 }
 
