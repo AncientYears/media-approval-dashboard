@@ -143,8 +143,8 @@ export async function fetchContentInfo(requestId: number, releaseId?: number) {
   return response.data;
 }
 
-export async function moveToLibrary(requestId: number) {
-  const response = await api.post(`/requests/${requestId}/move-to-library`);
+export async function moveToLibrary(requestId: number, fileName?: string) {
+  const response = await api.post(`/requests/${requestId}/move-to-library`, { fileName });
   return response.data;
 }
 

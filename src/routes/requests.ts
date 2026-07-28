@@ -3253,46 +3253,58 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.post("/:id/move-to-library", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const { fileName } = req.body as { fileName?: string };
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) {
         return res.status(404).json({ error: "Request not found" });
       }
 
-      const release = db.prepare(
-        "SELECT rc.* FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
-      ).get(id) as any;
-
-      if (!release || !release.torrent_hash) {
-        return res.status(400).json({ error: "No torrent found for this request" });
-      }
-
-      const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
-      if (!torrent) {
-        return res.status(404).json({ error: "Torrent not found in qBittorrent" });
-      }
-
-      let contentPath = torrent.content_path;
-      if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
-      if (!fs.existsSync(contentPath)) {
-        return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
-      }
-
       const type = request.type === "series" ? "series" : "movie";
       const processedDir = getProcessedDir(type);
-      const baseName = path.basename(contentPath);
-      const processedPath = path.join(processedDir, baseName);
 
-      if (!fs.existsSync(processedPath)) {
-        moveToProcessedSync(contentPath, type);
-      }
-
-      let sourcePath = processedPath;
-      if (!fs.existsSync(sourcePath)) {
-        sourcePath = contentPath;
-      }
-
+      let sourcePath = "";
       let destFolder = "";
+
+      if (fileName) {
+        // Direct file lookup in processed dir — used by processed panel
+        sourcePath = path.join(processedDir, fileName);
+        if (!fs.existsSync(sourcePath)) {
+          return res.status(404).json({ error: `Processed file not found: ${fileName}` });
+        }
+      } else {
+        // Legacy: derive from torrent hash
+        const release = db.prepare(
+          "SELECT rc.* FROM release_candidates rc " +
+          "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
+        ).get(id) as any;
+
+        if (!release || !release.torrent_hash) {
+          return res.status(400).json({ error: "No torrent found for this request" });
+        }
+
+        const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
+        if (!torrent) {
+          return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+        }
+
+        let contentPath = torrent.content_path;
+        if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
+        if (!fs.existsSync(contentPath)) {
+          return res.status(404).json({ error: `Content path not found: ${torrent.content_path}` });
+        }
+
+        const baseName = path.basename(contentPath);
+        const processedPath = path.join(processedDir, baseName);
+
+        if (!fs.existsSync(processedPath)) {
+          moveToProcessedSync(contentPath, type);
+        }
+
+        sourcePath = processedPath;
+        if (!fs.existsSync(sourcePath)) {
+          sourcePath = contentPath;
+        }
+      }
 
       if (request.type === "series" && request.sonarr_id) {
         try {
@@ -3315,8 +3327,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
       }
 
-      const fileName = path.basename(sourcePath);
-      const destPath = path.join(destFolder, fileName);
+      const destFileName = path.basename(sourcePath);
+      const destPath = path.join(destFolder, destFileName);
 
       if (fs.existsSync(destPath)) {
         return res.json({ success: true, message: "File already exists in library", source: sourcePath, destination: destPath, alreadyExists: true });
