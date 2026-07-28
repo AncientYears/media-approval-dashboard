@@ -2715,19 +2715,30 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           return res.status(500).json({ error: "Could not determine library path" });
         }
 
-        // Match by inode or filename
+        // Match by inode, filename, or file size (copies don't share inodes)
         let destPath = "";
+        const processedSize = fs.statSync(processedFile).size;
         for (const f of fs.readdirSync(libraryDir)) {
           if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
           const fPath = path.join(libraryDir, f);
           try {
-            if (fs.statSync(fPath).ino === processedIno) { destPath = fPath; break; }
+            const st = fs.statSync(fPath);
+            if (st.ino === processedIno && st.ino > 0) { destPath = fPath; break; }
           } catch {}
         }
         if (!destPath) {
-          // Fallback: exact filename match
           const candidate = path.join(libraryDir, fileName);
           if (fs.existsSync(candidate)) destPath = candidate;
+        }
+        if (!destPath && processedSize > 0) {
+          for (const f of fs.readdirSync(libraryDir)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            const fPath = path.join(libraryDir, f);
+            try {
+              const st = fs.statSync(fPath);
+              if (st.size === processedSize) { destPath = fPath; break; }
+            } catch {}
+          }
         }
 
         if (!destPath) {
@@ -2773,20 +2784,32 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(500).json({ error: "Could not determine library path" });
       }
 
-      // Match by inode first, then filename fallback
+      // Match by inode, filename, or file size (copies don't share inodes)
       let destPath = "";
       const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
+      const contentSize = fs.existsSync(contentPath) ? fs.statSync(contentPath).size : 0;
       for (const f of fs.readdirSync(libraryDir)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
         const fPath = path.join(libraryDir, f);
         try {
-          if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) { destPath = fPath; break; }
+          const st = fs.statSync(fPath);
+          if (contentIno > 0 && st.ino === contentIno) { destPath = fPath; break; }
         } catch {}
       }
       if (!destPath) {
         const contentBase = path.basename(contentPath);
         const match = fs.readdirSync(libraryDir).find((f: string) => f === contentBase);
         if (match) destPath = path.join(libraryDir, match);
+      }
+      if (!destPath && contentSize > 0) {
+        for (const f of fs.readdirSync(libraryDir)) {
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+          const fPath = path.join(libraryDir, f);
+          try {
+            const st = fs.statSync(fPath);
+            if (st.size === contentSize) { destPath = fPath; break; }
+          } catch {}
+        }
       }
 
       if (!destPath) {

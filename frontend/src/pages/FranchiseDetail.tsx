@@ -587,6 +587,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
       setRemoveConfirmId(null);
       setMoveResults((prev) => ({ ...prev, [releaseId]: null }));
       loadTorrentStatuses();
+      refreshProcessedAndWorkspaces();
     } catch (err: any) {
       setRemoveConfirmId(null);
     }

@@ -429,6 +429,7 @@ export default function RequestDetail() {
       setRemoveConfirmId(null);
       setMoveResults((prev) => ({ ...prev, [releaseId]: null }));
       loadTorrentStatuses();
+      refreshProcessedAndWorkspaces();
       toast("Removed from library", "success");
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
