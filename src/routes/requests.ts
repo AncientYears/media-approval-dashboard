@@ -4076,27 +4076,39 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
 
+      // Collect all already-associated filenames across ALL AH rows for this request
+      const allExisting = new Set<string>();
+      const allAh = db.prepare("SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(id) as any[];
+      for (const ah of allAh) {
+        try { JSON.parse(ah.processed_files).forEach((f: string) => allExisting.add(f)); } catch {}
+      }
+
+      // Filter out filenames already associated
+      const newNames = fileNames.filter((f: string) => !allExisting.has(f));
+      if (newNames.length === 0) return res.json({ success: true, message: "Already associated" });
+
+      // Use or create an AH row with release_id IS NULL (library import row)
       const approval = db.prepare(
-        "SELECT ah.id FROM approval_history ah WHERE ah.request_id = ? ORDER BY ah.approved_at DESC LIMIT 1"
+        "SELECT ah.id, ah.processed_files FROM approval_history ah WHERE ah.request_id = ? AND ah.release_id IS NULL ORDER BY ah.approved_at DESC LIMIT 1"
       ).get(id) as any;
 
-      if (!approval) {
-        const ahId = db.prepare(
-          "INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)"
-        ).run(id, JSON.stringify(fileNames)).lastInsertRowid;
-        res.json({ success: true, approvalId: ahId });
-      } else {
-        const existing = JSON.parse((db.prepare("SELECT processed_files FROM approval_history WHERE id = ?").get(approval.id) as any)?.processed_files || "[]");
-        const merged = [...new Set([...existing, ...fileNames])];
+      if (approval) {
+        const existing = JSON.parse(approval.processed_files || "[]");
+        const merged = [...new Set([...existing, ...newNames])];
         db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(merged), approval.id);
         res.json({ success: true });
+      } else {
+        const ahId = db.prepare(
+          "INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)"
+        ).run(id, JSON.stringify(newNames)).lastInsertRowid;
+        res.json({ success: true, approvalId: ahId });
       }
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
   });
 
-  // DELETE /api/requests/:id/processed/:fileName - Delete a processed file
+  // DELETE /api/requests/:id/processed/:fileName - Delete a processed file from disk and DB
   router.delete("/:id/processed/:fileName", (req: Request, res: Response) => {
     try {
       const { id, fileName } = req.params;
@@ -4105,20 +4117,32 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const type = request.type === "series" ? "series" : "movie";
       const processedDir = getProcessedDir(type);
-      const filePath = path.join(processedDir, decodeURIComponent(fileName));
+      const decoded = decodeURIComponent(fileName);
+      const filePath = path.join(processedDir, decoded);
 
       if (!filePath.startsWith(processedDir)) {
         return res.status(400).json({ error: "Invalid path" });
       }
-      if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: "File not found" });
+
+      // Remove from processed_files arrays in ALL AH rows for this request
+      const allAh = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(id) as any[];
+      for (const ah of allAh) {
+        try {
+          const arr = JSON.parse(ah.processed_files);
+          const filtered = arr.filter((f: string) => f !== decoded);
+          if (filtered.length !== arr.length) {
+            db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(filtered), ah.id);
+          }
+        } catch {}
       }
 
-      const stat = fs.statSync(filePath);
-      if (stat.isDirectory()) {
-        fs.rmSync(filePath, { recursive: true });
-      } else {
-        fs.unlinkSync(filePath);
+      if (fs.existsSync(filePath)) {
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+          fs.rmSync(filePath, { recursive: true });
+        } else {
+          fs.unlinkSync(filePath);
+        }
       }
       console.log(`[Processed] Deleted ${filePath}`);
       res.json({ success: true });

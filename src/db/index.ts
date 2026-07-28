@@ -225,6 +225,20 @@ export function initializeDatabase(dbPath: string): DBInstance {
       console.log("[DB] Migration done: release_id is now nullable.");
     }
 
+    // Dedup processed_files arrays across all approval_history rows
+    const dupRows = db.prepare("SELECT id, processed_files FROM approval_history WHERE processed_files IS NOT NULL AND processed_files != '[]'").all() as any[];
+    for (const r of dupRows) {
+      try {
+        const arr = JSON.parse(r.processed_files);
+        if (!Array.isArray(arr)) continue;
+        const deduped = [...new Set(arr)];
+        if (deduped.length !== arr.length) {
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(deduped), r.id);
+          console.log(`[DB] Deduped processed_files for approval_history id=${r.id}: ${arr.length} -> ${deduped.length}`);
+        }
+      } catch {}
+    }
+
   return {
     db,
     close: () => db.close(),
