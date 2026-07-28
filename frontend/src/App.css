@@ -1593,6 +1593,11 @@ body {
   font-weight: 600;
 }
 
+.season-special {
+  color: #f59e0b;
+  font-style: italic;
+}
+
 .season-status.has-content {
   color: #4ade80;
 }

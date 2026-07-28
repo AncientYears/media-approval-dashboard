@@ -441,7 +441,7 @@ export default function Dashboard() {
                       const label = total ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "pending";
                       return (
                         <div key={s.season} className="managed-season" onClick={() => navigate(`/requests/${s.request_id}`)}>
-                          <span className="season-label">S{String(s.season).padStart(2, "0")}</span>
+                          <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${covered > 0 ? "has-content" : "empty"}`}>
                             {label}
                           </span>

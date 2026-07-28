@@ -713,7 +713,7 @@ export default function RequestDetail() {
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
           {request.type === "series" && request.season != null && (
-            <span className="rtag">S{String(request.season).padStart(2, "0")}</span>
+            <span className={`rtag ${request.season === 0 ? "season-special" : ""}`}>{request.season === 0 ? "Special" : `S${String(request.season).padStart(2, "0")}`}</span>
           )}
         </div>
         <input

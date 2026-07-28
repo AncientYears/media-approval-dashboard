@@ -270,7 +270,7 @@ export default function FranchiseDetail() {
             <div key={season.season} className="franchise-season-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
               <div className="franchise-season-header" style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={toggleExpand}>
                 <div className="fr-season-left">
-                  <span className="season-label">S{String(season.season).padStart(2, "0")}</span>
+                  <span className={`season-label ${season.season === 0 ? "season-special" : ""}`}>{season.season === 0 ? "Special" : `S${String(season.season).padStart(2, "0")}`}</span>
                   {isSearching ? (
                     <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>searching</span>
                   ) : epCount > 0 ? (
