@@ -102,8 +102,6 @@ export default function Dashboard() {
   useEffect(() => {
     loadData();
     cleanupStaleRequests().then(() => loadData());
-    const interval = setInterval(loadData, 120000);
-    return () => clearInterval(interval);
   }, [loadData]);
 
   const requestsList = requests
