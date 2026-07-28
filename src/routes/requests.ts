@@ -1749,15 +1749,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             // Create series subfolder in processed
             const seriesDest = path.join(processedTvDir, s.title);
             if (!fs.existsSync(seriesDest)) fs.mkdirSync(seriesDest, { recursive: true });
+            const seriesEntries = fs.readdirSync(seriesPath, { withFileTypes: true });
+            const seasonDirs = seriesEntries.filter(e => e.isDirectory() && /^S\d+$/i.test(e.name));
+            let seriesFiles = 0;
             // Walk season dirs for video files
-            for (const entry of fs.readdirSync(seriesPath, { withFileTypes: true })) {
-              if (!entry.isDirectory()) continue;
-              if (!/^S\d+$/i.test(entry.name)) continue;
+            for (const entry of seasonDirs) {
               const seasonDir = path.join(seriesPath, entry.name);
               const seasonDest = path.join(seriesDest, entry.name);
               if (!fs.existsSync(seasonDest)) fs.mkdirSync(seasonDest, { recursive: true });
               for (const f of fs.readdirSync(seasonDir)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+                seriesFiles++;
                 const srcPath = path.join(seasonDir, f);
                 const destPath = path.join(seasonDest, f);
                 const relPath = path.join(s.title, entry.name, f);
@@ -1802,6 +1804,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                   console.error(`[ImportLibrary] Failed to associate ${s.title} ${f}:`, e.message);
                 }
               }
+            }
+            if (seasonDirs.length === 0) {
+              const allDirs = seriesEntries.filter(e => e.isDirectory()).map(e => e.name);
+              console.log(`[ImportLibrary] ${s.title}: path="${seriesPath}" — no S## dirs found. Dirs: [${allDirs.join(", ")}]`);
+            } else if (seriesFiles === 0) {
+              console.log(`[ImportLibrary] ${s.title}: ${seasonDirs.length} season dirs but 0 video files. Checking extensions...`);
+              for (const sd of seasonDirs.slice(0, 2)) {
+                const files = fs.readdirSync(path.join(seriesPath, sd.name));
+                console.log(`[ImportLibrary]   ${sd.name}: [${files.slice(0, 5).join(", ")}${files.length > 5 ? "..." : ""}] (${files.length} total)`);
+              }
+            } else {
+              console.log(`[ImportLibrary] ${s.title}: ${seasonDirs.length} seasons, ${seriesFiles} video files`);
             }
           } catch (e: any) {
             results.push({ title: s.title, status: "error", error: e.message });
