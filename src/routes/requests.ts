@@ -3040,6 +3040,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const libraryInodes = new Set<number>();
       const libraryNameByInode = new Map<number, string>();
       const libraryFiles = new Set<string>();
+      const librarySizes = new Map<number, string>();
       if (request.type === "series" && request.sonarr_id) {
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
@@ -3055,6 +3056,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 try {
                   const st = fs.statSync(path.join(seasonFolder, f));
                   libraryInodes.add(st.ino);
+                  librarySizes.set(st.size, f);
                   if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, f);
                 } catch {}
               }
@@ -3072,6 +3074,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 try {
                   const st = fs.statSync(path.join(movieFolder, f));
                   libraryInodes.add(st.ino);
+                  librarySizes.set(st.size, f);
                   if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, f);
                 } catch {}
               }
@@ -3096,8 +3099,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {}
         const inLibrary = (ino > 0 && libraryInodes.has(ino))
           || libraryFiles.has(entry.name)
-          || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)));
-        const libraryMatch = inLibrary ? (libraryNameByInode.get(ino) || [...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || "") : "";
+          || (entry.isDirectory() && [...libraryFiles].some((lf) => lf.startsWith(entry.name)))
+          || (size > 0 && librarySizes.has(size));
+        let libraryMatch = "";
+        if (inLibrary) {
+          libraryMatch = libraryNameByInode.get(ino) || [...libraryFiles].find((lf) => lf === entry.name || lf.startsWith(entry.name)) || librarySizes.get(size) || "";
+        }
         files.push({ name: entry.name, size, isDir: entry.isDirectory(), inLibrary, libraryPath: libraryMatch });
       }
 
