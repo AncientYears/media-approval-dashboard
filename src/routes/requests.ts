@@ -631,7 +631,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             (SELECT COUNT(*) FROM release_candidates rc3 
              JOIN approval_history ah3 ON ah3.release_id = rc3.id 
              WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count,
-            (SELECT COUNT(*) FROM approval_history ah4 
+            (SELECT COALESCE(SUM(json_array_length(ah4.processed_files)), 0) FROM approval_history ah4 
              WHERE ah4.request_id = mr.id AND ah4.release_id IS NULL
              AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
           FROM media_requests mr
