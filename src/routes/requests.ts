@@ -1734,8 +1734,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const s of seriesList) {
           try {
             const detail = await sonarr.getSeries(s.id);
-            const seriesPath = detail.path || path.join(process.env.MEDIA_TV || "/media/Serialy", s.title);
-            if (!seriesPath || !fs.existsSync(seriesPath)) continue;
+            let seriesPath = detail.path;
+            if (!seriesPath || !fs.existsSync(seriesPath)) {
+              // Sonarr Docker path might not exist on host — try MEDIA_TV + basename
+              const fallback = path.join(process.env.MEDIA_TV || "/media/Serialy", path.basename(seriesPath || ""), s.title);
+              const fallback2 = path.join(process.env.MEDIA_TV || "/media/Serialy", s.title);
+              if (seriesPath && fs.existsSync(fallback)) seriesPath = fallback;
+              else if (fs.existsSync(fallback2)) seriesPath = fallback2;
+              else {
+                console.log(`[ImportLibrary] Skipping ${s.title}: Sonarr path "${detail.path}" not found on host`);
+                continue;
+              }
+            }
             // Create series subfolder in processed
             const seriesDest = path.join(processedTvDir, s.title);
             if (!fs.existsSync(seriesDest)) fs.mkdirSync(seriesDest, { recursive: true });
