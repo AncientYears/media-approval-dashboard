@@ -241,7 +241,7 @@ export class SonarrService {
 
       await this.client.post("/api/v3/command", {
         name: "ManualImport",
-        importMode: "hardlink",
+        importMode: "copy",
         files: [{
           path: filePath,
           seriesId,
