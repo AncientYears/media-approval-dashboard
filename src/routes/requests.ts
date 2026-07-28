@@ -20,7 +20,9 @@ function parseSeasonNumber(dirName: string): number | null {
   // Season 1, Season 01, etc.
   m = dirName.match(/\bSeason\s+(\d{1,2})\b/i);
   if (m) return parseInt(m[1], 10);
-  // Sezon I, Sezon II, etc. (Polish with Roman numerals)
+  // Sezon 1, Sezon I, Sezon II, etc.
+  m = dirName.match(/\bSezon\s+(\d{1,2})\b/i);
+  if (m) return parseInt(m[1], 10);
   m = dirName.match(/\bSezon\s+([IVXLCDM]+)\b/i);
   if (m) return ROMAN[m[1].toUpperCase()] || null;
   return null;
@@ -1751,14 +1753,30 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const detail = await sonarr.getSeries(s.id);
             let seriesPath = detail.path;
             if (!seriesPath || !fs.existsSync(seriesPath)) {
-              // Sonarr Docker path might not exist on host — try MEDIA_TV + basename
-              const fallback = path.join(process.env.MEDIA_TV || "/media/Serialy", path.basename(seriesPath || ""), s.title);
-              const fallback2 = path.join(process.env.MEDIA_TV || "/media/Serialy", s.title);
+              const mediaTv = process.env.MEDIA_TV || "/media/Serialy";
+              const fallback = path.join(mediaTv, path.basename(seriesPath || ""), s.title);
+              const fallback2 = path.join(mediaTv, s.title);
               if (seriesPath && fs.existsSync(fallback)) seriesPath = fallback;
               else if (fs.existsSync(fallback2)) seriesPath = fallback2;
               else {
-                console.log(`[ImportLibrary] Skipping ${s.title}: Sonarr path "${detail.path}" not found on host`);
-                continue;
+                // Fuzzy match: find a dir in MEDIA_TV containing the series title (case-insensitive)
+                const titleLower = s.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+                try {
+                  for (const entry of fs.readdirSync(mediaTv, { withFileTypes: true })) {
+                    if (!entry.isDirectory()) continue;
+                    const entryLower = entry.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+                    if (entryLower.includes(titleLower) || titleLower.includes(entryLower)) {
+                      const candidate = path.join(mediaTv, entry.name);
+                      seriesPath = candidate;
+                      console.log(`[ImportLibrary] ${s.title}: fuzzy matched to "${entry.name}"`);
+                      break;
+                    }
+                  }
+                } catch {}
+                if (!seriesPath || !fs.existsSync(seriesPath)) {
+                  console.log(`[ImportLibrary] Skipping ${s.title}: Sonarr path "${detail.path}" not found on host`);
+                  continue;
+                }
               }
             }
             // Create series subfolder in processed
