@@ -198,6 +198,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const stmt = db.prepare(`
         SELECT * FROM media_requests 
         WHERE status NOT IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+        AND NOT (type = 'series' AND sonarr_id IS NOT NULL)
         ORDER BY created_at DESC 
       `);
       const rows = stmt.all();
