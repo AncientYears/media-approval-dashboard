@@ -727,6 +727,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           status: movie.status,
           total_size_mb: movie.total_size_mb,
           release_count: movie.release_count,
+          processed_count: movie.processed_count || 0,
         });
       }
 
