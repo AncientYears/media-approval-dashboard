@@ -2024,9 +2024,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             // Create series subfolder in processed
             const seriesDest = path.join(processedTvDir, s.title);
             if (!fs.existsSync(seriesDest)) fs.mkdirSync(seriesDest, { recursive: true });
-            // Pre-create S00 folder for specials
-            const specialsDest = path.join(seriesDest, "S00");
-            if (!fs.existsSync(specialsDest)) fs.mkdirSync(specialsDest, { recursive: true });
+            // Pre-create S00 folder for specials only if Sonarr has season 0
+            const hasSpecials = detail.seasons?.some((sn: any) => Number(sn.seasonNumber) === 0);
+            if (hasSpecials) {
+              const specialsDest = path.join(seriesDest, "S00");
+              if (!fs.existsSync(specialsDest)) {
+                fs.mkdirSync(specialsDest, { recursive: true });
+                console.log(`[ImportLibrary] Created S00 folder for ${s.title} (specials)`);
+              }
+            }
             const seriesEntries = fs.readdirSync(seriesPath, { withFileTypes: true });
             const seasonDirs = seriesEntries.filter(e => e.isDirectory() && parseSeasonNumber(e.name) !== null);
             let seriesFiles = 0;
