@@ -992,6 +992,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (!existingSeasons.has(sn.seasonNumber)) {
             const epCount = sn.statistics?.episodeCount || 0;
             const seasonFolder2 = path.join(processedTvDir2, franchiseTitle, `S${String(sn.seasonNumber).padStart(2, "0")}`);
+            // Pre-create S00 folder for specials
+            if (!fs.existsSync(seasonFolder2)) {
+              try { fs.mkdirSync(seasonFolder2, { recursive: true }); } catch {}
+            }
             const coveredEps3 = new Set<number>();
             let folderSize = 0;
             try {
