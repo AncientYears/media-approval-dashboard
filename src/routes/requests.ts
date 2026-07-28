@@ -1949,6 +1949,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             } else {
               console.log(`[ImportLibrary] ${s.title}: ${seasonDirs.length} seasons, ${seriesFiles} video files`);
             }
+            // Upgrade any remaining NEW/AWAITING_APPROVAL seasons for this series to COMPLETED
+            try {
+              const remaining = db.prepare("SELECT id, title, season, status FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND status NOT IN ('COMPLETED', 'DOWNLOADING', 'SEEDING')").all(s.id) as any[];
+              for (const r of remaining) {
+                db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(r.id);
+                console.log(`[ImportLibrary] Updated ${r.title} status to COMPLETED (was ${r.status})`);
+              }
+            } catch {}
           } catch (e: any) {
             results.push({ title: s.title, status: "error", error: e.message });
           }
