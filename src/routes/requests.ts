@@ -203,7 +203,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/cleanup - Reset stale SEARCHING requests, clean up orphaned RCs
+  // POST /api/requests/cleanup - Reset stale SEARCHING requests, clean up orphaned RCs, remove empty dirs
   router.post("/cleanup", (req: Request, res: Response) => {
     try {
       const stuck = db.prepare(
@@ -213,7 +213,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const orphaned = db.prepare(
         `DELETE FROM release_candidates WHERE request_id NOT IN (SELECT id FROM media_requests)`
       ).run();
-      res.json({ reset: stuck.changes, orphanedRcs: orphaned.changes });
+      // Remove empty dirs in processed/serialy and processed/filmy
+      let emptyDirsRemoved = 0;
+      const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+      const processedMovieDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+      for (const dir of [processedTvDir, processedMovieDir]) {
+        try {
+          if (!fs.existsSync(dir)) continue;
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const subDir = path.join(dir, entry.name);
+            try {
+              if (entry.name.match(/^S\d+$/i)) {
+                const hasFiles = fs.readdirSync(subDir).some(f => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+                if (!hasFiles) { fs.rmSync(subDir, { recursive: true, force: true }); emptyDirsRemoved++; }
+              } else {
+                const hasVideoFiles = (() => {
+                  for (const sub of fs.readdirSync(subDir, { withFileTypes: true })) {
+                    if (sub.isDirectory()) {
+                      const ssub = path.join(subDir, sub.name);
+                      try { if (fs.readdirSync(ssub).some(f => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f))) return true; } catch {}
+                    } else if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(sub.name)) return true;
+                  }
+                  return false;
+                })();
+                if (!hasVideoFiles) { fs.rmSync(subDir, { recursive: true, force: true }); emptyDirsRemoved++; }
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+      res.json({ reset: stuck.changes, orphanedRcs: orphaned.changes, emptyDirsRemoved });
     } catch (error) {
       console.error("Error cleaning up:", error);
       res.status(500).json({ error: "Failed to cleanup" });
