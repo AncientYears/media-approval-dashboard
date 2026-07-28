@@ -66,13 +66,13 @@ export function initializeDatabase(dbPath: string): DBInstance {
     CREATE TABLE IF NOT EXISTS approval_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       request_id INTEGER NOT NULL,
-      release_id INTEGER NOT NULL,
+      release_id INTEGER,
       approved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       approved_by TEXT,
       tweaked_params TEXT DEFAULT '{}',
       approval_reason TEXT,
       FOREIGN KEY (request_id) REFERENCES media_requests(id) ON DELETE CASCADE,
-      FOREIGN KEY (release_id) REFERENCES release_candidates(id) ON DELETE CASCADE
+      FOREIGN KEY (release_id) REFERENCES release_candidates(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS search_history (
@@ -195,6 +195,34 @@ export function initializeDatabase(dbPath: string): DBInstance {
     const ahColNames = ahCols.map((c: any) => c.name);
     if (!ahColNames.includes("processed_files")) {
       db.exec(`ALTER TABLE approval_history ADD COLUMN processed_files TEXT DEFAULT '[]'`);
+    }
+
+    // Migration: make release_id nullable in approval_history (for system/library-imported entries)
+    const releaseIdCol = ahCols.find((c: any) => c.name === "release_id");
+    if (releaseIdCol && releaseIdCol.notnull === 1) {
+      console.log("[DB] Migrating approval_history: making release_id nullable...");
+      db.pragma("foreign_keys = OFF");
+      db.exec(`
+        CREATE TABLE approval_history_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id INTEGER NOT NULL,
+          release_id INTEGER,
+          approved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          approved_by TEXT,
+          tweaked_params TEXT DEFAULT '{}',
+          approval_reason TEXT,
+          processed_files TEXT DEFAULT '[]',
+          FOREIGN KEY (request_id) REFERENCES media_requests(id) ON DELETE CASCADE,
+          FOREIGN KEY (release_id) REFERENCES release_candidates(id) ON DELETE SET NULL
+        );
+        INSERT INTO approval_history_new (id, request_id, release_id, approved_at, approved_by, tweaked_params, approval_reason, processed_files)
+          SELECT id, request_id, release_id, approved_at, approved_by, tweaked_params, approval_reason, processed_files FROM approval_history;
+        DROP TABLE approval_history;
+        ALTER TABLE approval_history_new RENAME TO approval_history;
+        CREATE INDEX IF NOT EXISTS idx_approval_history_request ON approval_history(request_id);
+      `);
+      db.pragma("foreign_keys = ON");
+      console.log("[DB] Migration done: release_id is now nullable.");
     }
 
   return {
