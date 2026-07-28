@@ -729,6 +729,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
           };
         }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+        // Inject unrequested seasons from Sonarr (e.g., Specials/season 0)
+        if (seriesObj) {
+          const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
+          for (const sn of (seriesObj.seasons || [])) {
+            if (!existingSeasons.has(sn.seasonNumber)) {
+              mappedSeasons.push({
+                season: sn.seasonNumber,
+                request_id: null,
+                status: null,
+                total_size_mb: 0,
+                release_count: 0,
+                title: franchiseTitle,
+                episode_count: sn.statistics?.episodeCount || 0,
+                covered_episodes: [],
+              });
+            }
+          }
+          mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+        }
         const totalCovered = mappedSeasons.reduce((sum: number, s: any) => sum + (s.covered_episodes?.length || 0), 0);
         managed.push({
           title: franchiseTitle,
