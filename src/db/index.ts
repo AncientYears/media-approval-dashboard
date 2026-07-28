@@ -283,6 +283,27 @@ export function initializeDatabase(dbPath: string): DBInstance {
       console.log(`[DB] Merged ${rows.length} release_id IS NULL rows for request ${mr.request_id} into id=${keepId} (${mergedSet.size} unique files)`);
     }
 
+    // Remove processed_files from non-null release_id rows when the same file is already in a null-release_id row
+    const dupProcessed = db.prepare(`
+      SELECT ah_n.id as null_id, ah_n.processed_files as null_files, ah_r.id as rc_id, ah_r.processed_files as rc_files
+      FROM approval_history ah_n
+      JOIN approval_history ah_r ON ah_r.request_id = ah_n.request_id AND ah_r.release_id IS NOT NULL
+      WHERE ah_n.release_id IS NULL AND ah_n.processed_files IS NOT NULL AND ah_n.processed_files != '[]'
+      AND ah_r.processed_files IS NOT NULL AND ah_r.processed_files != '[]'
+    `).all() as any[];
+    for (const d of dupProcessed) {
+      try {
+        const nullArr: string[] = JSON.parse(d.null_files);
+        const rcArr: string[] = JSON.parse(d.rc_files);
+        const nullSet = new Set(nullArr);
+        const filtered = rcArr.filter((f: string) => !nullSet.has(f));
+        if (filtered.length !== rcArr.length) {
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(filtered), d.rc_id);
+          console.log(`[DB] Removed ${rcArr.length - filtered.length} duplicate(s) from approval_history id=${d.rc_id} (already in null-release_id row id=${d.null_id})`);
+        }
+      } catch {}
+    }
+
   return {
     db,
     close: () => db.close(),
