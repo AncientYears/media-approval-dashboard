@@ -983,12 +983,49 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         });
       }
 
+      // Inject unrequested seasons from Sonarr (e.g., Specials)
+      const seriesObj2 = await sonarr.getSeries(sonarrId).catch(() => null);
+      if (seriesObj2) {
+        const existingSeasons = new Set(seasonDetails.map((s: any) => s.season));
+        const processedTvDir2 = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+        for (const sn of (seriesObj2.seasons || [])) {
+          if (!existingSeasons.has(sn.seasonNumber)) {
+            const epCount = sn.statistics?.episodeCount || 0;
+            const seasonFolder2 = path.join(processedTvDir2, franchiseTitle, `S${String(sn.seasonNumber).padStart(2, "0")}`);
+            const coveredEps3 = new Set<number>();
+            let folderSize = 0;
+            try {
+              if (fs.existsSync(seasonFolder2)) {
+                for (const f of fs.readdirSync(seasonFolder2)) {
+                  const fp = path.join(seasonFolder2, f);
+                  try { folderSize += fs.statSync(fp).size; } catch {}
+                  const epNum = extractEpisodeFromFilename(f);
+                  if (epNum != null) coveredEps3.add(epNum);
+                }
+              }
+            } catch {}
+            seasonDetails.push({
+              season: sn.seasonNumber,
+              request_id: null,
+              status: null,
+              total_size_mb: folderSize / (1024 * 1024),
+              release_count: 0,
+              title: franchiseTitle,
+              episode_count: epCount,
+              covered_episodes: Array.from(coveredEps3).sort((a, b) => a - b),
+              releases: [],
+            });
+          }
+        }
+        seasonDetails.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+      }
+
       res.json({
         title: franchiseTitle,
         sonarr_id: sonarrId,
         seasons: seasonDetails,
-        total_size_mb: seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0),
-        total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
+        total_size_mb: seasonDetails.reduce((sum: number, s: any) => sum + (s.total_size_mb || 0), 0),
+        total_releases: seasonDetails.reduce((sum: number, s: any) => sum + (s.release_count || 0), 0),
       });
     } catch (error) {
       console.error("Error fetching franchise detail:", error);

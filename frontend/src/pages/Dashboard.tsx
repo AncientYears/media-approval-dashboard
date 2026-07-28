@@ -440,7 +440,7 @@ export default function Dashboard() {
                       const total = s.episode_count;
                       const label = s.request_id ? (total ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "pending") : (total > 0 ? `0/${total} EP` : "—");
                       return (
-                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={() => { if (s.request_id) navigate(`/requests/${s.request_id}`); else navigate(`/managed/${item.sonarr_id}`); }} style={{ opacity: s.request_id ? 1 : 0.4, cursor: "pointer" }}>
+                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={s.request_id ? () => navigate(`/requests/${s.request_id}`) : undefined} style={{ opacity: s.request_id ? 1 : 0.4, cursor: s.request_id ? "pointer" : "default" }}>
                           <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${covered > 0 ? "has-content" : "empty"}`}>
                             {label}
