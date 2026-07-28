@@ -11,6 +11,21 @@ import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, mov
 import fs from "fs";
 import path from "path";
 
+const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10, XI: 11, XII: 12, XIII: 13, XIV: 14, XV: 15, XVI: 16, XVII: 17, XVIII: 18, XIX: 19, XX: 20 };
+
+function parseSeasonNumber(dirName: string): number | null {
+  // S01, S02, etc.
+  let m = dirName.match(/\bS(\d{1,2})\b/i);
+  if (m) return parseInt(m[1], 10);
+  // Season 1, Season 01, etc.
+  m = dirName.match(/\bSeason\s+(\d{1,2})\b/i);
+  if (m) return parseInt(m[1], 10);
+  // Sezon I, Sezon II, etc. (Polish with Roman numerals)
+  m = dirName.match(/\bSezon\s+([IVXLCDM]+)\b/i);
+  if (m) return ROMAN[m[1].toUpperCase()] || null;
+  return null;
+}
+
 function toQBittorrentPath(hostPath: string): string {
   // Strip /media prefix — volume maps /media/Torrents → /Torrents
   if (hostPath.startsWith("/media/")) return hostPath.slice("/media".length);
@@ -1750,19 +1765,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const seriesDest = path.join(processedTvDir, s.title);
             if (!fs.existsSync(seriesDest)) fs.mkdirSync(seriesDest, { recursive: true });
             const seriesEntries = fs.readdirSync(seriesPath, { withFileTypes: true });
-            const seasonDirs = seriesEntries.filter(e => e.isDirectory() && /^S\d+$/i.test(e.name));
+            const seasonDirs = seriesEntries.filter(e => e.isDirectory() && parseSeasonNumber(e.name) !== null);
             let seriesFiles = 0;
             // Walk season dirs for video files
             for (const entry of seasonDirs) {
+              const seasonNum = parseSeasonNumber(entry.name);
               const seasonDir = path.join(seriesPath, entry.name);
-              const seasonDest = path.join(seriesDest, entry.name);
+              const seasonDest = path.join(seriesDest, `S${String(seasonNum).padStart(2, "0")}`);
               if (!fs.existsSync(seasonDest)) fs.mkdirSync(seasonDest, { recursive: true });
               for (const f of fs.readdirSync(seasonDir)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
                 seriesFiles++;
                 const srcPath = path.join(seasonDir, f);
                 const destPath = path.join(seasonDest, f);
-                const relPath = path.join(s.title, entry.name, f);
+                const relPath = path.join(s.title, `S${String(seasonNum).padStart(2, "0")}`, f);
                 const alreadyImported = (() => {
                   if (!fs.existsSync(destPath)) return false;
                   try { return fs.statSync(srcPath).ino === fs.statSync(destPath).ino; } catch { return false; }
@@ -1780,13 +1796,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
                 // Always try association, even for already-imported files
                 try {
-                  const seasonMatch = entry.name.match(/S(\d+)/i);
-                  if (seasonMatch) {
-                    const seasonNum = parseInt(seasonMatch[1], 10);
-                    let req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, seasonNum) as any;
-                    if (!req) {
-                      req = db.prepare("SELECT id FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${s.title}%`, seasonNum) as any;
-                    }
+                  let req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, seasonNum) as any;
+                  if (!req) {
+                    req = db.prepare("SELECT id FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${s.title}%`, seasonNum) as any;
+                  }
                     if (req) {
                       const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
                       if (ah) {
@@ -1799,10 +1812,91 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                         db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify([relPath]));
                       }
                     }
-                  }
                 } catch (e: any) {
                   console.error(`[ImportLibrary] Failed to associate ${s.title} ${f}:`, e.message);
                 }
+              }
+            }
+            // Also handle video files directly in series root (no season subdirs)
+            const rootVideoFiles = seriesEntries.filter(e => !e.isDirectory() && /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e.name));
+            for (const vf of rootVideoFiles) {
+              const seasonNum = parseSeasonNumber(vf.name) || 1;
+              const srcPath = path.join(seriesPath, vf.name);
+              const seasonDest = path.join(seriesDest, `S${String(seasonNum).padStart(2, "0")}`);
+              if (!fs.existsSync(seasonDest)) fs.mkdirSync(seasonDest, { recursive: true });
+              const destPath = path.join(seasonDest, vf.name);
+              const relPath = path.join(s.title, `S${String(seasonNum).padStart(2, "0")}`, vf.name);
+              seriesFiles++;
+              const alreadyImported = (() => {
+                if (!fs.existsSync(destPath)) return false;
+                try { return fs.statSync(srcPath).ino === fs.statSync(destPath).ino; } catch { return false; }
+              })();
+              if (!alreadyImported) {
+                try {
+                  fs.linkSync(srcPath, destPath);
+                  console.log(`[ImportLibrary] Hardlinked ${s.title} root/${vf.name} → processed/serialy`);
+                  results.push({ title: `${s.title} ${vf.name}`, status: "imported", path: destPath });
+                } catch (linkErr: any) {
+                  console.error(`[ImportLibrary] Failed to hardlink ${s.title} root/${vf.name}:`, linkErr.message);
+                  results.push({ title: `${s.title} ${vf.name}`, status: "error", error: linkErr.message });
+                }
+              }
+              try {
+                let req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, seasonNum) as any;
+                if (!req) req = db.prepare("SELECT id FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${s.title}%`, seasonNum) as any;
+                if (req) {
+                  const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
+                  if (ah) {
+                    const existing = JSON.parse(ah.processed_files || "[]");
+                    if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
+                  } else {
+                    db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify([relPath]));
+                  }
+                }
+              } catch {}
+            }
+            // Also scan unmatched dirs that may contain video files (e.g. "Show S01 (720p)[Group]/")
+            const unmatchedDirs = seriesEntries.filter(e => e.isDirectory() && !seasonDirs.includes(e));
+            for (const ud of unmatchedDirs) {
+              const udSeason = parseSeasonNumber(ud.name);
+              if (udSeason === null) continue;
+              const udPath = path.join(seriesPath, ud.name);
+              const udFiles = (() => { try { return fs.readdirSync(udPath); } catch { return []; } })();
+              for (const f of udFiles) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+                const seasonDest = path.join(seriesDest, `S${String(udSeason).padStart(2, "0")}`);
+                if (!fs.existsSync(seasonDest)) fs.mkdirSync(seasonDest, { recursive: true });
+                const srcPath = path.join(udPath, f);
+                const destPath = path.join(seasonDest, f);
+                const relPath = path.join(s.title, `S${String(udSeason).padStart(2, "0")}`, f);
+                seriesFiles++;
+                const alreadyImported = (() => {
+                  if (!fs.existsSync(destPath)) return false;
+                  try { return fs.statSync(srcPath).ino === fs.statSync(destPath).ino; } catch { return false; }
+                })();
+                if (!alreadyImported) {
+                  try {
+                    fs.linkSync(srcPath, destPath);
+                    console.log(`[ImportLibrary] Hardlinked ${s.title} ${ud.name}/${f} → processed/serialy`);
+                    results.push({ title: `${s.title} ${ud.name}/${f}`, status: "imported", path: destPath });
+                  } catch (linkErr: any) {
+                    console.error(`[ImportLibrary] Failed to hardlink ${s.title} ${ud.name}/${f}:`, linkErr.message);
+                    results.push({ title: `${s.title} ${ud.name}/${f}`, status: "error", error: linkErr.message });
+                  }
+                }
+                try {
+                  let req = db.prepare("SELECT id FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?").get(s.id, udSeason) as any;
+                  if (!req) req = db.prepare("SELECT id FROM media_requests WHERE title LIKE ? AND type = 'series' AND season = ?").get(`%${s.title}%`, udSeason) as any;
+                  if (req) {
+                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
+                    if (ah) {
+                      const existing = JSON.parse(ah.processed_files || "[]");
+                      if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
+                    } else {
+                      db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(req.id, JSON.stringify([relPath]));
+                    }
+                  }
+                } catch {}
               }
             }
             if (seasonDirs.length === 0) {
