@@ -3683,8 +3683,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const result = moveToProcessedSync(contentPath, type);
       if (!result.success) return res.status(500).json({ error: result.error });
 
-      console.log(`[MoveToProcessed] ${contentPath} → ${result.destination}`);
-      res.json({ success: true, source: contentPath, destination: result.destination });
+      // Link the processed files in the DB so the processed panel shows them
+      const processedDir = getProcessedDir(type);
+      const linkedFiles: string[] = [];
+      const srcStat = fs.existsSync(contentPath) ? fs.statSync(contentPath) : null;
+      if (srcStat?.isDirectory()) {
+        const prefix = type === "series" ? path.basename(contentPath) : "";
+        for (const entry of fs.readdirSync(contentPath)) {
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+          const destPath = path.join(processedDir, prefix, entry);
+          if (fs.existsSync(destPath)) linkedFiles.push(prefix ? path.join(prefix, entry) : entry);
+        }
+      } else if (srcStat) {
+        const base = path.basename(contentPath);
+        if (fs.existsSync(path.join(processedDir, base))) linkedFiles.push(base);
+      }
+      if (linkedFiles.length > 0) {
+        if (request.status !== 'COMPLETED' && request.status !== 'DOWNLOADING' && request.status !== 'SEEDING') {
+          db.prepare("UPDATE media_requests SET status = 'SEEDING' WHERE id = ?").run(request.id);
+        }
+        const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(request.id) as any;
+        if (ah) {
+          const existing = JSON.parse(ah.processed_files || "[]");
+          for (const f of linkedFiles) { if (!existing.includes(f)) existing.push(f); }
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+        } else {
+          db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(request.id, JSON.stringify(linkedFiles));
+        }
+      }
+
+      console.log(`[MoveToProcessed] ${contentPath} → ${result.destination} (${linkedFiles.length} files linked)`);
+      res.json({ success: true, source: contentPath, destination: result.destination, files: linkedFiles });
     } catch (error: any) {
       console.error("Error moving to processed:", error);
       res.status(500).json({ error: `Failed to move to processed: ${error.message}` });
