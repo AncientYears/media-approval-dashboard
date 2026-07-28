@@ -547,7 +547,11 @@ export function completeWorkspace(wsPath: string, type: "movie" | "series"): { s
 
   deleteWorkspaceInputs(wsPath);
   try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(path.join(wsPath, "inputs"), { recursive: true, force: true }); } catch {}
   writeWorkspaceMetadata(wsPath, { status: "completed", outputPaths: processedPaths } as any);
+
+  // Clean up the workspace folder itself (metadata saved, outputs moved)
+  try { fs.rmSync(wsPath, { recursive: true, force: true }); } catch {}
 
   return { success: true, processedPaths };
 }
