@@ -662,6 +662,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         const firstRequestId = seasons[0].id;
+        // Compute total size including processed files
+        const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+        let franchiseSize = seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0);
+        try {
+          for (const s of seasons) {
+            const ahRows = db.prepare(`
+              SELECT processed_files FROM approval_history
+              WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'
+            `).all(s.id) as any[];
+            for (const ah of ahRows) {
+              const files: string[] = JSON.parse(ah.processed_files || "[]");
+              for (const f of files) {
+                const fullPath = path.join(processedTvDir, f);
+                try { franchiseSize += fs.statSync(fullPath).size / (1024 * 1024); } catch {}
+              }
+            }
+          }
+        } catch {}
         managed.push({
           title: franchiseTitle,
           type: "series",
@@ -709,12 +727,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               total_size_mb: s.total_size_mb,
               release_count: s.release_count,
               title: s.title,
-          episode_count: s.episode_count,
+              episode_count: s.episode_count,
               covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
             };
           }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0)),
-          total_size_mb: seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0),
+          total_size_mb: franchiseSize,
           total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
+          total_covered: (() => {
+            let covered = 0;
+            for (const s of seasons) covered += (s.covered_episodes?.length || 0);
+            return covered;
+          })(),
         });
       }
 

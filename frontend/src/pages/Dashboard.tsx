@@ -452,7 +452,7 @@ export default function Dashboard() {
                     })}
                   </div>
                   <div className="managed-footer">
-                    <span className="rtag">{item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
+                    <span className="rtag">{item.total_covered || item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
                     <button className="btn btn-danger btn-tiny" onClick={() => {
                       if (window.confirm(`Delete "${item.title}" from DB + Sonarr?`)) {
