@@ -662,9 +662,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
         const franchiseTitle = seasons[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         const firstRequestId = seasons[0].id;
-        // Compute total size including processed files
+        // Compute total size from processed files (source of truth), fall back to torrent sizes
         const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
-        let franchiseSize = seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0);
+        let processedBytes = 0;
         try {
           for (const s of seasons) {
             const ahRows = db.prepare(`
@@ -675,11 +675,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const files: string[] = JSON.parse(ah.processed_files || "[]");
               for (const f of files) {
                 const fullPath = path.join(processedTvDir, f);
-                try { franchiseSize += fs.statSync(fullPath).size / (1024 * 1024); } catch {}
+                try { processedBytes += fs.statSync(fullPath).size; } catch {}
               }
             }
           }
         } catch {}
+        let franchiseSize = processedBytes > 0
+          ? processedBytes / (1024 * 1024)
+          : seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0);
         const mappedSeasons = seasons.map((s: any) => {
           // Get covered episodes from parsed_episodes on approved releases
           const coveredRows = db.prepare(`
@@ -757,7 +760,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 try { totalBytes += fs.statSync(fullPath).size; } catch {}
               }
             }
-            if (totalBytes > 0) pSize = movie.total_size_mb + totalBytes / (1024 * 1024);
+            if (totalBytes > 0) pSize = totalBytes / (1024 * 1024);
           } catch {}
         }
         managed.push({
