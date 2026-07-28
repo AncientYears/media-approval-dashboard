@@ -3496,6 +3496,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const method = fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied";
       console.log(`[MoveToLibrary] ${method} ${sourcePath} → ${destPath}`);
 
+      // Tell Radarr/Sonarr to scan and pick up the new file
+      if (request.type === "series" && request.sonarr_id) {
+        try {
+          await sonarr.scanDownloadedEpisodes(destFolder, request.sonarr_id);
+          console.log(`[MoveToLibrary] Triggered Sonarr scan for ${destFolder}`);
+        } catch (e: any) {
+          console.warn(`[MoveToLibrary] Sonarr scan failed: ${e.message}`);
+        }
+      } else if (request.radarr_id) {
+        try {
+          await radarr.scanDownloadedMovie(destFolder, request.radarr_id);
+          console.log(`[MoveToLibrary] Triggered Radarr scan for ${destFolder}`);
+        } catch (e: any) {
+          console.warn(`[MoveToLibrary] Radarr scan failed: ${e.message}`);
+        }
+      }
+
       res.json({ success: true, message: `Files ${method} to library`, source: sourcePath, destination: destPath });
     } catch (error: any) {
       console.error("Error moving to library:", error);
