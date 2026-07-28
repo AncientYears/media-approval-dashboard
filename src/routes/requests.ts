@@ -729,11 +729,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (epNum != null) coveredEps.add(epNum);
             }
           }
+          // Also scan the season folder on disk for files not yet in approval_history
+          let folderSizeBytes = 0;
+          try {
+            const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(s.season).padStart(2, "0")}`);
+            if (fs.existsSync(seasonFolder)) {
+              for (const f of fs.readdirSync(seasonFolder)) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+                const epNum = extractEpisodeFromFilename(f);
+                if (epNum != null) coveredEps.add(epNum);
+                try { folderSizeBytes += fs.statSync(path.join(seasonFolder, f)).size; } catch {}
+              }
+            }
+          } catch {}
+          const folderSizeMb = folderSizeBytes / (1024 * 1024);
+          const totalSizeMb = Math.max(s.total_size_mb || 0, folderSizeMb);
           return {
             season: s.season,
             request_id: s.id,
             status: s.status,
-            total_size_mb: s.total_size_mb,
+            total_size_mb: totalSizeMb,
             release_count: s.release_count,
             title: s.title,
             episode_count: s.episode_count,
@@ -976,12 +991,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             if (epNum != null) coveredEps.add(epNum);
           }
         }
+        // Also scan the season folder on disk for files not yet in approval_history
+        let folderSizeBytes = 0;
+        try {
+          const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(s.season).padStart(2, "0")}`);
+          if (fs.existsSync(seasonFolder)) {
+            for (const f of fs.readdirSync(seasonFolder)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              const epNum = extractEpisodeFromFilename(f);
+              if (epNum != null) coveredEps.add(epNum);
+              try { folderSizeBytes += fs.statSync(path.join(seasonFolder, f)).size; } catch {}
+            }
+          }
+        } catch {}
+        const folderSizeMb = folderSizeBytes / (1024 * 1024);
+        const totalSizeMb = Math.max(s.total_size_mb || 0, folderSizeMb);
 
         seasonDetails.push({
           season: s.season,
           request_id: s.id,
           status: s.status,
-          total_size_mb: s.total_size_mb,
+          total_size_mb: totalSizeMb,
           release_count: s.release_count,
           title: s.title,
           episode_count: episodeCount,
