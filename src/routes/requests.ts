@@ -649,9 +649,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             (SELECT COUNT(*) FROM release_candidates rc3 
              JOIN approval_history ah3 ON ah3.release_id = rc3.id 
              WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count,
-             (SELECT COALESCE(SUM(json_array_length(ah4.processed_files)), 0) FROM approval_history ah4 
-              WHERE ah4.request_id = mr.id
-              AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
+              (SELECT COALESCE(SUM(json_array_length(ah4.processed_files)), 0) FROM approval_history ah4 
+               WHERE ah4.request_id = mr.id AND ah4.release_id IS NULL
+               AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
           FROM media_requests mr
           WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED', 'NEW')
         ) sub
@@ -2116,7 +2116,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 if (!processedFiles.includes(entry)) processedFiles.push(entry);
               }
             }
-            const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
+            const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
             if (ah) {
               const existing = JSON.parse(ah.processed_files || "[]");
               for (const pf of processedFiles) {
@@ -2235,7 +2235,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 try {
                   const reqId = ensureSeriesRequest(s.id, seasonNum!, s.title);
                   if (reqId) {
-                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
+                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
                     if (ah) {
                       const existing = JSON.parse(ah.processed_files || "[]");
                       if (!existing.includes(relPath)) {
@@ -2278,7 +2278,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               try {
                 const reqId = ensureSeriesRequest(s.id, seasonNum, s.title);
                 if (reqId) {
-                  const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
+                  const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
                   if (ah) {
                     const existing = JSON.parse(ah.processed_files || "[]");
                     if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
@@ -2320,7 +2320,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 try {
                   const reqId = ensureSeriesRequest(s.id, udSeason, s.title);
                   if (reqId) {
-                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
+                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
                     if (ah) {
                       const existing = JSON.parse(ah.processed_files || "[]");
                       if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }

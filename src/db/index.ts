@@ -283,23 +283,98 @@ export function initializeDatabase(dbPath: string): DBInstance {
       console.log(`[DB] Merged ${rows.length} release_id IS NULL rows for request ${mr.request_id} into id=${keepId} (${mergedSet.size} unique files)`);
     }
 
-    // Remove processed_files from non-null release_id rows when the same file is already in a null-release_id row
-    const dupProcessed = db.prepare(`
-      SELECT ah_n.id as null_id, ah_n.processed_files as null_files, ah_r.id as rc_id, ah_r.processed_files as rc_files
-      FROM approval_history ah_n
-      JOIN approval_history ah_r ON ah_r.request_id = ah_n.request_id AND ah_r.release_id IS NOT NULL
-      WHERE ah_n.release_id IS NULL AND ah_n.processed_files IS NOT NULL AND ah_n.processed_files != '[]'
-      AND ah_r.processed_files IS NOT NULL AND ah_r.processed_files != '[]'
+    // Migrate processed_files from non-null release_id rows to null-release_id rows
+    // (import-library was wrongly appending to torrent's AH row instead of creating a null-release_id row)
+    const nonNullRows = db.prepare(`
+      SELECT id, request_id, processed_files FROM approval_history
+      WHERE release_id IS NOT NULL AND processed_files IS NOT NULL AND processed_files != '[]'
     `).all() as any[];
-    for (const d of dupProcessed) {
+    for (const row of nonNullRows) {
       try {
-        const nullArr: string[] = JSON.parse(d.null_files);
-        const rcArr: string[] = JSON.parse(d.rc_files);
-        const nullSet = new Set(nullArr);
-        const filtered = rcArr.filter((f: string) => !nullSet.has(f));
-        if (filtered.length !== rcArr.length) {
-          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(filtered), d.rc_id);
-          console.log(`[DB] Removed ${rcArr.length - filtered.length} duplicate(s) from approval_history id=${d.rc_id} (already in null-release_id row id=${d.null_id})`);
+        const files: string[] = JSON.parse(row.processed_files);
+        if (files.length === 0) continue;
+        // Find or create null-release_id row for this request
+        let nullRow = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(row.request_id) as any;
+        if (nullRow) {
+          const existing: string[] = JSON.parse(nullRow.processed_files || "[]");
+          const merged = new Set([...existing, ...files]);
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify([...merged]), nullRow.id);
+        } else {
+          db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(row.request_id, JSON.stringify(files));
+        }
+        db.prepare("UPDATE approval_history SET processed_files = '[]' WHERE id = ?").run(row.id);
+        console.log(`[DB] Migrated ${files.length} file(s) from approval_history id=${row.id} (release_id NOT NULL) to null-release_id row for request ${row.request_id}`);
+      } catch {}
+    }
+
+    // Remove processed files that are hardlinks to torrent download files (share same inode)
+    // These are the torrent's own files that were hardlinked to /processed via MoveToProcessed,
+    // then re-imported via import-library — they shouldn't count as separate versions.
+    const nullRowsForInode = db.prepare(`
+      SELECT ah.id, ah.request_id, ah.processed_files, mr.type
+      FROM approval_history ah
+      JOIN media_requests mr ON mr.id = ah.request_id
+      WHERE ah.release_id IS NULL AND ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
+    `).all() as any[];
+    const moviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+    const tvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+    for (const nRow of nullRowsForInode) {
+      try {
+        const files: string[] = JSON.parse(nRow.processed_files);
+        if (files.length === 0) continue;
+        // Get all RC download paths for this request
+        const rcs = db.prepare("SELECT save_path, title FROM release_candidates WHERE request_id = ? AND torrent_hash != ''").all(nRow.request_id) as any[];
+        if (rcs.length === 0) continue;
+        // Collect download inodes
+        const downloadInodes = new Set<number>();
+        for (const rc of rcs) {
+          const rawPath = rc.save_path || "";
+          const hostPath = rawPath.startsWith("/Torrents/") ? "/media" + rawPath : rawPath;
+          const downloadPath = path.join(hostPath, rc.title);
+          try {
+            if (fs.existsSync(downloadPath)) {
+              downloadInodes.add(fs.statSync(downloadPath).ino);
+            }
+          } catch {
+            // try without title (if save_path already includes filename or is a directory)
+            try {
+              if (fs.existsSync(hostPath)) {
+                const stat = fs.statSync(hostPath);
+                if (stat.isDirectory()) {
+                  // Directory content_path — scan for video files
+                  for (const entry of fs.readdirSync(hostPath)) {
+                    if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+                    try { downloadInodes.add(fs.statSync(path.join(hostPath, entry)).ino); } catch {}
+                  }
+                } else {
+                  downloadInodes.add(stat.ino);
+                }
+              }
+            } catch {}
+          }
+        }
+        if (downloadInodes.size === 0) continue;
+        // Check each processed file's inode against download inodes
+        const kept: string[] = [];
+        const removed: string[] = [];
+        for (const f of files) {
+          let filePath: string;
+          if (nRow.type === "series") {
+            filePath = path.join(tvDir, f);
+          } else {
+            filePath = path.join(moviesDir, f);
+          }
+          try {
+            if (fs.existsSync(filePath) && downloadInodes.has(fs.statSync(filePath).ino)) {
+              removed.push(f);
+              continue;
+            }
+          } catch {}
+          kept.push(f);
+        }
+        if (removed.length > 0) {
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(kept), nRow.id);
+          console.log(`[DB] Removed ${removed.length} torrent-hardlink file(s) from approval_history id=${nRow.id} for request ${nRow.request_id}: ${removed.join(", ")}`);
         }
       } catch {}
     }
