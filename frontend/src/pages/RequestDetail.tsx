@@ -630,6 +630,7 @@ export default function RequestDetail() {
                   <span className="torrent-path" title={`${processedDir}/${f.name}`} onClick={() => handleCopyPath(`${processedDir}/${f.name}`)}>
                     {f.name}
                   </span>
+                  {f.size > 0 && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>{formatSize(f.size / (1024 * 1024))}</span>}
                   {f.inLibrary && (
                     <button className={`btn btn-tiny ${removeLibConfirm === f.name ? "btn-danger" : "btn-library-ok"}`} title={`Remove ${f.name} from library`} onClick={async () => { if (removeLibConfirm === f.name) { try { await removeFromLibrary(Number(id), f.name); await refreshProcessedAndWorkspaces(); } catch {} setRemoveLibConfirm(null); } else { setRemoveLibConfirm(f.name); } }}>
                       {removeLibConfirm === f.name ? "Remove?" : "In Library"}
