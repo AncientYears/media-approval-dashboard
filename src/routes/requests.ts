@@ -2844,6 +2844,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
 
+      // Last resort: any video file in the library dir (user wants it gone from library)
+      if (!destPath) {
+        for (const f of fs.readdirSync(libraryDir)) {
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+          destPath = path.join(libraryDir, f);
+          break;
+        }
+      }
+
       if (!destPath) {
         console.log(`[RemoveFromLib] No match in ${libraryDir} (contentIno=${contentIno}, torrentSize=${torrent.size})`);
         const libFiles = fs.readdirSync(libraryDir).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).map((f: string) => {
