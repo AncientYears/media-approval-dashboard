@@ -252,7 +252,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             if (!entry.isDirectory()) continue;
             const subDir = path.join(dir, entry.name);
             try {
-              if (entry.name.match(/^S\d+$/i)) {
+              if (entry.name.match(/^S0*[1-9]\d*$/i)) {
                 const hasFiles = fs.readdirSync(subDir).some(f => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
                 if (!hasFiles) { fs.rmSync(subDir, { recursive: true, force: true }); emptyDirsRemoved++; }
               } else {
@@ -2228,7 +2228,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         for (const se of topEntries2) {
           if (!se.isDirectory()) continue;
           const seriesDir = path.join(processedTvDir, se.name);
-          const seasonDirs = fs.readdirSync(seriesDir, { withFileTypes: true }).filter(d => d.isDirectory() && /^S\d+$/i.test(d.name));
+          const seasonDirs = fs.readdirSync(seriesDir, { withFileTypes: true }).filter(d => d.isDirectory() && /^S0*[1-9]\d*$/i.test(d.name));
           for (const sd of seasonDirs) {
             const seasonDir = path.join(seriesDir, sd.name);
             const hasFiles = fs.readdirSync(seasonDir).some(f => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
