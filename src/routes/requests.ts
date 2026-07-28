@@ -963,10 +963,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               `S${String(season.season).padStart(2, "0")}`
             );
             if (fs.existsSync(seasonFolder)) {
-              const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-              if (files.length > 0) {
-                inLibrary = true;
-                libraryPath = path.join(seasonFolder, files[0]);
+              let contentPath = fromQBittorrentPath(torrent.content_path);
+              if (!fs.existsSync(contentPath)) contentPath = torrent.content_path;
+              const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
+              for (const f of fs.readdirSync(seasonFolder)) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+                const fPath = path.join(seasonFolder, f);
+                try {
+                  if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) {
+                    inLibrary = true;
+                    libraryPath = fPath;
+                    break;
+                  }
+                } catch {}
+              }
+              // Fallback: filename match
+              if (!inLibrary) {
+                const contentBase = path.basename(contentPath);
+                const match = fs.readdirSync(seasonFolder).find((f: string) => f === contentBase);
+                if (match) { inLibrary = true; libraryPath = path.join(seasonFolder, match); }
               }
             }
           } catch {}
@@ -2377,32 +2392,64 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         let inLibrary = false;
 
         if (isSonarr) {
-          // Series: check if any files exist in season folder
+          // Series: inode match against season folder
           destPath = seriesSeasonFolder;
           if (seriesSeasonFolder && fs.existsSync(seriesSeasonFolder)) {
-            const files = fs.readdirSync(seriesSeasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-            if (files.length > 0) {
-              destPath = path.join(seriesSeasonFolder, files[0]);
-              inLibrary = true;
+            const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
+            for (const f of fs.readdirSync(seriesSeasonFolder)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              const fPath = path.join(seriesSeasonFolder, f);
+              try {
+                if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) {
+                  destPath = fPath;
+                  inLibrary = true;
+                  break;
+                }
+              } catch {}
+            }
+            // Fallback: filename match
+            if (!inLibrary) {
+              const contentBase = path.basename(contentPath);
+              const match = fs.readdirSync(seriesSeasonFolder).find((f: string) => f === contentBase);
+              if (match) { destPath = path.join(seriesSeasonFolder, match); inLibrary = true; }
             }
           }
         } else {
-          // Movie: Radarr size comparison
+          // Movie: inode match against library folder, fallback to size comparison
           destPath = movieFolderPath ? path.join(movieFolderPath, libraryVideoName || "") : "";
-          if (radarrFileSize > 0) {
-            let actualSize = 0;
-            if (fs.existsSync(contentPath)) {
-              const st = fs.statSync(contentPath);
-              if (st.isFile()) {
-                actualSize = st.size;
-              } else if (st.isDirectory()) {
-                const files = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-                if (files.length > 0) {
-                  actualSize = fs.statSync(path.join(contentPath, files[0])).size;
+          if (movieFolderPath && fs.existsSync(movieFolderPath)) {
+            const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
+            for (const f of fs.readdirSync(movieFolderPath)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              const fPath = path.join(movieFolderPath, f);
+              try {
+                if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) {
+                  destPath = fPath;
+                  inLibrary = true;
+                  break;
+                }
+              } catch {}
+            }
+            // Fallback: filename match
+            if (!inLibrary) {
+              const contentBase = path.basename(contentPath);
+              const match = fs.readdirSync(movieFolderPath).find((f: string) => f === contentBase);
+              if (match) { destPath = path.join(movieFolderPath, match); inLibrary = true; }
+            }
+            // Fallback: size comparison via Radarr movieFile
+            if (!inLibrary && radarrFileSize > 0) {
+              let actualSize = 0;
+              if (fs.existsSync(contentPath)) {
+                const st = fs.statSync(contentPath);
+                if (st.isFile()) {
+                  actualSize = st.size;
+                } else if (st.isDirectory()) {
+                  const files = fs.readdirSync(contentPath).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+                  if (files.length > 0) actualSize = fs.statSync(path.join(contentPath, files[0])).size;
                 }
               }
+              inLibrary = actualSize > 0 && Math.abs(actualSize - radarrFileSize) < radarrFileSize * 0.01;
             }
-            inLibrary = actualSize > 0 && Math.abs(actualSize - radarrFileSize) < radarrFileSize * 0.01;
           }
         }
 
