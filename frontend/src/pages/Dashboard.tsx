@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
+import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -277,6 +277,26 @@ export default function Dashboard() {
             setModal({ title: "Scan Downloads", lines });
             loadData();
           }}>Scan Downloads</button>
+          <button className="btn btn-primary btn-tiny" onClick={async () => {
+            setModal({ title: "Import Library", lines: ["Scanning Radarr/Sonarr library..."] });
+            const result = await importLibrary();
+            const lines = [
+              `Imported ${result.imported} file(s) into processed.`,
+              `Already exists: ${result.exists}.`,
+              `Skipped (no file): ${result.skipped}.`,
+              `Errors: ${result.errors}.`,
+            ];
+            if (result.results && result.results.length > 0) {
+              lines.push("");
+              for (const r of result.results) {
+                if (r.status === "imported") lines.push(`[+] ${r.title}`);
+                else if (r.status === "exists") lines.push(`[=] ${r.title} (already in processed)`);
+                else if (r.status === "error") lines.push(`[!] ${r.title}: ${r.error}`);
+              }
+            }
+            setModal({ title: "Import Library", lines });
+            loadData();
+          }}>Import Library</button>
           <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
             setModal({ title: "Cleanup Duplicates", lines: ["Checking for duplicates..."] });
             try {

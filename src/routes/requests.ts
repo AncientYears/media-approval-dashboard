@@ -1599,6 +1599,93 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // POST /api/requests/import-library - Scan Radarr/Sonarr library, hardlink files into processed dirs
+  router.post("/import-library", async (req: Request, res: Response) => {
+    try {
+      const results: Array<{ title: string; status: string; path?: string; error?: string }> = [];
+      const processedMoviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+      const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+
+      // Scan Radarr movies
+      try {
+        const movies = await radarr.getAllMovies();
+        for (const m of movies) {
+          if (!m.hasFile) continue;
+          try {
+            const movie = await radarr.getMovie(m.id);
+            const filePath = movie.movieFile?.path;
+            if (!filePath || !fs.existsSync(filePath)) {
+              results.push({ title: m.title, status: "skipped", path: filePath, error: "file not found on disk" });
+              continue;
+            }
+            const fileName = path.basename(filePath);
+            const destPath = path.join(processedMoviesDir, fileName);
+            if (fs.existsSync(destPath)) {
+              try {
+                const srcIno = fs.statSync(filePath).ino;
+                const dstIno = fs.statSync(destPath).ino;
+                if (srcIno === dstIno) {
+                  results.push({ title: m.title, status: "exists", path: destPath });
+                  continue;
+                }
+              } catch {}
+            }
+            fs.linkSync(filePath, destPath);
+            console.log(`[ImportLibrary] Hardlinked ${fileName} → processed/filmy`);
+            results.push({ title: m.title, status: "imported", path: destPath });
+          } catch (e: any) {
+            results.push({ title: m.title, status: "error", error: e.message });
+          }
+        }
+      } catch (e: any) {
+        results.push({ title: "(Radarr)", status: "error", error: `Failed to fetch movies: ${e.message}` });
+      }
+
+      // Scan Sonarr series
+      try {
+        const seriesList = await sonarr.getAllSeries();
+        for (const s of seriesList) {
+          try {
+            const detail = await sonarr.getSeries(s.id);
+            const seriesPath = detail.path || path.join(process.env.MEDIA_TV || "/media/Serialy", s.title);
+            if (!seriesPath || !fs.existsSync(seriesPath)) continue;
+            // Walk season dirs for video files
+            for (const entry of fs.readdirSync(seriesPath, { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue;
+              if (!/^S\d+$/i.test(entry.name)) continue;
+              const seasonDir = path.join(seriesPath, entry.name);
+              for (const f of fs.readdirSync(seasonDir)) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+                const srcPath = path.join(seasonDir, f);
+                const destPath = path.join(processedTvDir, f);
+                if (fs.existsSync(destPath)) {
+                  try {
+                    if (fs.statSync(srcPath).ino === fs.statSync(destPath).ino) continue;
+                  } catch {}
+                }
+                fs.linkSync(srcPath, destPath);
+                results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
+              }
+            }
+          } catch (e: any) {
+            results.push({ title: s.title, status: "error", error: e.message });
+          }
+        }
+      } catch (e: any) {
+        results.push({ title: "(Sonarr)", status: "error", error: `Failed to fetch series: ${e.message}` });
+      }
+
+      const imported = results.filter(r => r.status === "imported").length;
+      const exists = results.filter(r => r.status === "exists").length;
+      const skipped = results.filter(r => r.status === "skipped").length;
+      const errors = results.filter(r => r.status === "error").length;
+      res.json({ imported, exists, skipped, errors, total: results.length, results });
+    } catch (error: any) {
+      console.error("Error importing library:", error);
+      res.status(500).json({ error: `Failed to import library: ${error.message}` });
+    }
+  });
+
   // POST /api/requests/managed/:sonarrId/search-all - Search all seasons in parallel (SSE)
   router.post("/managed/:sonarrId/search-all", async (req: Request, res: Response) => {
     const sonarrId = Number(req.params.sonarrId);

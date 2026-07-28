@@ -219,6 +219,11 @@ export async function scanDownloads() {
   return response.data;
 }
 
+export async function importLibrary() {
+  const response = await api.post("/requests/import-library");
+  return response.data;
+}
+
 export async function scanWorkspaces() {
   const response = await api.post("/requests/workspaces/scan");
   return response.data;
