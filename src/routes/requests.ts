@@ -1831,7 +1831,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
                 // Always try association, even for already-imported files
                 try {
-                  const reqId = ensureSeriesRequest(s.id, seasonNum, s.title);
+                  const reqId = ensureSeriesRequest(s.id, seasonNum!, s.title);
                   if (reqId) {
                     const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
                     if (ah) {
