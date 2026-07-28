@@ -3687,16 +3687,44 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const processedDir = getProcessedDir(type);
       const linkedFiles: string[] = [];
       const srcStat = fs.existsSync(contentPath) ? fs.statSync(contentPath) : null;
+
+      // Collect inodes of ALL existing processed files for this request (from all AH rows)
+      const existingInodes = new Set<number>();
+      const allAhRows = db.prepare("SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(request.id) as any[];
+      for (const ahRow of allAhRows) {
+        try {
+          for (const f of JSON.parse(ahRow.processed_files)) {
+            try {
+              const st = fs.statSync(path.join(processedDir, f));
+              if (st.ino > 0) existingInodes.add(st.ino);
+            } catch {}
+          }
+        } catch {}
+      }
+
       if (srcStat?.isDirectory()) {
         const prefix = type === "series" ? path.basename(contentPath) : "";
         for (const entry of fs.readdirSync(contentPath)) {
           if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
           const destPath = path.join(processedDir, prefix, entry);
-          if (fs.existsSync(destPath)) linkedFiles.push(prefix ? path.join(prefix, entry) : entry);
+          if (fs.existsSync(destPath)) {
+            // Skip if same inode as existing processed file (hardlink duplicate)
+            try {
+              const st = fs.statSync(destPath);
+              if (st.ino > 0 && existingInodes.has(st.ino)) continue;
+            } catch {}
+            linkedFiles.push(prefix ? path.join(prefix, entry) : entry);
+          }
         }
       } else if (srcStat) {
         const base = path.basename(contentPath);
-        if (fs.existsSync(path.join(processedDir, base))) linkedFiles.push(base);
+        const destPath = path.join(processedDir, base);
+        if (fs.existsSync(destPath)) {
+          try {
+            const st = fs.statSync(destPath);
+            if (!(st.ino > 0 && existingInodes.has(st.ino))) linkedFiles.push(base);
+          } catch { linkedFiles.push(base); }
+        }
       }
       if (linkedFiles.length > 0) {
         if (request.status !== 'COMPLETED' && request.status !== 'DOWNLOADING' && request.status !== 'SEEDING') {
@@ -3710,6 +3738,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } else {
           db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(request.id, JSON.stringify(linkedFiles));
         }
+      } else {
+        console.log(`[MoveToProcessed] All files already linked via inode, nothing to add`);
       }
 
       console.log(`[MoveToProcessed] ${contentPath} → ${result.destination} (${linkedFiles.length} files linked)`);
@@ -4105,15 +4135,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
       if (!request) return res.status(404).json({ error: "Request not found" });
 
-      // Collect all already-associated filenames across ALL AH rows for this request
+      const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+
+      // Collect all already-associated filenames AND inodes across ALL AH rows for this request
       const allExisting = new Set<string>();
+      const existingInodes = new Set<number>();
       const allAh = db.prepare("SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'").all(id) as any[];
       for (const ah of allAh) {
-        try { JSON.parse(ah.processed_files).forEach((f: string) => allExisting.add(f)); } catch {}
+        try {
+          const arr = JSON.parse(ah.processed_files);
+          for (const f of arr) {
+            allExisting.add(f);
+            try { const st = fs.statSync(path.join(processedDir, f)); if (st.ino > 0) existingInodes.add(st.ino); } catch {}
+          }
+        } catch {}
       }
 
-      // Filter out filenames already associated
-      const newNames = fileNames.filter((f: string) => !allExisting.has(f));
+      // Filter out filenames already associated by name OR inode (hardlink dedup)
+      const newNames = fileNames.filter((f: string) => {
+        if (allExisting.has(f)) return false;
+        try { const st = fs.statSync(path.join(processedDir, f)); return !(st.ino > 0 && existingInodes.has(st.ino)); } catch { return true; }
+      });
       if (newNames.length === 0) return res.json({ success: true, message: "Already associated" });
 
       // Use or create an AH row with release_id IS NULL (library import row)
