@@ -824,7 +824,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sonarrId = Number(req.params.sonarrId);
       const series = await sonarr.getSeries(sonarrId).catch(() => null);
       if (!series) return res.status(404).json({ error: "Series not found in Sonarr" });
-      const sonarrSeasons = (series.seasons || []).map((s: any) => s.seasonNumber).filter((sn: number) => sn > 0);
+      const sonarrSeasons = (series.seasons || []).map((s: any) => s.seasonNumber);
 
       const requestedSeasons = db.prepare(
         "SELECT season, id, status, title FROM media_requests WHERE sonarr_id = ? AND type = 'series'"
