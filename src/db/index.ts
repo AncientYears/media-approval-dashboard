@@ -239,6 +239,27 @@ export function initializeDatabase(dbPath: string): DBInstance {
       } catch {}
     }
 
+    // Clean dangling filenames from processed_files that no longer exist on disk
+    const processedMoviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
+    const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+    const ahWithRequest = db.prepare(`
+      SELECT ah.id, ah.processed_files, mr.type FROM approval_history ah
+      JOIN media_requests mr ON mr.id = ah.request_id
+      WHERE ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
+    `).all() as any[];
+    for (const r of ahWithRequest) {
+      try {
+        const arr = JSON.parse(r.processed_files);
+        if (!Array.isArray(arr)) continue;
+        const baseDir = r.type === "series" ? processedTvDir : processedMoviesDir;
+        const filtered = arr.filter((f: string) => fs.existsSync(path.join(baseDir, f)));
+        if (filtered.length !== arr.length) {
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(filtered), r.id);
+          console.log(`[DB] Cleaned dangling processed_files for approval_history id=${r.id}: ${arr.length} -> ${filtered.length}`);
+        }
+      } catch {}
+    }
+
   return {
     db,
     close: () => db.close(),
