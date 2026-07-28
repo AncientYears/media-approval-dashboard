@@ -733,6 +733,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           sonarr_id: sonarrId,
           first_request_id: firstRequestId,
           seasons: mappedSeasons,
+          total_size_mb: franchiseSize,
+          total_releases: seasons.reduce((sum: number, s: any) => sum + s.release_count, 0),
+          total_covered: totalCovered,
+        });
       }
 
       // Add individual movies
