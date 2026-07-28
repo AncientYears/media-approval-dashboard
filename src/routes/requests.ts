@@ -2756,13 +2756,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?"
       ).get(id) as any;
 
-      if (!release?.torrent_hash) return res.status(400).json({ error: "No torrent tracked" });
+      if (!release?.torrent_hash) { console.log(`[RemoveFromLib] No torrent hash for request ${id}`); return res.status(400).json({ error: "No torrent tracked" }); }
 
       const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
-      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+      if (!torrent) { console.log(`[RemoveFromLib] Torrent ${release.torrent_hash.slice(0,8)} not found in qBittorrent`); return res.status(404).json({ error: "Torrent not found in qBittorrent" }); }
 
       let contentPath = torrent.content_path;
       if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
+      console.log(`[RemoveFromLib] contentPath=${contentPath} exists=${fs.existsSync(contentPath)} torrentSize=${torrent.size}`);
 
       let libraryDir = "";
 
@@ -2779,6 +2780,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           libraryDir = movie.path || movie.folderPath;
         } catch {}
       }
+      console.log(`[RemoveFromLib] libraryDir=${libraryDir} exists=${libraryDir ? fs.existsSync(libraryDir) : false}`);
 
       if (!libraryDir || !fs.existsSync(libraryDir)) {
         return res.status(500).json({ error: "Could not determine library path" });
@@ -2787,7 +2789,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // Match by inode, filename, or file size (copies don't share inodes)
       let destPath = "";
       const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
-      const contentSize = fs.existsSync(contentPath) ? fs.statSync(contentPath).size : 0;
+      console.log(`[RemoveFromLib] contentIno=${contentIno}`);
       for (const f of fs.readdirSync(libraryDir)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
         const fPath = path.join(libraryDir, f);
@@ -2801,23 +2803,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const match = fs.readdirSync(libraryDir).find((f: string) => f === contentBase);
         if (match) destPath = path.join(libraryDir, match);
       }
-      if (!destPath && contentSize > 0) {
+      if (!destPath && torrent.size > 0) {
         for (const f of fs.readdirSync(libraryDir)) {
           if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
           const fPath = path.join(libraryDir, f);
           try {
             const st = fs.statSync(fPath);
-            if (st.size === contentSize) { destPath = fPath; break; }
+            if (st.size === torrent.size) { destPath = fPath; break; }
           } catch {}
         }
       }
 
       if (!destPath) {
+        console.log(`[RemoveFromLib] No match found in ${libraryDir} (contentIno=${contentIno}, torrentSize=${torrent.size})`);
+        const libFiles = fs.readdirSync(libraryDir).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).map((f: string) => {
+          try { const s = fs.statSync(path.join(libraryDir, f)); return `${f} size=${s.size} ino=${s.ino}`; } catch { return f; }
+        });
+        console.log(`[RemoveFromLib] Library files: ${libFiles.join(", ") || "(empty)"}`);
         return res.json({ success: true, message: "File not in library", path: "" });
       }
 
       fs.rmSync(destPath, { recursive: false, force: true });
-      console.log(`[RemoveFromLibrary] Deleted ${destPath}`);
+      console.log(`[RemoveFromLib] Deleted ${destPath}`);
       res.json({ success: true, message: "Removed from library", path: destPath });
     } catch (error: any) {
       console.error("Error removing from library:", error);
