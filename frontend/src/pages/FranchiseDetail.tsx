@@ -387,6 +387,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [processedDir, setProcessedDir] = useState<string>("");
   const [movingProcessed, setMovingProcessed] = useState<string | null>(null);
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
+  const [removeLibConfirm, setRemoveLibConfirm] = useState<string | null>(null);
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
   const [procWsPickerFile, setProcWsPickerFile] = useState<string | null>(null);
   const [wsManagerIdx, setWsManagerIdx] = useState<number | null>(null);
@@ -683,7 +684,9 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                     {f.name}
                   </span>
                   {f.inLibrary && (
-                    <button className="btn btn-tiny btn-library-ok" title={`Remove ${f.name} from library`} onClick={async () => { try { await removeFromLibrary(season.request_id, f.name); await refreshProcessedAndWorkspaces(); } catch {} }}>In Library</button>
+                    <button className={`btn btn-tiny ${removeLibConfirm === f.name ? "btn-danger" : "btn-library-ok"}`} title={`Remove ${f.name} from library`} onClick={async () => { if (removeLibConfirm === f.name) { try { await removeFromLibrary(season.request_id, f.name); await refreshProcessedAndWorkspaces(); } catch {} setRemoveLibConfirm(null); } else { setRemoveLibConfirm(f.name); } }}>
+                      {removeLibConfirm === f.name ? "Remove?" : "In Library"}
+                    </button>
                   )}
                   <div className="move-actions">
                     {!f.inLibrary && (

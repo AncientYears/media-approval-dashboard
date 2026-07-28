@@ -2753,30 +2753,44 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       let contentPath = torrent.content_path;
       if (!fs.existsSync(contentPath)) contentPath = fromQBittorrentPath(contentPath);
 
-      let destPath = "";
+      let libraryDir = "";
 
       if (request.sonarr_id) {
         try {
           const series = await sonarr.getSeries(request.sonarr_id);
           const seasonNum = request.season || 1;
           const seriesFolder = series.path || path.join(process.env.MEDIA_TV || "/media/Serialy", series.title);
-          const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
-          if (fs.existsSync(seasonFolder)) {
-            const files = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-            if (files.length > 0) destPath = path.join(seasonFolder, files[0]);
-            else destPath = seasonFolder;
-          }
+          libraryDir = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
         } catch {}
       } else if (request.radarr_id) {
-        const movie = await radarr.getMovie(request.radarr_id);
-        const movieFolder = movie.path || movie.folderPath;
-        if (movieFolder) destPath = path.join(movieFolder, path.basename(contentPath));
+        try {
+          const movie = await radarr.getMovie(request.radarr_id);
+          libraryDir = movie.path || movie.folderPath;
+        } catch {}
       }
 
-      if (!destPath) return res.status(500).json({ error: "Could not determine library path" });
+      if (!libraryDir || !fs.existsSync(libraryDir)) {
+        return res.status(500).json({ error: "Could not determine library path" });
+      }
 
-      if (!fs.existsSync(destPath)) {
-        return res.json({ success: true, message: "File not in library", path: destPath });
+      // Match by inode first, then filename fallback
+      let destPath = "";
+      const contentIno = fs.existsSync(contentPath) ? fs.statSync(contentPath).ino : 0;
+      for (const f of fs.readdirSync(libraryDir)) {
+        if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+        const fPath = path.join(libraryDir, f);
+        try {
+          if (contentIno > 0 && fs.statSync(fPath).ino === contentIno) { destPath = fPath; break; }
+        } catch {}
+      }
+      if (!destPath) {
+        const contentBase = path.basename(contentPath);
+        const match = fs.readdirSync(libraryDir).find((f: string) => f === contentBase);
+        if (match) destPath = path.join(libraryDir, match);
+      }
+
+      if (!destPath) {
+        return res.json({ success: true, message: "File not in library", path: "" });
       }
 
       fs.rmSync(destPath, { recursive: false, force: true });
