@@ -100,6 +100,20 @@ export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"
 
   const stat = fs.statSync(sourcePath);
   if (stat.isDirectory()) {
+    if (type === "movie") {
+      // For movies, extract video files into flat processed dir
+      let linked = 0;
+      for (const entry of fs.readdirSync(sourcePath)) {
+        if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+        const srcFile = path.join(sourcePath, entry);
+        const dest = path.join(destDir, entry);
+        if (!fs.existsSync(dest)) {
+          try { hardlinkFile(srcFile, dest); linked++; } catch {}
+        } else { linked++; }
+      }
+      if (linked === 0) return { success: false, error: "No video files found in directory" };
+      return { success: true, destination: destDir };
+    }
     const dest = path.join(destDir, path.basename(sourcePath));
     hardlinkDirRecursive(sourcePath, dest);
     return { success: true, destination: dest };
