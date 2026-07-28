@@ -689,14 +689,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
               }
             }
-            // Also count library-imported files (processed_files without release_candidate) as full season coverage
+            // Also count library-imported files — parse episode numbers from processed_files paths
             const processedAh = db.prepare(`
-              SELECT id FROM approval_history
+              SELECT processed_files FROM approval_history
               WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
               AND processed_files IS NOT NULL AND processed_files != '[]'
             `).all(s.id) as any[];
-            if (processedAh.length > 0 && s.episode_count) {
-              for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
+            for (const pa of processedAh) {
+              const files: string[] = JSON.parse(pa.processed_files || "[]");
+              for (const pf of files) {
+                const epMatch = pf.match(/[Ee](\d{1,3})/);
+                if (epMatch) coveredEps.add(parseInt(epMatch[1], 10));
+              }
             }
             return {
               season: s.season,
@@ -864,14 +868,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
-        // Also count library-imported files as full season coverage
+        // Also count library-imported files — parse episode numbers from processed_files paths
         const processedAh = db.prepare(`
-          SELECT id FROM approval_history
+          SELECT processed_files FROM approval_history
           WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
           AND processed_files IS NOT NULL AND processed_files != '[]'
         `).all(s.id) as any[];
-        if (processedAh.length > 0 && episodeCount) {
-          for (let i = 1; i <= episodeCount; i++) coveredEps.add(i);
+        for (const pa of processedAh) {
+          const files: string[] = JSON.parse(pa.processed_files || "[]");
+          for (const pf of files) {
+            const epMatch = pf.match(/[Ee](\d{1,3})/);
+            if (epMatch) coveredEps.add(parseInt(epMatch[1], 10));
+          }
         }
 
         seasonDetails.push({
@@ -981,15 +989,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Also count library-imported files (no RC) as full season coverage
       const processedAh2 = db.prepare(`
-        SELECT id FROM approval_history
+        SELECT processed_files FROM approval_history
         WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
         AND processed_files IS NOT NULL AND processed_files != '[]'
       `).all(row.id) as any[];
-      if (processedAh2.length > 0) {
-        hasSeasonPack = true;
-        const quality = "WEB-DL";
-        for (let i = 1; i <= (sonarrEpisodes.length || row.episode_count || 0); i++) {
-          if (!epQuality[i] || quality.toLowerCase().includes("remux")) epQuality[i] = quality;
+      for (const pa of processedAh2) {
+        const files: string[] = JSON.parse(pa.processed_files || "[]");
+        for (const pf of files) {
+          const epMatch = pf.match(/[Ee](\d{1,3})/);
+          if (epMatch) {
+            const epNum = parseInt(epMatch[1], 10);
+            coveredEps.add(epNum);
+            const quality = "WEB-DL";
+            if (!epQuality[epNum] || quality.toLowerCase().includes("remux")) epQuality[epNum] = quality;
+          }
         }
       }
 
