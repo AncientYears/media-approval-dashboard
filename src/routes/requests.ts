@@ -1043,7 +1043,65 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         "SELECT id, sonarr_id, title, season, episode_count FROM media_requests WHERE sonarr_id = ? AND type = 'series' AND season = ?"
       ).get(sonarrId, seasonNum) as any;
 
-      if (!row) return res.status(404).json({ error: "Season not found" });
+      if (!row) {
+        // No DB entry — fetch from Sonarr + filesystem (e.g., Specials)
+        let sonarrEpisodes2: Array<{ episodeNumber: number; title: string; hasFile: boolean; airDateUtc?: string }> = [];
+        try {
+          const episodes2 = await sonarr.getSeasonEpisodes(sonarrId, seasonNum);
+          sonarrEpisodes2 = episodes2.map((e: any) => ({
+            episodeNumber: e.episodeNumber,
+            title: e.title,
+            hasFile: e.hasFile,
+            airDateUtc: e.airDateUtc,
+          }));
+        } catch {}
+        // Scan processed filesystem for files in S00 folder
+        const seriesObj3 = await sonarr.getSeries(sonarrId).catch(() => null);
+        const franchiseTitle3 = seriesObj3?.title || `Series ${sonarrId}`;
+        const processedTvDir3 = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+        const seasonFolder3 = path.join(processedTvDir3, franchiseTitle3, `S${String(seasonNum).padStart(2, "0")}`);
+        const coveredEpsFS = new Set<number>();
+        const epQualityFS: Record<number, string> = {};
+        try {
+          if (fs.existsSync(seasonFolder3)) {
+            for (const f of fs.readdirSync(seasonFolder3)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              const epNum = extractEpisodeFromFilename(f);
+              if (epNum != null) {
+                coveredEpsFS.add(epNum);
+                if (!epQualityFS[epNum]) epQualityFS[epNum] = "WEB-DL";
+              }
+            }
+          }
+        } catch {}
+        const episodes3 = sonarrEpisodes2.map((e: any) => ({
+          episodeNumber: e.episodeNumber,
+          title: e.title,
+          hasFile: e.hasFile,
+          covered: coveredEpsFS.has(e.episodeNumber),
+          quality: epQualityFS[e.episodeNumber] || "",
+          airDateUtc: e.airDateUtc || "",
+        }));
+        // Also add filesystem-only eps not in Sonarr
+        for (const epNum of coveredEpsFS) {
+          if (!episodes3.some((e: any) => e.episodeNumber === epNum)) {
+            episodes3.push({
+              episodeNumber: epNum,
+              title: "",
+              hasFile: false,
+              covered: true,
+              quality: epQualityFS[epNum] || "",
+              airDateUtc: "",
+            });
+          }
+        }
+        episodes3.sort((a: any, b: any) => a.episodeNumber - b.episodeNumber);
+        return res.json({
+          episodeCount: sonarrEpisodes2.length,
+          coveredCount: coveredEpsFS.size,
+          episodes: episodes3,
+        });
+      }
 
       let sonarrEpisodes: Array<{ episodeNumber: number; title: string; hasFile: boolean; airDateUtc?: string }> = [];
       try {
@@ -1962,9 +2020,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             // Create series subfolder in processed
             const seriesDest = path.join(processedTvDir, s.title);
             if (!fs.existsSync(seriesDest)) fs.mkdirSync(seriesDest, { recursive: true });
-            // Pre-create S00 folder for specials
-            const specialsDest = path.join(seriesDest, "S00");
-            if (!fs.existsSync(specialsDest)) fs.mkdirSync(specialsDest, { recursive: true });
+            // Pre-create S00 folder for specials only if Sonarr has season 0
+            if ((detail.seasons || []).some((sn: any) => sn.seasonNumber === 0)) {
+              const specialsDest = path.join(seriesDest, "S00");
+              if (!fs.existsSync(specialsDest)) fs.mkdirSync(specialsDest, { recursive: true });
+            }
             const seriesEntries = fs.readdirSync(seriesPath, { withFileTypes: true });
             const seasonDirs = seriesEntries.filter(e => e.isDirectory() && parseSeasonNumber(e.name) !== null);
             let seriesFiles = 0;
