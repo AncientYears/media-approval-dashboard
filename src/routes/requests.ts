@@ -3987,22 +3987,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // Collect all files from processedDir — flat or nested (series use SeriesName/S##/ structure)
       type ProcessedEntry = { name: string; relPath: string; fullPath: string; isDir: boolean };
       const allEntries: ProcessedEntry[] = [];
+      const targetSeason = request.type === "series" && request.season != null
+        ? `S${String(request.season).padStart(2, "0")}` : null;
       for (const entry of fs.readdirSync(processedDir, { withFileTypes: true })) {
         if (entry.name.startsWith(".")) continue;
         const fullPath = path.join(processedDir, entry.name);
         if (entry.isDirectory()) {
-          // Series subfolder — scan for season subdirs and video files
+          // Series subfolder — only scan the season dir matching this request (if applicable)
           for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
             if (!sub.isDirectory()) continue;
             if (!/^S\d+$/i.test(sub.name)) continue;
+            if (targetSeason && sub.name.toUpperCase() !== targetSeason) continue;
             const seasonDir = path.join(fullPath, sub.name);
             for (const f of fs.readdirSync(seasonDir)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
               allEntries.push({ name: f, relPath: path.join(entry.name, sub.name, f), fullPath: path.join(seasonDir, f), isDir: false });
             }
           }
-          // Also check if the dir itself is a workspace or other relevant dir
-          allEntries.push({ name: entry.name, relPath: entry.name, fullPath, isDir: true });
         } else {
           allEntries.push({ name: entry.name, relPath: entry.name, fullPath, isDir: false });
         }
