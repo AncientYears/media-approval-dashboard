@@ -4062,20 +4062,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const movie = await radarr.getMovie(request.radarr_id);
           const processedDir2 = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
           const imported: string[] = [];
+          const hasTrackedTorrent = (db.prepare("SELECT COUNT(*) as cnt FROM release_candidates WHERE request_id = ? AND torrent_hash != ''").get((request as any).id) as any).cnt > 0;
           const filePath = movie.movieFile?.path;
           if (filePath && fs.existsSync(filePath)) {
             const fileName = path.basename(filePath);
-            const destPath = path.join(processedDir2, fileName);
-            const srcIno = (() => { try { return fs.statSync(filePath).ino; } catch { return 0; } })();
-            let already = false;
-            if (srcIno > 0) {
-              for (const existing of fs.readdirSync(processedDir2)) {
-                try { if (fs.statSync(path.join(processedDir2, existing)).ino === srcIno) { already = true; break; } } catch {}
+            // Skip main movie file if request already has a tracked torrent (already in /processed via MoveToProcessed)
+            if (!hasTrackedTorrent) {
+              const destPath = path.join(processedDir2, fileName);
+              const srcIno = (() => { try { return fs.statSync(filePath).ino; } catch { return 0; } })();
+              let already = false;
+              if (srcIno > 0) {
+                for (const existing of fs.readdirSync(processedDir2)) {
+                  try { if (fs.statSync(path.join(processedDir2, existing)).ino === srcIno) { already = true; break; } } catch {}
+                }
+              } else if (fs.existsSync(destPath)) { already = true; }
+              if (!already) {
+                fs.linkSync(filePath, destPath);
+                imported.push(fileName);
               }
-            } else if (fs.existsSync(destPath)) { already = true; }
-            if (!already) {
-              fs.linkSync(filePath, destPath);
-              imported.push(fileName);
             }
           }
           const movieFolder = movie.path || path.dirname(filePath || "");
