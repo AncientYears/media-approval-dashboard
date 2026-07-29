@@ -340,6 +340,8 @@ NTFY_TOPIC=
 - **titlesMatch stop word filter**: Common English stop words (`the`, `a`, `an`, `and`, `or`, `of`, `in`, `on`, `at`, `to`, `for`, `with`, `by`, `is`, `it`, `its`) excluded from word overlap count — prevents false positives like "The Adventures of the Mole" matching "Puss in Boots".
 - **Version count excludes DOWNLOADING**: `release_count` and `total_size_mb` subqueries add `AND mr.status != 'DOWNLOADING'` so in-progress torrents are not counted as versions. Dashboard outer WHERE includes `IN ('DOWNLOADING', 'COMPLETED')` to keep visible. Managed endpoint at line 646-660.
 - **Unmatched match (series) multi-season**: `POST /unmatched/:id/match` for series scans `content_path` for season subdirectories, creates one request per detected season. Response includes `seasons` array.
+- **isSeasonPackTitle range patterns**: Handles `S##-S##` and `S##-##` ranges in torrent names (e.g. `[S01-S03]` covers S01, S02, S03). Used by franchise coverage detection.
+- **Startup title cleanup**: Skips title check for RCs where the request has `sonarr_id` or `radarr_id` — ID-based link is more reliable than string matching (handles bilingual titles). Uses `titlesMatch()` for remaining unlinked RCs.
 
 ## Testing Checklist
 
@@ -384,3 +386,8 @@ NTFY_TOPIC=
 - [ ] Dashboard: franchise grouping shows all seasons from Sonarr (X/Y requested)
 - [ ] Dashboard: unrequested seasons shown dimmed (opacity 0.4)
 - [ ] Scan Downloads: title+season mismatch detection frees wrongly-linked RCs
+- [ ] Multi-season pack (S01-S03) shows all seasons covered in franchise view
+- [ ] isSeasonPackTitle handles S##-## range (e.g. "S01-S03" covers season 2)
+- [ ] Startup cleanup doesn't delete RCs for bilingual/alternate-title series
+- [ ] Unmatched match creates multi-season requests from content_path scan
+- [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
