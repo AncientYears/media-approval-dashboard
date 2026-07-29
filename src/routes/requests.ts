@@ -52,7 +52,15 @@ function normalizeTitleForMatch(s: string): string {
 
 function isSeasonPackTitle(title: string, season: number): boolean {
   const seasonPattern = new RegExp(`\\bS${String(season).padStart(2, "0")}\\b`, "i");
-  return seasonPattern.test(title) && !/\bE\d{1,3}\b/i.test(title);
+  if (seasonPattern.test(title) && !/\bE\d{1,3}\b/i.test(title)) return true;
+  // Check season range patterns like S01-S03 or S01-03
+  const range = title.match(/\bS(\d{1,2})\s*[-–]\s*S?(\d{1,2})\b/i);
+  if (range) {
+    const start = parseInt(range[1], 10);
+    const end = parseInt(range[2], 10);
+    if (season >= start && season <= end) return true;
+  }
+  return false;
 }
 
 function extractEpisodeFromFilename(filePath: string): number | null {
