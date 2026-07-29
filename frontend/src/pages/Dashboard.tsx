@@ -277,10 +277,6 @@ export default function Dashboard() {
               }
             }
             setModal({ title: "Scan Downloads", lines });
-            if (result.noMatch > 0) {
-              // Modal auto-closes after 2s — unmatched entries show in the inline panel below
-              setTimeout(() => { setModal(null); loadData(); }, 2000);
-            }
             loadData();
           }}>Scan Downloads</button>
           <button className="btn btn-primary btn-tiny" onClick={async () => {
