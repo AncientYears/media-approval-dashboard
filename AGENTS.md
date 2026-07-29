@@ -147,8 +147,32 @@ Download (100% complete)
 5. **Otherwise**: grabs via Radarr/Sonarr `/api/v3/release` (their native flow)
 6. Detects new torrent in qBittorrent, updates `release_candidates.torrent_hash`
 7. Status transitions to DOWNLOADING
+## Unmatched Flow (Scan Downloads)
 
-## Franchise Management (2-Layer UI)
+### Automatic Match (POST /scan-downloads)
+1. Button "Scan Downloads" in Dashboard toolbar
+2. Backend scans ALL qBittorrent torrents
+3. For each torrent, tries `titlesMatch()` against existing Sonarr/Radarr series
+4. **Match found**: creates/reuses `media_requests`, creates RC + approval_history, status DOWNLOADING
+5. **Multi-season packs**: scans `content_path` for season subdirectories → one request per season
+6. **No match**: inserts into `unmatched_torrents` table with pre-fetched candidates (10+ per lookup)
+7. Results displayed in modal; unmatched entries shown in inline panel below
+
+### Manual Match (Inline Panel)
+1. `<UnmatchedTorrentsPanel />` renders below managed cards if unmatched entries exist
+2. Each entry shows torrent name, type badge, size, candidate buttons
+3. **Click a candidate**: `POST /unmatched/:id/match` — creates RC + request via Sonarr/Radarr lookup
+4. **Skip**: `POST /unmatched/:id/skip` — marks as skipped, removed from panel
+5. Matched entries immediately appear as managed cards with DOWNLOADING status
+
+### Startup Cleanup
+- Startup iterates all RCs with torrent hashes
+- **Skips title check** for RCs where request has `sonarr_id`/`radarr_id` (ID link trusted)
+- Uses `titlesMatch()` for remaining unlinked RCs
+- Season check uses `\bS{req_season}\b` to handle multi-season packs
+- Removes RCs where torrent is gone from qBittorrent
+
+
 
 ### Layer 1 — Franchise Overview (`/franchise/:sonarrId`)
 - Shows all seasons as clickable rows with colored filled/missing badges (e.g. `12/24` green, `8 missing` red)
