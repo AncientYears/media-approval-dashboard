@@ -1858,7 +1858,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const lookup = await radarr.lookupMovie(lookupTitle);
               for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
-                if (titlesMatch(foundNorm, tNorm)) {
+                const altTitles = (found.alternativeTitles || found.alternateTitles || []).map((a: any) => normalizeTitleForMatch(a.title || ""));
+                const allTitles = [foundNorm, ...altTitles];
+                const matchFound = allTitles.some((t: string) => titlesMatch(t, tNorm));
+                if (matchFound) {
+                  const existingLocal = [...existingRadarrByTitle.values()].find((m: any) => m.tmdbId === found.tmdbId || m.title?.toLowerCase() === found.title?.toLowerCase());
+                  if (existingLocal) {
+                    radarrId = existingLocal.id;
+                    matchedTitle = existingLocal.title;
+                    matchedRadarr = existingLocal;
+                    console.log(`[ScanDownloads] Matched lookup "${found.title}" to existing Radarr movie #${radarrId} "${matchedTitle}"`);
+                    break;
+                  }
                   try {
                     const added = await radarr.addMovie({
                       ...found,
@@ -1869,7 +1880,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                     });
                     radarrId = added.id;
                     matchedTitle = found.title;
-                    existingRadarrByTitle.set(found.title.toLowerCase(), { id: added.id, title: found.title });
+                    existingRadarrByTitle.set(found.title.toLowerCase(), added);
                     console.log(`[ScanDownloads] Created Radarr: ${found.title} (radarr_id=${added.id})`);
                   } catch (addErr: any) {
                     console.error(`[ScanDownloads] Radarr addMovie failed for "${found.title}": ${addErr.message}`);
@@ -1889,7 +1900,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const lookup = await sonarr.lookupSeries(lookupTitle);
               for (const found of lookup) {
                 const foundNorm = normalizeTitleForMatch(found.title);
-                if (titlesMatch(foundNorm, tNorm)) {
+                // Check main title and alternate titles (handles foreign-language torrents matching English Sonarr entries)
+                const altTitles = (found.alternateTitles || []).map((a: any) => normalizeTitleForMatch(a.title || ""));
+                const allTitles = [foundNorm, ...altTitles];
+                const matchFound = allTitles.some((t: string) => titlesMatch(t, tNorm));
+                if (matchFound) {
+                  // Check if this series already exists in Sonarr (don't try to add duplicates)
+                  const existingLocal = [...existingSonarrByTitle.values()].find((s: any) => s.tvdbId === found.tvdbId || s.title?.toLowerCase() === found.title?.toLowerCase());
+                  if (existingLocal) {
+                    sonarrId = existingLocal.id;
+                    matchedTitle = existingLocal.title;
+                    matchedSonarr = { ...existingLocal, alternateTitles: found.alternateTitles };
+                    console.log(`[ScanDownloads] Matched lookup "${found.title}" to existing Sonarr series #${sonarrId} "${matchedTitle}"`);
+                    break;
+                  }
                   try {
                     const added = await sonarr.addSeries({
                       ...found,
