@@ -61,7 +61,7 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
     running = true;
 
     try {
-      const movies = await radarr.getWantedMovies();
+      const movies = await radarr.getAllMovies();
       const wanted = movies.filter((m: any) => !m.hasFile && m.monitored);
       const wantedIds = new Set(wanted.map((m: any) => m.id));
 
