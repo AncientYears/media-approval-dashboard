@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import path from "path";
 import { initializeDatabase } from "./db/index";
-import { createRequestRoutes } from "./routes/requests";
+import { createRequestRoutes, titlesMatch } from "./routes/requests";
 import { RadarrService } from "./services/radarr";
 import { SonarrService } from "./services/sonarr";
 import { QBittorrentService } from "./services/qbittorrent";
@@ -115,21 +115,7 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         const tn = tnRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
         const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
         const req = reqRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
-        const isPrefix = tn.startsWith(req) || req.startsWith(tn);
-        const isIncluded = (req.length >= 10 && tn.includes(req)) || (tn.length >= 10 && req.includes(tn));
-        let isWordMatch = false;
-        if (!isPrefix && !isIncluded) {
-          const shorter = req.length <= tn.length ? req : tn;
-          const longer = req.length > tn.length ? req : tn;
-          const shortWords = shorter.split(/\s+/).filter((w: string) => w.length >= 3);
-          const longSet = new Set(longer.split(/\s+/));
-          if (shortWords.length >= 2) {
-            const matched = shortWords.filter((w: string) => longSet.has(w));
-            if (matched.length === shortWords.length) isWordMatch = true;
-            if (shortWords.length >= 4 && matched.length >= shortWords.length - 1) isWordMatch = true;
-          }
-        }
-        const isMatch = isPrefix || isIncluded || isWordMatch;
+        const isMatch = titlesMatch(req, tn);
         let reason = "";
         if (!isMatch) {
           reason = `title mismatch (is "${t.name}")`;

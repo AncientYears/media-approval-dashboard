@@ -74,7 +74,7 @@ function extractEpisodeFromFilename(filePath: string): number | null {
   return null;
 }
 
-function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
+export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
   if (torrentNorm.startsWith(lookupNorm)) {
     const suffix = torrentNorm.slice(lookupNorm.length).trimStart();
