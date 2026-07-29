@@ -34,7 +34,7 @@ export default function UnmatchedTorrentsPanel() {
   async function handleMatch(entry: UnmatchedEntry, index: number) {
     setActionId(entry.id);
     try {
-      const result = await matchUnmatched(entry.id, index);
+      await matchUnmatched(entry.id, index);
       await load();
     } catch (e: any) {
       alert(`Match failed: ${e.response?.data?.error || e.message}`);
