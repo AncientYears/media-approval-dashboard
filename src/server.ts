@@ -134,12 +134,11 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         if (!isMatch) {
           reason = `title mismatch (is "${t.name}")`;
         } else if (rc.req_season != null) {
-          const tnSeasonMatch = t.name.toUpperCase().match(/\bS(\d{1,2})(?:E\d|\b)/);
-          if (tnSeasonMatch) {
-            const torrentSeason = parseInt(tnSeasonMatch[1], 10);
-            if (torrentSeason !== rc.req_season) {
-              reason = `season mismatch (torrent is S${String(torrentSeason).padStart(2, "0")})`;
-            }
+          const seasonStr = `S${String(rc.req_season).padStart(2, "0")}`;
+          const seasonRegex = new RegExp(`\\b${seasonStr}\\b`, 'i');
+          const anySeasonRegex = /\bS\d{1,2}\b/i;
+          if (anySeasonRegex.test(t.name) && !seasonRegex.test(t.name)) {
+            reason = `season mismatch (torrent lacks ${seasonStr})`;
           }
         }
         if (reason) {
