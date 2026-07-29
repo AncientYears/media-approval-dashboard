@@ -35,7 +35,7 @@ export default function UnmatchedTorrentsPanel() {
     setActionId(entry.id);
     try {
       const result = await matchUnmatched(entry.id, index);
-      console.log(`[Unmatched] Matched #${entry.id}: ${result.title}`, result);
+      console.log(`[Unmatched] Matched #${entry.id}: ${result.title}${result.seasons ? ` S${result.seasons.join(", S")}` : ""}`, result);
       await load();
     } catch (e: any) {
       alert(`Match failed: ${e.response?.data?.error || e.message}`);

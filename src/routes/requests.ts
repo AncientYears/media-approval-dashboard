@@ -647,17 +647,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           SELECT mr.*, 
             (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2 
              JOIN approval_history ah2 ON ah2.release_id = rc2.id 
-             WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+              WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '' AND mr.status != 'DOWNLOADING') as total_size_mb,
             (SELECT COUNT(*) FROM release_candidates rc3 
              JOIN approval_history ah3 ON ah3.release_id = rc3.id 
-             WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count,
-              (SELECT COALESCE(SUM(json_array_length(ah4.processed_files)), 0) FROM approval_history ah4 
-               WHERE ah4.request_id = mr.id AND ah4.release_id IS NULL
-               AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
-          FROM media_requests mr
-          WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED', 'NEW')
+             WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '' AND mr.status != 'DOWNLOADING') as release_count,
+           (SELECT COALESCE(SUM(json_array_length(ah4.processed_files)), 0) FROM approval_history ah4 
+                WHERE ah4.request_id = mr.id AND ah4.release_id IS NULL
+                AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
+           FROM media_requests mr
+           WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED', 'NEW')
         ) sub
-        WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.processed_count > 0 OR sub.status = 'COMPLETED'
+        WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.processed_count > 0 OR sub.status IN ('DOWNLOADING', 'COMPLETED')
         ORDER BY sub.title
       `).all() as any[];
 
@@ -961,10 +961,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         SELECT mr.*,
           (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
            JOIN approval_history ah2 ON ah2.release_id = rc2.id AND ah2.request_id = mr.id
-           WHERE rc2.torrent_hash != '') as total_size_mb,
-          (SELECT COUNT(*) FROM release_candidates rc3
-           JOIN approval_history ah3 ON ah3.release_id = rc3.id AND ah3.request_id = mr.id
-           WHERE rc3.torrent_hash != '') as release_count,
+           WHERE rc2.torrent_hash != '' AND mr.status != 'DOWNLOADING') as total_size_mb,
+           (SELECT COUNT(*) FROM release_candidates rc3
+            JOIN approval_history ah3 ON ah3.release_id = rc3.id AND ah3.request_id = mr.id
+            WHERE rc3.torrent_hash != '' AND mr.status != 'DOWNLOADING') as release_count,
           (SELECT COUNT(*) FROM release_candidates rc4
            WHERE rc4.request_id = mr.id) as total_candidates
         FROM media_requests mr
@@ -2192,29 +2192,51 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           });
           sonarrId = added.id;
         }
-        const season = req.body.season != null ? req.body.season : 1;
-        const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(sonarrId, season) as any;
-        let requestId: number;
-        if (existingReq) {
-          requestId = existingReq.id;
-          if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
-            db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+        // Detect multi-season packs by scanning content_path
+        let seasonsToCreate: number[] = [];
+        try {
+          const torrents = await qbittorrent.getTorrents();
+          const t = torrents.find((t2: any) => t2.hash === row.torrent_hash);
+          if (t?.content_path) {
+            const cp = fromQBittorrentPath(t.content_path);
+            if (cp && fs.existsSync(cp) && fs.statSync(cp).isDirectory()) {
+              for (const entry of fs.readdirSync(cp)) {
+                const sn = parseSeasonNumber(entry);
+                if (sn !== null) seasonsToCreate.push(sn);
+              }
+            }
           }
-        } else {
-          const result = db.prepare(
-            "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by) VALUES (?, 'series', ?, ?, 'DOWNLOADING', '[]')"
-          ).run(pick.title, sonarrId, season);
-          requestId = result.lastInsertRowid as number;
+        } catch {}
+        if (seasonsToCreate.length === 0) {
+          const defaultSeason = req.body.season != null ? req.body.season : 1;
+          seasonsToCreate = [defaultSeason];
         }
-        const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
-        if (!existingRc) {
-          const rcResult = db.prepare(
-            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
-          ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
-          db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
+        const createdSeasons: number[] = [];
+        for (const s of seasonsToCreate) {
+          const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(sonarrId, s) as any;
+          let requestId: number;
+          if (existingReq) {
+            requestId = existingReq.id;
+            if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+              db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+            }
+          } else {
+            const result = db.prepare(
+              "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by) VALUES (?, 'series', ?, ?, 'DOWNLOADING', '[]')"
+            ).run(pick.title, sonarrId, s);
+            requestId = result.lastInsertRowid as number;
+          }
+          const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
+          if (!existingRc) {
+            const rcResult = db.prepare(
+              "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+            ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
+            db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
+          }
+          createdSeasons.push(s);
         }
         db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(sonarrId, pick.title, id);
-        res.json({ success: true, type: "series", request_id: requestId, season, title: pick.title });
+        res.json({ success: true, type: "series", seasons: createdSeasons, title: pick.title });
       }
     } catch (error: any) {
       console.error("[Unmatched Match] Error:", error.message);
@@ -2815,11 +2837,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         SELECT mr.status,
           (SELECT COALESCE(SUM(rc2.size_mb), 0) FROM release_candidates rc2
            JOIN approval_history ah2 ON ah2.release_id = rc2.id
-           WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '') as total_size_mb,
+            WHERE ah2.request_id = mr.id AND rc2.torrent_hash != '' AND mr.status != 'DOWNLOADING') as total_size_mb,
           (SELECT COUNT(*) FROM release_candidates rc3
            JOIN approval_history ah3 ON ah3.release_id = rc3.id
-           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '') as release_count
-        FROM media_requests mr WHERE mr.id = ?
+           WHERE ah3.request_id = mr.id AND rc3.torrent_hash != '' AND mr.status != 'DOWNLOADING') as release_count
+         FROM media_requests mr WHERE mr.id = ?
       `).get(movieId) as any || {};
     };
 

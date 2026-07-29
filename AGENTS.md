@@ -336,6 +336,9 @@ NTFY_TOPIC=
 - **Processed endpoint series scanning**: Only scans the specific season subfolder matching the request's season (e.g. only `S02/` for season 2), not all seasons. No longer adds directory entries as files.
 - **PollRadarr reliability**: Uses `getAllMovies()` with JS filtering instead of `getWantedMovies()` to avoid Radarr server-side filtering inconsistencies.
 - **Startup DB cleanup order**: Dedup → dangling cleanup → merge null-release_id rows → migrate non-null processed_files to null rows → inode dedup
+- **titlesMatch stop word filter**: Common English stop words (`the`, `a`, `an`, `and`, `or`, `of`, `in`, `on`, `at`, `to`, `for`, `with`, `by`, `is`, `it`, `its`) excluded from word overlap count — prevents false positives like "The Adventures of the Mole" matching "Puss in Boots".
+- **Version count excludes DOWNLOADING**: `release_count` and `total_size_mb` subqueries add `AND mr.status != 'DOWNLOADING'` so in-progress torrents are not counted as versions. Dashboard outer WHERE includes `IN ('DOWNLOADING', 'COMPLETED')` to keep visible. Managed endpoint at line 646-660.
+- **Unmatched match (series) multi-season**: `POST /unmatched/:id/match` for series scans `content_path` for season subdirectories, creates one request per detected season. Response includes `seasons` array.
 
 ## Testing Checklist
 
