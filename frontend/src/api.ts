@@ -302,3 +302,18 @@ export async function fetchSeasonEpisodes(sonarrId: number, season: number) {
   const response = await api.get(`/requests/managed/${sonarrId}/season/${season}/episodes`);
   return response.data;
 }
+
+export async function fetchUnmatched() {
+  const response = await api.get("/requests/unmatched");
+  return response.data;
+}
+
+export async function matchUnmatched(id: number, candidateIndex: number, season?: number) {
+  const response = await api.post(`/requests/unmatched/${id}/match`, { candidateIndex, season });
+  return response.data;
+}
+
+export async function skipUnmatched(id: number) {
+  const response = await api.post(`/requests/unmatched/${id}/skip`);
+  return response.data;
+}

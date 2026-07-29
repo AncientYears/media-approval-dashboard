@@ -103,6 +103,22 @@ export function initializeDatabase(dbPath: string): DBInstance {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS unmatched_torrents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      torrent_name TEXT NOT NULL,
+      torrent_hash TEXT NOT NULL UNIQUE,
+      save_path TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
+      size INTEGER DEFAULT 0,
+      lookup_title TEXT NOT NULL,
+      candidate_results TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      matched_at TEXT,
+      matched_id INTEGER,
+      matched_title TEXT,
+      skipped INTEGER DEFAULT 0
+    );
+
     CREATE INDEX IF NOT EXISTS idx_media_requests_status ON media_requests(status);
     CREATE INDEX IF NOT EXISTS idx_release_candidates_request ON release_candidates(request_id);
     CREATE INDEX IF NOT EXISTS idx_approval_history_request ON approval_history(request_id);
@@ -378,6 +394,23 @@ export function initializeDatabase(dbPath: string): DBInstance {
         }
       } catch {}
     }
+
+    // Migration: create unmatched_torrents table if not exists
+    db.exec(`CREATE TABLE IF NOT EXISTS unmatched_torrents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      torrent_name TEXT NOT NULL,
+      torrent_hash TEXT NOT NULL UNIQUE,
+      save_path TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
+      size INTEGER DEFAULT 0,
+      lookup_title TEXT NOT NULL,
+      candidate_results TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      matched_at TEXT,
+      matched_id INTEGER,
+      matched_title TEXT,
+      skipped INTEGER DEFAULT 0
+    )`);
 
   return {
     db,

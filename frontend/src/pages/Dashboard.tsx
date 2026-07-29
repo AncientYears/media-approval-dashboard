@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
+import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -353,6 +354,8 @@ export default function Dashboard() {
           }}>Scan Workspaces</button>
         </div>
       </div>
+
+      <UnmatchedTorrentsPanel />
 
       {(Object.keys(groupedFranchises).length > 0 || ungroupedRequests.length > 0) && (
         <div className="dashboard-section">
