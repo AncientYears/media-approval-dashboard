@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
+import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchUnmatched, matchUnmatched, skipUnmatched } from "../api";
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 
 function formatSize(mb: number): string {
@@ -84,6 +84,8 @@ export default function Dashboard() {
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
+  const [unmatchedList, setUnmatchedList] = useState<any[] | null>(null);
+  const [unmatchedActionId, setUnmatchedActionId] = useState<number | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -183,6 +185,64 @@ export default function Dashboard() {
         />
       )}
 
+      {unmatchedList && unmatchedList.length > 0 && (
+        <div className="modal-overlay" onClick={() => setUnmatchedList(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 600 }}>
+            <h3 className="modal-title">Unmatched Torrents ({unmatchedList.length})</h3>
+            <div className="modal-body">
+              {unmatchedList.map((entry: any) => (
+                <div key={entry.id} style={{ marginBottom: 16, padding: 8, border: "1px solid #334155", borderRadius: 4 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>{entry.torrent_name.slice(0, 80)}</div>
+                  <div style={{ marginBottom: 6, fontSize: 11, color: "#94a3b8" }}>{entry.type} · {Math.round(entry.size / (1024 * 1024))} MB</div>
+                  {(entry.candidate_results || []).map((c: any, i: number) => (
+                    <button key={i}
+                      disabled={unmatchedActionId === entry.id}
+                      onClick={async () => {
+                        setUnmatchedActionId(entry.id);
+                        try {
+                          await matchUnmatched(entry.id, i);
+                          setUnmatchedList(prev => prev?.filter((e: any) => e.id !== entry.id) || null);
+                          loadData();
+                        } catch (e: any) {
+                          alert(`Match failed: ${e.response?.data?.error || e.message}`);
+                        } finally {
+                          setUnmatchedActionId(null);
+                        }
+                      }}
+                      style={{
+                        display: "block", width: "100%", textAlign: "left", padding: "5px 8px", marginBottom: 3,
+                        background: i === 0 ? "#1e3a5f" : "var(--card-bg, #1e293b)",
+                        border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0", cursor: "pointer", fontSize: 12,
+                      }}>
+                      {c.title}{c.year ? ` (${c.year})` : ""}
+                    </button>
+                  ))}
+                  <button
+                    disabled={unmatchedActionId === entry.id}
+                    onClick={async () => {
+                      setUnmatchedActionId(entry.id);
+                      try {
+                        await skipUnmatched(entry.id);
+                        setUnmatchedList(prev => prev?.filter((e: any) => e.id !== entry.id) || null);
+                      } catch (e: any) {
+                        alert(`Skip failed: ${e.response?.data?.error || e.message}`);
+                      } finally {
+                        setUnmatchedActionId(null);
+                      }
+                    }}
+                    style={{ marginTop: 4, padding: "3px 10px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>
+                    Skip
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={() => setUnmatchedList(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="filter-bar">
         <div className="filter-group">
           <label>Status</label>
@@ -277,6 +337,12 @@ export default function Dashboard() {
               }
             }
             setModal({ title: "Scan Downloads", lines });
+            if (result.noMatch > 0) {
+              try {
+                const u = await fetchUnmatched();
+                setUnmatchedList(u || []);
+              } catch {}
+            }
             loadData();
           }}>Scan Downloads</button>
           <button className="btn btn-primary btn-tiny" onClick={async () => {

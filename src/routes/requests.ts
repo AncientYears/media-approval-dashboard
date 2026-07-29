@@ -81,9 +81,11 @@ function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   if (lookupNorm.length >= 10 && torrentNorm.includes(lookupNorm)) return true;
   if (torrentNorm.length >= 10 && lookupNorm.includes(torrentNorm)) return true;
 
+  const STOP_WORDS = new Set(["the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "by", "is", "it", "its"]);
+
   const shorter = lookupNorm.length <= torrentNorm.length ? lookupNorm : torrentNorm;
   const longer = lookupNorm.length > torrentNorm.length ? lookupNorm : torrentNorm;
-  const shorterWords = shorter.split(/\s+/).filter((w: string) => w.length >= 3);
+  const shorterWords = shorter.split(/\s+/).filter((w: string) => w.length >= 3 && !STOP_WORDS.has(w));
   const longerSet = new Set(longer.split(/\s+/));
   if (shorterWords.length >= 2) {
     const matched = shorterWords.filter((w: string) => longerSet.has(w));
@@ -2090,6 +2092,141 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       console.error("Error scanning downloads:", error);
       res.status(500).json({ error: `Failed to scan downloads: ${error.message}` });
     }
+  });
+
+  // GET /api/requests/unmatched — list unmatched torrents awaiting user match
+  router.get("/unmatched", (req: Request, res: Response) => {
+    const rows = db.prepare(
+      "SELECT * FROM unmatched_torrents WHERE matched_at IS NULL AND skipped = 0 ORDER BY created_at DESC"
+    ).all();
+    for (const r of rows as any[]) {
+      try { r.candidate_results = JSON.parse(r.candidate_results || "[]"); } catch { r.candidate_results = []; }
+    }
+    res.json(rows);
+  });
+
+  // POST /api/requests/unmatched/:id/match — user picks a candidate
+  router.post("/unmatched/:id/match", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { candidateIndex } = req.body;
+      const row = db.prepare("SELECT * FROM unmatched_torrents WHERE id = ?").get(id) as any;
+      if (!row) return res.status(404).json({ error: "Unmatched entry not found" });
+      const candidates: any[] = typeof row.candidate_results === "string" ? JSON.parse(row.candidate_results) : row.candidate_results;
+      const pick = candidates[candidateIndex];
+      if (!pick) return res.status(400).json({ error: "Invalid candidate index" });
+
+      // Fetch profiles
+      const radarrProfiles = await radarr.getQualityProfiles().catch(() => []);
+      const sonarrProfiles = await sonarr.getQualityProfiles().catch(() => []);
+      const radarrRootFolders = await radarr.getRootFolders().catch(() => []);
+      const sonarrRootFolders = await sonarr.getRootFolders().catch(() => []);
+      const radarrProfileId = req.body.radarrProfileId || radarrProfiles[0]?.id;
+      const sonarrProfileId = req.body.sonarrProfileId || sonarrProfiles[0]?.id;
+      const radarrRootPath = radarrRootFolders[0]?.path || "";
+      const sonarrRootPath = sonarrRootFolders[0]?.path || "";
+
+      if (row.type === "movie") {
+        const lookup = await radarr.lookupMovie(pick.title);
+        const found = lookup.find((f: any) => f.tmdbId === pick.id || f.title?.toLowerCase() === pick.title?.toLowerCase());
+        if (!found) return res.status(400).json({ error: "Movie not found in Radarr lookup" });
+        // Check if already in Radarr
+        const allMovies = await radarr.getAllMovies();
+        const existingMovie = allMovies.find((m: any) => m.tmdbId === found.tmdbId || m.title?.toLowerCase() === found.title?.toLowerCase());
+        let radarrId: number;
+        if (existingMovie) {
+          radarrId = existingMovie.id;
+        } else {
+          const added = await radarr.addMovie({
+            ...found,
+            qualityProfileId: radarrProfileId,
+            rootFolderPath: radarrRootPath,
+            monitored: true,
+            addOptions: { searchForMovie: false },
+          });
+          radarrId = added.id;
+        }
+        // Create request + RC + approval
+        const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ?").get(radarrId) as any;
+        let requestId: number;
+        if (existingReq) {
+          requestId = existingReq.id;
+          if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+            db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+          }
+        } else {
+          const result = db.prepare(
+            "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
+          ).run(pick.title, radarrId);
+          requestId = result.lastInsertRowid as number;
+        }
+        const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
+        if (!existingRc) {
+          const rcResult = db.prepare(
+            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+          ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
+          db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
+        }
+        db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(radarrId, pick.title, id);
+        res.json({ success: true, type: "movie", request_id: requestId, title: pick.title });
+      } else {
+        // Series path
+        const lookup = await sonarr.lookupSeries(pick.title);
+        const found = lookup.find((f: any) => f.tvdbId === pick.id || f.title?.toLowerCase() === pick.title?.toLowerCase());
+        if (!found) return res.status(400).json({ error: "Series not found in Sonarr lookup" });
+        // Check if already in Sonarr
+        const allSeries = await sonarr.getAllSeries();
+        const existingSeries = allSeries.find((s: any) => s.tvdbId === found.tvdbId || s.title?.toLowerCase() === found.title?.toLowerCase());
+        let sonarrId: number;
+        if (existingSeries) {
+          sonarrId = existingSeries.id;
+        } else {
+          const added = await sonarr.addSeries({
+            ...found,
+            qualityProfileId: sonarrProfileId,
+            path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
+            monitored: true,
+            seasonFolder: true,
+            addOptions: { searchForMissingEpisodes: false },
+            seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
+          });
+          sonarrId = added.id;
+        }
+        const season = req.body.season != null ? req.body.season : 1;
+        const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(sonarrId, season) as any;
+        let requestId: number;
+        if (existingReq) {
+          requestId = existingReq.id;
+          if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+            db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+          }
+        } else {
+          const result = db.prepare(
+            "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by) VALUES (?, 'series', ?, ?, 'DOWNLOADING', '[]')"
+          ).run(pick.title, sonarrId, season);
+          requestId = result.lastInsertRowid as number;
+        }
+        const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
+        if (!existingRc) {
+          const rcResult = db.prepare(
+            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+          ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
+          db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
+        }
+        db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(sonarrId, pick.title, id);
+        res.json({ success: true, type: "series", request_id: requestId, season, title: pick.title });
+      }
+    } catch (error: any) {
+      console.error("[Unmatched Match] Error:", error.message);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/unmatched/:id/skip — skip this unmatched entry
+  router.post("/unmatched/:id/skip", (req: Request, res: Response) => {
+    const { id } = req.params;
+    db.prepare("UPDATE unmatched_torrents SET skipped = 1 WHERE id = ?").run(id);
+    res.json({ success: true });
   });
 
   // POST /api/requests/import-library - Scan Radarr/Sonarr library, hardlink files into processed dirs
@@ -5249,141 +5386,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     const rcs = db.prepare("SELECT rc.* FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ?").all(id);
     const ahs = db.prepare("SELECT * FROM approval_history WHERE request_id = ?").all(id);
     res.json({ request, release_candidates: rcs, approval_history: ahs });
-  });
-
-  // GET /api/requests/unmatched — list unmatched torrents awaiting user match
-  router.get("/unmatched", (req: Request, res: Response) => {
-    const rows = db.prepare(
-      "SELECT * FROM unmatched_torrents WHERE matched_at IS NULL AND skipped = 0 ORDER BY created_at DESC"
-    ).all();
-    for (const r of rows as any[]) {
-      try { r.candidate_results = JSON.parse(r.candidate_results || "[]"); } catch { r.candidate_results = []; }
-    }
-    res.json(rows);
-  });
-
-  // POST /api/requests/unmatched/:id/match — user picks a candidate
-  router.post("/unmatched/:id/match", async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-      const { candidateIndex } = req.body;
-      const row = db.prepare("SELECT * FROM unmatched_torrents WHERE id = ?").get(id) as any;
-      if (!row) return res.status(404).json({ error: "Unmatched entry not found" });
-      const candidates: any[] = typeof row.candidate_results === "string" ? JSON.parse(row.candidate_results) : row.candidate_results;
-      const pick = candidates[candidateIndex];
-      if (!pick) return res.status(400).json({ error: "Invalid candidate index" });
-
-      // Fetch profiles
-      const radarrProfiles = await radarr.getQualityProfiles().catch(() => []);
-      const sonarrProfiles = await sonarr.getQualityProfiles().catch(() => []);
-      const radarrRootFolders = await radarr.getRootFolders().catch(() => []);
-      const sonarrRootFolders = await sonarr.getRootFolders().catch(() => []);
-      const radarrProfileId = req.body.radarrProfileId || radarrProfiles[0]?.id;
-      const sonarrProfileId = req.body.sonarrProfileId || sonarrProfiles[0]?.id;
-      const radarrRootPath = radarrRootFolders[0]?.path || "";
-      const sonarrRootPath = sonarrRootFolders[0]?.path || "";
-
-      if (row.type === "movie") {
-        const lookup = await radarr.lookupMovie(pick.title);
-        const found = lookup.find((f: any) => f.tmdbId === pick.id || f.title?.toLowerCase() === pick.title?.toLowerCase());
-        if (!found) return res.status(400).json({ error: "Movie not found in Radarr lookup" });
-        // Check if already in Radarr
-        const allMovies = await radarr.getAllMovies();
-        const existingMovie = allMovies.find((m: any) => m.tmdbId === found.tmdbId || m.title?.toLowerCase() === found.title?.toLowerCase());
-        let radarrId: number;
-        if (existingMovie) {
-          radarrId = existingMovie.id;
-        } else {
-          const added = await radarr.addMovie({
-            ...found,
-            qualityProfileId: radarrProfileId,
-            rootFolderPath: radarrRootPath,
-            monitored: true,
-            addOptions: { searchForMovie: false },
-          });
-          radarrId = added.id;
-        }
-        // Create request + RC + approval
-        const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ?").get(radarrId) as any;
-        let requestId: number;
-        if (existingReq) {
-          requestId = existingReq.id;
-          if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
-            db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
-          }
-        } else {
-          const result = db.prepare(
-            "INSERT INTO media_requests (title, type, radarr_id, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
-          ).run(pick.title, radarrId);
-          requestId = result.lastInsertRowid as number;
-        }
-        const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
-        if (!existingRc) {
-          const rcResult = db.prepare(
-            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
-          ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
-          db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
-        }
-        db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(radarrId, pick.title, id);
-        res.json({ success: true, type: "movie", request_id: requestId, title: pick.title });
-      } else {
-        // Series path
-        const lookup = await sonarr.lookupSeries(pick.title);
-        const found = lookup.find((f: any) => f.tvdbId === pick.id || f.title?.toLowerCase() === pick.title?.toLowerCase());
-        if (!found) return res.status(400).json({ error: "Series not found in Sonarr lookup" });
-        // Check if already in Sonarr
-        const allSeries = await sonarr.getAllSeries();
-        const existingSeries = allSeries.find((s: any) => s.tvdbId === found.tvdbId || s.title?.toLowerCase() === found.title?.toLowerCase());
-        let sonarrId: number;
-        if (existingSeries) {
-          sonarrId = existingSeries.id;
-        } else {
-          const added = await sonarr.addSeries({
-            ...found,
-            qualityProfileId: sonarrProfileId,
-            path: sonarrRootPath ? `${sonarrRootPath}/${found.title}` : found.path,
-            monitored: true,
-            seasonFolder: true,
-            addOptions: { searchForMissingEpisodes: false },
-            seasons: (found.seasons || []).map((s: any) => ({ ...s, monitored: true })),
-          });
-          sonarrId = added.id;
-        }
-        const season = req.body.season != null ? req.body.season : 1;
-        const existingReq = db.prepare("SELECT id, status FROM media_requests WHERE sonarr_id = ? AND season = ?").get(sonarrId, season) as any;
-        let requestId: number;
-        if (existingReq) {
-          requestId = existingReq.id;
-          if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
-            db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
-          }
-        } else {
-          const result = db.prepare(
-            "INSERT INTO media_requests (title, type, sonarr_id, season, status, requested_by) VALUES (?, 'series', ?, ?, 'DOWNLOADING', '[]')"
-          ).run(pick.title, sonarrId, season);
-          requestId = result.lastInsertRowid as number;
-        }
-        const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
-        if (!existingRc) {
-          const rcResult = db.prepare(
-            "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
-          ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
-          db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
-        }
-        db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(sonarrId, pick.title, id);
-        res.json({ success: true, type: "series", request_id: requestId, season, title: pick.title });
-      }
-    } catch (error: any) {
-      console.error("[Unmatched Match] Error:", error.message);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // POST /api/requests/unmatched/:id/skip — skip this unmatched entry
-  router.post("/unmatched/:id/skip", (req: Request, res: Response) => {
-    const { id } = req.params;
-    db.prepare("UPDATE unmatched_torrents SET skipped = 1 WHERE id = ?").run(id);
-    res.json({ success: true });
   });
 
   return router;
