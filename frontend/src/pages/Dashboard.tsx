@@ -188,12 +188,16 @@ export default function Dashboard() {
       {unmatchedList && unmatchedList.length > 0 && (
         <div className="modal-overlay" onClick={() => setUnmatchedList(null)}>
           <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 600 }}>
-            <h3 className="modal-title">Unmatched Torrents ({unmatchedList.length})</h3>
+            <h3 className="modal-title" style={{ color: "#f59e0b" }}>Unmatched Torrents ({unmatchedList.length})</h3>
+            <p style={{ fontSize: 13, color: "#94a3b8", marginBottom: 12 }}>
+              These torrents couldn't be matched automatically. Pick a candidate below or skip to ignore.
+            </p>
             <div className="modal-body">
               {unmatchedList.map((entry: any) => (
-                <div key={entry.id} style={{ marginBottom: 16, padding: 8, border: "1px solid #334155", borderRadius: 4 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>{entry.torrent_name.slice(0, 80)}</div>
-                  <div style={{ marginBottom: 6, fontSize: 11, color: "#94a3b8" }}>{entry.type} · {Math.round(entry.size / (1024 * 1024))} MB</div>
+                <div key={entry.id} style={{ marginBottom: 16, padding: 10, border: "1px solid #334155", borderRadius: 4 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13, color: "#e2e8f0" }}>{entry.torrent_name.slice(0, 100)}</div>
+                  <div style={{ marginBottom: 8, fontSize: 11, color: "#94a3b8" }}>{entry.type} · {Math.round(entry.size / (1024 * 1024))} MB</div>
+                  <p style={{ margin: "0 0 6px 0", fontSize: 11, color: "#64748b" }}>Select a match:</p>
                   {(entry.candidate_results || []).map((c: any, i: number) => (
                     <button key={i}
                       disabled={unmatchedActionId === entry.id}
@@ -210,13 +214,16 @@ export default function Dashboard() {
                         }
                       }}
                       style={{
-                        display: "block", width: "100%", textAlign: "left", padding: "5px 8px", marginBottom: 3,
+                        display: "block", width: "100%", textAlign: "left", padding: "6px 10px", marginBottom: 3,
                         background: i === 0 ? "#1e3a5f" : "var(--card-bg, #1e293b)",
-                        border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0", cursor: "pointer", fontSize: 12,
+                        border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0", cursor: unmatchedActionId === entry.id ? "wait" : "pointer", fontSize: 12,
                       }}>
                       {c.title}{c.year ? ` (${c.year})` : ""}
                     </button>
                   ))}
+                  {(!entry.candidate_results || entry.candidate_results.length === 0) && (
+                    <p style={{ color: "#ef4444", fontSize: 12 }}>No candidates found</p>
+                  )}
                   <button
                     disabled={unmatchedActionId === entry.id}
                     onClick={async () => {
@@ -230,14 +237,14 @@ export default function Dashboard() {
                         setUnmatchedActionId(null);
                       }
                     }}
-                    style={{ marginTop: 4, padding: "3px 10px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>
+                    style={{ marginTop: 6, padding: "4px 14px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>
                     Skip
                   </button>
                 </div>
               ))}
             </div>
             <div className="modal-actions">
-              <button className="btn btn-secondary" onClick={() => setUnmatchedList(null)}>Close</button>
+              <button className="btn btn-secondary" onClick={() => setUnmatchedList(null)}>Done</button>
             </div>
           </div>
         </div>
@@ -342,6 +349,8 @@ export default function Dashboard() {
                 const u = await fetchUnmatched();
                 setUnmatchedList(u || []);
               } catch {}
+              // Close result modal after 2s so user sees the unmatched panel below
+              setTimeout(() => setModal(null), 2000);
             }
             loadData();
           }}>Scan Downloads</button>

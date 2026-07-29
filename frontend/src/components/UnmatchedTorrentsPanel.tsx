@@ -35,7 +35,6 @@ export default function UnmatchedTorrentsPanel() {
     setActionId(entry.id);
     try {
       const result = await matchUnmatched(entry.id, index);
-      console.log(`[Unmatched] Matched #${entry.id}: ${result.title}${result.seasons ? ` S${result.seasons.join(", S")}` : ""}`, result);
       await load();
     } catch (e: any) {
       alert(`Match failed: ${e.response?.data?.error || e.message}`);
@@ -59,11 +58,12 @@ export default function UnmatchedTorrentsPanel() {
   if (loading) return null;
   if (entries.length === 0) return null;
 
-  const isLoading = actionId !== null;
-
   return (
     <div className="dashboard-section">
       <h2>Unmatched Torrents — {entries.length}</h2>
+      <p style={{ fontSize: 13, color: "#94a3b8", marginBottom: 12 }}>
+        These torrents couldn't be auto-matched. Click a candidate to create a request and start downloading, or skip to ignore.
+      </p>
       <div className="requests-grid">
         {entries.map((entry) => (
           <div key={entry.id} className="request-card franchise-card" style={{ borderLeft: "4px solid #f59e0b" }}>
@@ -81,34 +81,37 @@ export default function UnmatchedTorrentsPanel() {
               </div>
               {entry.candidate_results.length > 0 && (
                 <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-                  <p style={{ margin: 0, fontSize: 12, color: "#94a3b8" }}>Pick a match:</p>
+                  <p style={{ margin: "0 0 2px 0", fontSize: 11, color: "#64748b" }}>
+                    Select match <span style={{ color: "#475569" }}>(first is best guess)</span>:
+                  </p>
                   {entry.candidate_results.map((c, i) => (
                     <button
                       key={i}
-                      disabled={isLoading}
+                      disabled={actionId === entry.id}
                       onClick={() => handleMatch(entry, i)}
                       style={{
-                        textAlign: "left", padding: "6px 10px", cursor: isLoading ? "wait" : "pointer",
+                        textAlign: "left", padding: "6px 10px", cursor: actionId === entry.id ? "wait" : "pointer",
                         background: i === 0 ? "#1e3a5f" : "var(--card-bg, #1e293b)",
                         border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0",
                         display: "flex", justifyContent: "space-between", alignItems: "center",
+                        opacity: actionId === entry.id ? 0.6 : 1,
                       }}
                     >
                       <span>{c.title}{c.year ? ` (${c.year})` : ""}</span>
-                      {actionId === entry.id && <span style={{ fontSize: 11 }}>...</span>}
+                      {actionId === entry.id && <span style={{ fontSize: 11, color: "#f59e0b" }}>processing...</span>}
                     </button>
                   ))}
                 </div>
               )}
               {entry.candidate_results.length === 0 && (
-                <p style={{ color: "#ef4444", fontSize: 13 }}>No candidates found</p>
+                <p style={{ color: "#ef4444", fontSize: 13 }}>No candidates found — skip to remove</p>
               )}
               <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
                 <button
                   className="btn btn-sm"
-                  style={{ background: "#ef4444", color: "#fff", border: "none", padding: "4px 12px", borderRadius: 4, cursor: isLoading ? "wait" : "pointer" }}
+                  style={{ background: "#ef4444", color: "#fff", border: "none", padding: "4px 14px", borderRadius: 4, cursor: actionId === entry.id ? "wait" : "pointer" }}
                   onClick={() => handleSkip(entry)}
-                  disabled={isLoading}
+                  disabled={actionId === entry.id}
                 >
                   Skip
                 </button>
