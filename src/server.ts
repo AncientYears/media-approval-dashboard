@@ -100,7 +100,7 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
 
     // Clean up stale release_candidates where hash doesn't match title
         const withHashes = db.prepare(
-      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, mr.season as req_season, rc.size_mb " +
+      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, mr.season as req_season, mr.sonarr_id, mr.radarr_id, rc.size_mb " +
       "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
       "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
     ).all() as any[];
@@ -111,6 +111,8 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       for (const rc of withHashes) {
         const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
         if (!t) continue;
+        // Skip title check if linked to Sonarr/Radarr series — ID match is more reliable than string matching
+        if (rc.sonarr_id || rc.radarr_id) continue;
         const tnRaw = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
         const tn = tnRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
         const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
