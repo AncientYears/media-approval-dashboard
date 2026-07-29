@@ -2081,8 +2081,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               console.log(`[ImportLibrary] Updated ${m.title} status to COMPLETED (was ${req.status})`);
             }
             const processedFiles: string[] = [];
-            // Add Radarr-managed file
-            if (!processedFiles.includes(fileName)) processedFiles.push(fileName);
+            // Add Radarr-managed file (skip if already in processed via MoveToProcessed)
+            if (!alreadyImported && !processedFiles.includes(fileName)) processedFiles.push(fileName);
             // Also scan movie folder for additional video files not tracked by Radarr
             const movieFolder = movie.path || path.dirname(filePath);
             if (fs.existsSync(movieFolder)) {
@@ -2113,7 +2113,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                     console.error(`[ImportLibrary] Failed to hardlink extra ${entry}: ${e2.message}`);
                   }
                 }
-                if (!processedFiles.includes(entry)) processedFiles.push(entry);
+                if (!alreadyExtra && !processedFiles.includes(entry)) processedFiles.push(entry);
               }
             }
             const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(req.id) as any;
@@ -2231,23 +2231,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                     continue;
                   }
                 }
-                // Always try association, even for already-imported files
-                try {
-                  const reqId = ensureSeriesRequest(s.id, seasonNum!, s.title);
-                  if (reqId) {
-                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
-                    if (ah) {
-                      const existing = JSON.parse(ah.processed_files || "[]");
-                      if (!existing.includes(relPath)) {
-                        existing.push(relPath);
-                        db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+                if (!alreadyImported) {
+                  try {
+                    const reqId = ensureSeriesRequest(s.id, seasonNum!, s.title);
+                    if (reqId) {
+                      const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
+                      if (ah) {
+                        const existing = JSON.parse(ah.processed_files || "[]");
+                        if (!existing.includes(relPath)) {
+                          existing.push(relPath);
+                          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+                        }
+                      } else {
+                        db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(reqId, JSON.stringify([relPath]));
                       }
-                    } else {
-                      db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(reqId, JSON.stringify([relPath]));
                     }
+                  } catch (e: any) {
+                    console.error(`[ImportLibrary] Failed to associate ${s.title} ${f}:`, e.message);
                   }
-                } catch (e: any) {
-                  console.error(`[ImportLibrary] Failed to associate ${s.title} ${f}:`, e.message);
                 }
               }
             }
@@ -2275,18 +2276,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                   results.push({ title: `${s.title} ${vf.name}`, status: "error", error: linkErr.message });
                 }
               }
-              try {
-                const reqId = ensureSeriesRequest(s.id, seasonNum, s.title);
-                if (reqId) {
-                  const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
-                  if (ah) {
-                    const existing = JSON.parse(ah.processed_files || "[]");
-                    if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
-                  } else {
-                    db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(reqId, JSON.stringify([relPath]));
+              if (!alreadyImported) {
+                try {
+                  const reqId = ensureSeriesRequest(s.id, seasonNum, s.title);
+                  if (reqId) {
+                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
+                    if (ah) {
+                      const existing = JSON.parse(ah.processed_files || "[]");
+                      if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
+                    } else {
+                      db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(reqId, JSON.stringify([relPath]));
+                    }
                   }
-                }
-              } catch {}
+                } catch {}
+              }
             }
             // Also scan unmatched dirs that may contain video files (e.g. "Show S01 (720p)[Group]/")
             const unmatchedDirs = seriesEntries.filter(e => e.isDirectory() && !seasonDirs.includes(e));
@@ -2317,18 +2320,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                     results.push({ title: `${s.title} ${ud.name}/${f}`, status: "error", error: linkErr.message });
                   }
                 }
-                try {
-                  const reqId = ensureSeriesRequest(s.id, udSeason, s.title);
-                  if (reqId) {
-                    const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
-                    if (ah) {
-                      const existing = JSON.parse(ah.processed_files || "[]");
-                      if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
-                    } else {
-                      db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(reqId, JSON.stringify([relPath]));
+                if (!alreadyImported) {
+                  try {
+                    const reqId = ensureSeriesRequest(s.id, udSeason, s.title);
+                    if (reqId) {
+                      const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(reqId) as any;
+                      if (ah) {
+                        const existing = JSON.parse(ah.processed_files || "[]");
+                        if (!existing.includes(relPath)) { existing.push(relPath); db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id); }
+                      } else {
+                        db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(reqId, JSON.stringify([relPath]));
+                      }
                     }
-                  }
-                } catch {}
+                  } catch {}
+                }
               }
             }
             if (seasonDirs.length === 0) {
