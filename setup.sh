@@ -4,8 +4,12 @@
 # Installs system dependencies, builds the backend and frontend, and installs
 # the systemd units.
 #
-# Run from the clone, as root:
+# Run from the clone:
 #   sudo ./setup.sh
+#
+# Services run as the user who invoked sudo, not root — override with APP_USER.
+# A root-owned app means a root-owned data/app.db and a root-owned HTTP API
+# listening on the LAN.
 #
 # Re-runnable: safe to run again after `git pull` to rebuild and reinstall.
 
@@ -13,7 +17,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 SCRIPT_DIR="$APP_DIR"
-APP_USER="${APP_USER:-$(id -un)}"
+APP_USER="${APP_USER:-${SUDO_USER:-$(id -un)}}"
 
 log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
