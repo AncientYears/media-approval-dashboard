@@ -2,14 +2,15 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
+import {
+  DOWNLOADS_MOVIES,
+  DOWNLOADS_TV,
+  PROCESSED_MOVIES,
+  PROCESSED_TV,
+  PROCESSING_WORKSPACE,
+} from "../config/paths";
 
 const execFileAsync = promisify(execFile);
-
-const MEDIA_DOWNLOADS_MOVIES = process.env.DOWNLOADS_MOVIES || "/media/Torrents/download/filmy";
-const MEDIA_DOWNLOADS_TV = process.env.DOWNLOADS_TV || "/media/Torrents/download/serialy";
-const PROCESSED_MOVIES = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
-const PROCESSED_TV = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
-const PROCESSING_WORKSPACE = process.env.PROCESSING_WORKSPACE || "/media/Torrents/Workspace";
 
 export interface ProcessResult {
   success: boolean;
@@ -91,7 +92,7 @@ export function getProcessedDir(type: "movie" | "series"): string {
 }
 
 export function getDownloadDir(type: "movie" | "series"): string {
-  return type === "movie" ? MEDIA_DOWNLOADS_MOVIES : MEDIA_DOWNLOADS_TV;
+  return type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
 }
 
 export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"): { success: boolean; destination?: string; error?: string } {

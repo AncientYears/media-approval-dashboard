@@ -259,13 +259,14 @@ Download (100% complete)
 
 | File | Purpose |
 |------|---------|
+| `src/config/paths.ts` | All filesystem path config + qBittorrent path translation |
 | `src/services/prowlarr.ts` | Prowlarr API client (search indexers) |
 | `src/services/sonarr.ts` | Sonarr API client (search, grab, unmonitor, delete) |
 | `src/services/radarr.ts` | Radarr API client (search, grab, unmonitor, delete) |
 | `src/services/qbittorrent.ts` | qBittorrent Web API v2 (torrents, auth) |
 | `src/services/scoring.ts` | Release scoring engine |
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
-| `src/routes/requests.ts` | All API endpoints (~5185 lines) |
+| `src/routes/requests.ts` | All API endpoints (~5420 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
 | `src/jobs/pollSonarr.ts` | Discovers wanted series (no auto-search) |
 | `src/jobs/pollStatus.ts` | Tracks torrent status, state transitions |
@@ -282,21 +283,30 @@ Download (100% complete)
 
 ## Environment Variables
 
+All path config lives in `src/config/paths.ts` and is read once at boot. Defaults derive from `MEDIA_ROOT`; per-directory overrides are optional. See `.env.example`.
+
 ```env
+# Storage
+MEDIA_ROOT=/media
+# Leave empty unless qBittorrent's view of the storage differs from
+# the app's (legacy container: /media/Torrents → /Torrents).
+# QBIT_PATH_PREFIX=/Torrents
+# QBIT_HOST_PREFIX=/media/Torrents
+
 # Prowlarr (search indexers directly)
-PROWLARR_URL=http://192.168.1.100:9696
+PROWLARR_URL=
 PROWLARR_API_KEY=
 
-# Radarr/Sonarr (grab, monitor, import)
-RADARR_URL=http://192.168.1.100:7878
+# Radarr/Sonarr (metadata, episode model, library import)
+RADARR_URL=
 RADARR_API_KEY=
-SONARR_URL=http://192.168.1.100:8989
+SONARR_URL=
 SONARR_API_KEY=
 
 # qBittorrent (download)
-QBIT_URL=http://192.168.1.100:8080
-QBIT_USER=admin1
-QBIT_PASS=admin1
+QBIT_URL=http://127.0.0.1:8080
+QBIT_USER=
+QBIT_PASS=
 
 # Paths — Download (immutable, seeds forever)
 DOWNLOADS_MOVIES=/media/Torrents/download/filmy
@@ -308,6 +318,9 @@ PROCESSED_TV=/media/Torrents/processed/serialy
 
 # Paths — Workspace (ephemeral processing scratch space)
 PROCESSING_WORKSPACE=/media/Torrents/Workspace
+
+# Paths — Trackers (per-torrent metadata, exported on destroy)
+TRACKERS_DIR=/media/Torrents/Trackers
 
 # Paths — Library (final destination, managed by Sonarr/Radarr)
 MEDIA_MOVIES=/media/Filmy
@@ -346,7 +359,8 @@ NTFY_TOPIC=
 - Managed media: series show always if DOWNLOADING/SEEDING; movies require `release_count > 0`
 - `franchise-season-row` uses flex layout with expandable inner content (click row header to toggle)
 - Hardlinks cannot cross filesystem boundaries — Download, Workspace, Processed, and Library must all be on the same volume
-- qBittorrent is in a separate Docker container — volume mapping: `/media/Torrents:/Torrents:rw`. Use `toQBittorrentPath()` (strips `/media`) and `fromQBittorrentPath()` (prepends `/media`) for all path conversions
+- qBittorrent and the app must mount the shared storage at the **same absolute path**. `fromQBittorrentPath()` / `toQBittorrentPath()` live in `src/config/paths.ts` and are no-ops unless `QBIT_PATH_PREFIX`/`QBIT_HOST_PREFIX` are set — never hardcode a path prefix at a call site
+- Hardlinks are created by the filesystem/NFS server, so qBittorrent may run in a different VM than the app as long as both mount the same export. A *path* mismatch is the real risk: it silently triggers the `EXDEV` → `copyFileSync` fallback in `processor.ts` and triples disk usage
 - Import endpoint FK fix: uses SELECT-then-INSERT (not INSERT OR IGNORE) to avoid `lastInsertRowid=0` causing FOREIGN KEY constraint failure on approval_history
 - `form-data` npm package used for qBittorrent multipart file upload (already a direct dependency)
 - Import endpoint uses `toQBittorrentPath()` for save path, `fromQBittorrentPath()` for content_path/save_path from qBittorrent

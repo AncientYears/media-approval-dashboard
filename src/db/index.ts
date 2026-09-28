@@ -1,6 +1,7 @@
 ﻿import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { fromQBittorrentPath, PROCESSED_MOVIES, PROCESSED_TV } from "../config/paths";
 
 export interface DBInstance {
   db: Database.Database;
@@ -256,8 +257,8 @@ export function initializeDatabase(dbPath: string): DBInstance {
     }
 
     // Clean dangling filenames from processed_files that no longer exist on disk
-    const processedMoviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
-    const processedTvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+    const processedMoviesDir = PROCESSED_MOVIES;
+    const processedTvDir = PROCESSED_TV;
     const ahWithRequest = db.prepare(`
       SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id FROM approval_history ah
       JOIN media_requests mr ON mr.id = ah.request_id
@@ -332,8 +333,8 @@ export function initializeDatabase(dbPath: string): DBInstance {
       JOIN media_requests mr ON mr.id = ah.request_id
       WHERE ah.release_id IS NULL AND ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
     `).all() as any[];
-    const moviesDir = process.env.PROCESSED_MOVIES || "/media/Torrents/processed/filmy";
-    const tvDir = process.env.PROCESSED_TV || "/media/Torrents/processed/serialy";
+    const moviesDir = PROCESSED_MOVIES;
+    const tvDir = PROCESSED_TV;
     for (const nRow of nullRowsForInode) {
       try {
         const files: string[] = JSON.parse(nRow.processed_files);
@@ -345,7 +346,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
         const downloadInodes = new Set<number>();
         for (const rc of rcs) {
           const rawPath = rc.save_path || "";
-          const hostPath = rawPath.startsWith("/Torrents/") ? "/media" + rawPath : rawPath;
+          const hostPath = fromQBittorrentPath(rawPath);
           const downloadPath = path.join(hostPath, rc.title);
           try {
             if (fs.existsSync(downloadPath)) {
