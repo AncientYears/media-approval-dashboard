@@ -46,6 +46,19 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
   || die "Node $(node -v) found but 20+ is required (better-sqlite3 prebuilds)."
 log "Node $(node -v), npm $(npm -v)"
 
+# --------------------------------------------------------------------- deps
+# npm ci aborts entirely when package.json and the lockfile have drifted apart,
+# which turns a stale lock into a dead deploy. Fall back to npm install rather
+# than blocking on it.
+install_deps() {
+  cd "$1"
+  if [ -d node_modules ]; then
+    npm install --silent
+  else
+    npm ci --silent || npm install --silent
+  fi
+}
+
 # --------------------------------------------------------------------- mount
 if ! mountpoint -q /media 2>/dev/null; then
   printf '\033[1;33mWARNING\033[0m /media is not mounted. The app needs the media\n'
@@ -54,17 +67,16 @@ fi
 
 # ------------------------------------------------------------------ backend
 log "Installing backend dependencies"
-# build-essential/python3 above are the fallback if better-sqlite3 has no
-# prebuild for this Node version.
-if [ -d node_modules ]; then npm install --silent; else npm ci; fi
+# build-essential/python3 are the fallback if better-sqlite3 has no prebuild
+# for this Node version.
+install_deps "$APP_DIR"
 
 log "Building backend"
 npm run build
 
 # ----------------------------------------------------------------- frontend
 log "Installing frontend dependencies"
-cd "$APP_DIR/frontend"
-if [ -d node_modules ]; then npm install --silent; else npm ci; fi
+install_deps "$APP_DIR/frontend"
 
 log "Building frontend"
 npm run build
