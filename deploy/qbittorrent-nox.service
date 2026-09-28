@@ -13,9 +13,10 @@ Type=simple
 # download tree and NFS ownership is not mapped between them.
 User=@@APP_USER@@
 Group=@@APP_USER@@
-# %h expands to the user's home directory; qBittorrent keeps its config in
-# ~/.config/qBittorrent, which must be writable or it exits immediately.
-Environment=HOME=%h
+# HOME is substituted explicitly rather than using %h. On systemd 255 this box
+# expanded %h to /root even with User=ancient, so qBittorrent tried to create
+# /root/.cache/QBittorrent, failed, and aborted on startup (status=6/ABRT).
+Environment=HOME=@@APP_HOME@@
 Environment=QBT_NOX=1
 # No -d: systemd owns the process lifecycle and supervises/restarts it.
 # No --profile: that flag is deprecated; the default config path is used.

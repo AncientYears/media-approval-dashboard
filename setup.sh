@@ -22,6 +22,12 @@ APP_USER="${APP_USER:-${SUDO_USER:-$(id -un)}}"
 log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Resolve the real home from passwd; do not rely on systemd's %h specifier.
+# The `|| true` matters: pipefail would otherwise abort the script on a missing
+# user before the check below can report it.
+APP_HOME="$(getent passwd "$APP_USER" 2>/dev/null | cut -d: -f6 || true)"
+[ -n "$APP_HOME" ] || die "No home directory found for user '$APP_USER'"
+
 cd "$APP_DIR"
 
 # --------------------------------------------------------------- system deps
@@ -113,6 +119,7 @@ sed -e "s|@@APP_DIR@@|$APP_DIR|g" \
     > /etc/systemd/system/media-approval-app.service
 
 sed -e "s|@@APP_USER@@|$APP_USER|g" \
+    -e "s|@@APP_HOME@@|$APP_HOME|g" \
     "$SCRIPT_DIR/deploy/qbittorrent-nox.service" \
     > /etc/systemd/system/qbittorrent-nox.service
 
