@@ -100,6 +100,10 @@ if [ ! -f .env ]; then
   echo "    Edit $APP_DIR/.env and set QBIT_URL, QBIT_USER, QBIT_PASS"
 fi
 mkdir -p "$APP_DIR/data"
+# This script runs under sudo, so npm ci and any prior run leave root-owned
+# files behind. The app writes data/app.db, so that dir must be APP_USER's or
+# SQLite fails to open the database after a restart.
+chown -R "$APP_USER" "$APP_DIR/data"
 
 # ------------------------------------------------------------------ systemd
 log "Installing systemd units"
