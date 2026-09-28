@@ -106,12 +106,17 @@ just those directories (the media files themselves do not need to change):
 chown 1000:1000 \
   /mnt/media/Torrents/download/filmy /mnt/media/Torrents/download/serialy \
   /mnt/media/Torrents/processed/filmy /mnt/media/Torrents/processed/serialy \
-  /mnt/media/Torrents/Workspace /mnt/media/Torrents/Trackers \
-  /mnt/media/Filmy /media/Serialy
-```
+    /mnt/media/Torrents/Workspace /mnt/media/Torrents/Trackers \
+    /mnt/media/Filmy /mnt/media/Serialy
+  ```
 
-No `-R`, so it is instant and reversible with the same command plus `root:root`.
-Never `chown -R` the media tree.
+  **Run this on the NFS server, not on the app VM.** The export is mounted with
+  `root_squash`, so root on the client maps to `nobody` and the chown fails with
+  `Operation not permitted`. Log in to the server (`rob-r530`) and run it there,
+  against the real export path.
+
+  No `-R`, so it is instant and reversible with the same command plus `root:root`.
+  Never `chown -R` the media tree.
 
 Until this is done, the app runs but every move/import operation fails with
 `EACCES`. Search, approve, the UI and the database all work fine.
