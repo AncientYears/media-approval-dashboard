@@ -1,5 +1,6 @@
 import { Database } from "better-sqlite3";
 import { SonarrService } from "../services/sonarr";
+import { errorSummary } from "../utils/errorSummary";
 
 export function createSonarrPoller(db: Database, sonarr: SonarrService, intervalSeconds: number, deletedFranchiseIds?: Set<number>) {
   let running = false;
@@ -54,7 +55,7 @@ export function createSonarrPoller(db: Database, sonarr: SonarrService, interval
         console.log(`[Sonarr] New request: ${requestTitle} (sonarr_id=${season.seriesId}, season=${season.seasonNumber})`);
       }
     } catch (err) {
-      console.error("[Sonarr] Poll error:", err);
+      console.error(`[Sonarr] Poll error: ${errorSummary(err)}`);
     } finally {
       running = false;
     }

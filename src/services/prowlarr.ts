@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from "axios";
+import { errorSummary } from "../utils/errorSummary";
 
 export interface ProwlarrRelease {
   guid: string;
@@ -43,7 +44,7 @@ export class ProwlarrService {
       const response = await this.client.get("/api/v1/search", { params });
       return response.data as ProwlarrRelease[];
     } catch (error) {
-      console.error("Prowlarr: Failed to search releases", error);
+      console.error(`[Prowlarr] Failed to search releases: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -52,8 +53,8 @@ export class ProwlarrService {
     try {
       await this.client.get("/api/v1/system/status");
       return { success: true };
-    } catch (error: any) {
-      return { success: false, message: error.message };
+    } catch (error) {
+      return { success: false, message: errorSummary(error) };
     }
   }
 }

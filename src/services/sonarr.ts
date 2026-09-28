@@ -1,5 +1,6 @@
 ﻿import axios, { AxiosInstance } from "axios";
 import { RadarrSearchResult } from "../types/index";
+import { errorSummary } from "../utils/errorSummary";
 
 export interface WantedSeason {
   seriesId: number;
@@ -204,8 +205,7 @@ export class SonarrService {
       await this.client.get("/api/v3/system/status");
       return { success: true };
     } catch (error) {
-      console.error("Sonarr: Connection test failed", error);
-      return { success: false, error: String(error) };
+      return { success: false, error: errorSummary(error) };
     }
   }
 

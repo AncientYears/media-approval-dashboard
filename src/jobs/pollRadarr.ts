@@ -1,6 +1,7 @@
 import { Database } from "better-sqlite3";
 import { RadarrService } from "../services/radarr";
 import { computeAppScore } from "../services/scoring";
+import { errorSummary } from "../utils/errorSummary";
 
 export function createRadarrPoller(db: Database, radarr: RadarrService, intervalSeconds: number) {
   let running = false;
@@ -51,7 +52,7 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
       awaitingStmt.run(requestId);
       console.log(`[Radarr] ${releases.length} releases for ${title}`);
     } catch (err) {
-      console.error(`[Radarr] Failed to search releases for ${title}:`, err);
+      console.error(`[Radarr] Failed to search releases for ${title}: ${errorSummary(err)}`);
       try { awaitingStmt.run(requestId); } catch {}
     }
   }
@@ -139,7 +140,7 @@ export function createRadarrPoller(db: Database, radarr: RadarrService, interval
         console.log(`[Radarr] All searches complete`);
       }
     } catch (err) {
-      console.error("[Radarr] Poll error:", err);
+      console.error(`[Radarr] Poll error: ${errorSummary(err)}`);
     } finally {
       running = false;
     }

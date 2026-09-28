@@ -1,5 +1,6 @@
 ﻿import express from "express";
 import cors from "cors";
+import axios from "axios";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import path from "path";
@@ -12,6 +13,7 @@ import { ProwlarrService } from "./services/prowlarr";
 import { createRadarrPoller } from "./jobs/pollRadarr";
 import { createSonarrPoller } from "./jobs/pollSonarr";
 import { createStatusPoller } from "./jobs/pollStatus";
+import { errorSummary } from "./utils/errorSummary";
 
 // Load environment variables
 dotenv.config();
@@ -194,19 +196,36 @@ app.get("/api/db", (_req, res) => {
   }
 });
 
+// ntfy has no client class, so probe the base URL directly. A GET on the root
+// is read-only — posting to the topic would fire a real notification.
+async function testNtfy(): Promise<{ success: boolean; message: string }> {
+  const url = process.env.NTFY_URL;
+  if (!url) return { success: false, message: "NTFY_URL not set" };
+  try {
+    await axios.get(url, { timeout: 5000 });
+    return { success: true, message: "Reachable" };
+  } catch (e: any) {
+    return { success: false, message: errorSummary(e) };
+  }
+}
+
 // Test connections endpoint
-app.post("/api/test-connections", async (req, res) => {
-  const [qbitResult, sonarrResult, prowlarrResult] = await Promise.all([
+app.post("/api/test-connections", async (_req, res) => {
+  const [qbitResult, radarrResult, sonarrResult, prowlarrResult] = await Promise.all([
     qbittorrent.testConnection(),
+    radarr.testConnection(),
     sonarr.testConnection(),
     prowlarr.testConnection(),
   ]);
   res.json({
-    radarr: { success: true },
+    radarr: radarrResult,
     sonarr: sonarrResult,
     prowlarr: prowlarrResult,
-    jellyseerr: { success: true },
-    ntfy: { success: true },
+    // There is no Jellyseerr client in this codebase — it is a frontend-only
+    // integration — so report it as unavailable rather than claiming a link
+    // that was never tested.
+    jellyseerr: { success: false, message: "No backend service configured" },
+    ntfy: await testNtfy(),
     qbittorrent: qbitResult,
   });
 });

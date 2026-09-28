@@ -67,6 +67,9 @@ export default function Settings() {
                 <span className={`status-indicator ${status.success ? "success" : "error"}`}></span>
                 <span className="service-name">{service}</span>
                 <span className="status-text">{status.success ? "Connected" : "Failed"}</span>
+                {!status.success && (status.message || status.error) && (
+                  <span className="status-detail">{status.message || status.error}</span>
+                )}
               </div>
             ))}
           </div>

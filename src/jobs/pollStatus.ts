@@ -1,6 +1,7 @@
 import { Database } from "better-sqlite3";
 import { QBittorrentService } from "../services/qbittorrent";
 import { parseQualityFromName } from "../utils/torrentParser";
+import { errorSummary } from "../utils/errorSummary";
 
 const DOWNLOADING_STATES = ["downloading", "forcedDL", "queuedDL", "pausedDL"];
 const SEEDING_STATES = ["uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP"];
@@ -212,7 +213,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         }
       }
     } catch (err) {
-      console.error("[Status] Poll error:", err);
+      console.error(`[Status] Poll error: ${errorSummary(err)}`);
     } finally {
       running = false;
     }
