@@ -236,9 +236,10 @@ const server = app.listen(PORT, () => {
   console.log(`Database: ${DB_PATH}`);
 });
 
-// Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("Shutting down gracefully...");
+// Graceful shutdown. SIGTERM is what systemd sends on stop/restart; SIGINT is
+// kept for interactive use.
+function shutdown(signal: string) {
+  console.log(`Received ${signal}, shutting down gracefully...`);
   radarrPoller.stop();
   sonarrPoller.stop();
   statusPoller.stop();
@@ -246,6 +247,14 @@ process.on("SIGINT", () => {
     closeDb();
     process.exit(0);
   });
-});
+  // Don't let an in-flight request hold shutdown open indefinitely.
+  setTimeout(() => {
+    console.error("Graceful shutdown timed out, forcing exit");
+    process.exit(1);
+  }, 15000).unref();
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 export default app;

@@ -1,4 +1,12 @@
 import path from "path";
+import dotenv from "dotenv";
+
+// Must run before any process.env read below. server.ts cannot do this for us:
+// TypeScript emits its `require` calls above `dotenv.config()`, so config/paths
+// is already evaluated (with an empty env) by the time server.ts loads .env.
+// This is the only module that reads env at load time; everything else reads it
+// inside functions, which run long after this.
+dotenv.config();
 
 const trimTrailingSlash = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
 

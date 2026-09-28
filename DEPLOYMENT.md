@@ -1,206 +1,159 @@
-﻿# Media Approval Dashboard - Deployment Guide
+﻿# Deployment Guide
 
-## Quick Start (Development)
+Running directly on a VM. No containers — just systemd units and an NFS export
+for the media tree.
 
-### Prerequisites
-- Node.js 20+
-- npm or yarn
-- Radarr/Sonarr running and accessible
-- ntfy configured (self-hosted or ntfy.sh)
+## Architecture
 
-### 1. Backend Setup
+```
+Proxmox
+├── app VM          media-approval-app + qbittorrent-nox   (systemd)
+├── rob-r530        NFS server, exports /mnt/media
+└── jellyfin VM     reads the library, no hardlink involvement
+```
+
+The app and qBittorrent **must** mount the shared storage at the **same absolute
+path** (`/media`). See "Hardlinks" below for why this is not optional.
+
+## Quick start
 
 ```bash
-# Copy environment template
-cp .env.example .env
+git clone https://github.com/AncientYears/media-approval-dashboard.git
+cd media-approval-dashboard
+sudo ./setup.sh              # installs deps, builds, installs units
 
-# Edit .env with your configuration
-# Set RADARR_URL, RADARR_API_KEY, SONARR_URL, SONARR_API_KEY, etc.
+sudo nano /opt/media-approval-dashboard/.env
+systemctl enable --now qbittorrent-nox
+systemctl enable --now media-approval-app
 ```
 
-### 2. Run Backend (Development)
+Dashboard on `:3000`, qBittorrent WebUI on `:8080`.
+
+Re-running `setup.sh` after a `git pull` rebuilds and reinstalls. It preserves
+`.env`, `data/` and `node_modules`.
+
+## Requirements
+
+- Node.js 20+ (uses `better-sqlite3` v12 prebuilds)
+- Debian/Ubuntu; `ffmpeg`, `mkvtoolnix` (mkvmerge), `mediainfo` from apt
+- `qbittorrent-nox` from apt — note the **nox build still serves the full WebUI**
+  on port 8080, it only drops the desktop tray icon
+
+## Hardlinks
+
+Download → Processed → Library are hardlinks, not copies. This is the core
+storage invariant and it drives every deployment decision:
+
+- **Same path, both sides.** The app and qBittorrent must mount the storage at
+  the same absolute path. Set `MEDIA_ROOT=/media` and leave `QBIT_PATH_PREFIX`
+  and `QBIT_HOST_PREFIX` unset — the path conversions are then no-ops.
+- **Same filesystem.** If they ever diverge, `processor.ts` catches the `EXDEV`
+  error and silently falls back to `copyFileSync`. Nothing errors, you just end
+  up with three full copies of every file. Watch disk usage.
+- **Different VMs is fine.** The NFS server performs the link operation, so
+  hardlinks work across VMs on one export. Performance is the cost, not
+  correctness.
+- **Never put the SQLite DB on NFS.** It stays local at `./data/app.db`; WAL
+  mode over NFS is a corruption risk.
+
+`systemd`'s `RequiresMountsFor=/media` in both units exists specifically to stop
+these services from starting before the mount is ready.
+
+## NFS export
+
+On the storage host (`rob-r530`):
+
+```
+/mnt/media 192.168.1.28(rw,sync,no_subtree_check)
+```
+
+`root_squash` and `no_all_squash` appear in `exportfs -v` but are kernel
+defaults, not settings — don't try to "fix" them in the file.
+
+`noatime` is **not** a valid export option. It's a mount option, set on the
+client:
+
+```
+# app VM /etc/fstab
+192.168.1.18:/mnt/media /media nfs noatime,hard,proto=tcp,vers=4.2,_netdev 0 0
+```
+
+`hard` matters more than `noatime`: with `soft`, a server hiccup returns an I/O
+error mid-write instead of blocking, which is how a torrent client ends up with
+a corrupt state. `noatime` avoids a network round trip per read, which
+qBittorrent does a lot of while seeding.
+
+## Permissions
+
+The app needs write access to these directories, and only these — Download
+should stay read-only to it, since Download is immutable and seeds forever:
+
+```
+/media/Torrents/download/{filmy,serialy}   # qBittorrent writes
+/media/Torrents/processed/{filmy,serialy}  # app hardlinks here
+/media/Torrents/Workspace                  # app creates processing jobs
+/media/Torrents/Trackers                   # app writes .torrent on destroy
+/media/{Filmy,Serialy}                     # app hardlinks into the library
+```
+
+`Filmy` and `Serialy` are the Jellyfin library — the app only ever places
+hardlinks there, so they must be on the same filesystem as `/media/Torrents`.
+
+If those are `root:root`, grant write access with a **non-recursive** chown of
+just those directories (the media files themselves do not need to change):
 
 ```bash
-npm run dev
+chown 1000:1000 \
+  /mnt/media/Torrents/download/filmy /mnt/media/Torrents/download/serialy \
+  /mnt/media/Torrents/processed/filmy /mnt/media/Torrents/processed/serialy \
+  /mnt/media/Torrents/Workspace /mnt/media/Torrents/Trackers \
+  /mnt/media/Filmy /media/Serialy
 ```
 
-Backend will start on `http://localhost:3000` with hot-reload enabled.
+No `-R`, so it is instant and reversible with the same command plus `root:root`.
+Never `chown -R` the media tree.
 
-### 3. Frontend Setup
+Until this is done, the app runs but every move/import operation fails with
+`EACCES`. Search, approve, the UI and the database all work fine.
+
+## Configuration
+
+`.env` — see `.env.example`. The app loads it itself via `dotenv`; do not use
+`Environment=` in the unit for app settings.
+
+The important one is `MEDIA_ROOT`, which every other path defaults from.
+`QBIT_PATH_PREFIX` / `QBIT_HOST_PREFIX` are only for a legacy containerised
+qBittorrent that reports a different prefix, and should normally both be unset.
+
+## Operations
 
 ```bash
-cd frontend
-npm run dev
+systemctl status  media-approval-app
+systemctl restart media-approval-app
+journalctl -u media-approval-app -f
+journalctl -u qbittorrent-nox -f
 ```
 
-Frontend will start on `http://localhost:5173` with hot-reload enabled. API calls are proxied to localhost:3000.
-
----
-
-## Docker Deployment (Production)
-
-### Prerequisites
-- Docker and Docker Compose installed
-- `.env` file configured with production values
-
-### Build and Run
-
-```bash
-# Build the Docker image
-docker-compose build
-
-# Start the service
-docker-compose up -d
-
-# View logs
-docker-compose logs -f media-approval-app
-```
-
-The app will be available on `http://localhost:3000`
-
-### Database Persistence
-
-SQLite database is stored in `./data/app.db` (mounted as a volume in Docker).
-
-### Updating Environment Variables
-
-Edit the `.env` file and restart:
-
-```bash
-docker-compose down
-docker-compose up -d
-```
-
----
-
-## Environment Variables
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `RADARR_URL` | Radarr API URL | `http://192.168.1.100:7878` |
-| `RADARR_API_KEY` | Radarr API Key | `abc123...` |
-| `SONARR_URL` | Sonarr API URL | `http://192.168.1.100:8989` |
-| `SONARR_API_KEY` | Sonarr API Key | `abc123...` |
-| `JELLYSEERR_URL` | Jellyseerr URL (reference) | `http://192.168.1.100:5055` |
-| `JELLYSEERR_API_KEY` | Jellyseerr API Key | `abc123...` |
-| `NTFY_URL` | ntfy service URL | `https://ntfy.sh` or `http://ntfy.local:80` |
-| `NTFY_TOPIC` | ntfy topic for notifications | `media_approval_123abc` |
-| `PORT` | Server port | `3000` |
-| `NODE_ENV` | Environment | `production` or `development` |
-| `DATABASE_PATH` | SQLite database path | `./data/app.db` |
-| `POLL_INTERVAL_RADARR` | Radarr polling interval (seconds) | `60` |
-| `POLL_INTERVAL_SONARR` | Sonarr polling interval (seconds) | `60` |
-| `POLL_INTERVAL_STATUS` | Status polling interval (seconds) | `30` |
-
----
-
-## Development
-
-### Available Scripts
-
-```bash
-# Backend
-npm run dev          # Start backend with hot-reload
-npm run build        # Build backend TypeScript
-npm run type-check   # Check TypeScript types
-npm start            # Run compiled backend
-
-# Frontend
-cd frontend
-npm run dev          # Start frontend dev server
-npm run build        # Build frontend for production
-npm run preview      # Preview production build locally
-```
-
-### Project Structure
-
-```
-.
-├── src/                      # Backend TypeScript source
-│   ├── server.ts            # Express app entry point
-│   ├── db/                  # Database initialization
-│   ├── services/            # Radarr, Sonarr, notification services
-│   ├── routes/              # API endpoints
-│   ├── jobs/                # Polling jobs (to implement)
-│   └── types/               # TypeScript interfaces
-├── frontend/                # React frontend
-│   ├── src/
-│   │   ├── App.tsx          # Main app component
-│   │   ├── pages/           # Page components
-│   │   ├── components/      # Reusable components
-│   │   ├── api.ts           # API client
-│   │   └── App.css          # Styling
-│   ├── index.html           # HTML entry point
-│   └── vite.config.ts       # Vite configuration
-├── data/                     # SQLite database (created at runtime)
-├── public/                   # Static files
-├── docker-compose.yml        # Docker Compose configuration
-├── Dockerfile               # Multi-stage Docker build
-├── .env.example             # Environment template
-└── README.md                # Project documentation
-```
-
----
-
-## API Endpoints
-
-### Health Check
-- `GET /api/health` - Health status of the service
-
-### Requests
-- `GET /api/requests` - List pending requests
-- `GET /api/requests/:id` - Get specific request with release candidates
-- `POST /api/requests/:id/approve` - Approve a release
-
-### Settings
-- `POST /api/test-connections` - Test connectivity to all services
-
----
+After a `git pull`: `sudo ./setup.sh && systemctl restart media-approval-app`.
 
 ## Troubleshooting
 
-### Backend won't start
-1. Check Node.js version: `node --version` (should be 20+)
-2. Verify .env file exists and has required variables
-3. Check port 3000 is not in use: `netstat -ano | findstr :3000`
+**Hardlinks silently copying** — the app and qBittorrent disagree on the mount
+path, so `link()` returns `EXDEV` and `processor.ts` falls back to
+`copyFileSync`. Check that both see the same absolute path.
 
-### Frontend can't reach API
-1. Ensure backend is running on port 3000
-2. Check Vite proxy configuration in `frontend/vite.config.ts`
-3. Verify CORS is enabled in backend
+**`EACCES` on move/import** — the write directories above aren't writable. See
+Permissions.
 
-### Database errors
-1. Check `./data/` directory is writable
-2. Verify SQLite database file: `./data/app.db`
-3. Check logs for SQL errors
+**qBittorrent marks torrents as errored on start** — it started before the NFS
+mount was ready. `RequiresMountsFor=/media` should prevent this; check with
+`systemctl show qbittorrent-nox | grep -i mount`.
 
-### Radarr/Sonarr connection issues
-1. Verify API URLs are correct and accessible
-2. Test API keys are valid: curl to `/api/v3/system/status`
-3. Check firewall rules between app and services
+**Frontend shows the JSON API instead of the UI** — `public/` wasn't published.
+Re-run `setup.sh`; it copies `frontend/dist` to `public/` because `server.ts`
+serves `../public` relative to `dist/`.
 
----
-
-## Next Steps
-
-After setup:
-
-1. **Configure Radarr/Sonarr** to add media through Jellyseerr
-2. **Monitor dashboard** for pending approvals
-3. **Test notifications** via Settings → Test Connections
-4. **Review and approve** releases before they download
-
----
-
-## Version Info
-
-- **v0.1.0** - Initial release with basic dashboard, release viewing, and approval workflow
-- Backend: Node.js 20, Express 5, TypeScript 5
-- Frontend: React 18, Vite 5, TypeScript 5
-- Database: SQLite 3 with better-sqlite3
-
----
-
-## Support
-
-For issues or feature requests, refer to the code comments and architecture documentation in the project README.
+**Path env vars seem ignored** — `config/paths.ts` reads `process.env` at module
+load, which happens before `server.ts` calls `dotenv.config()`. It therefore
+calls `dotenv.config()` itself. If you add another module that reads env at
+import time, it needs the same.

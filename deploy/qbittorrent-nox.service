@@ -1,0 +1,35 @@
+[Unit]
+Description=qBittorrent-nox (headless torrent client)
+Documentation=https://wiki.qbittorrent.org
+After=network-online.target
+Wants=network-online.target
+# Save paths live under /media/Torrents/download. Starting before the NFS mount
+# is ready makes qBittorrent fail the write and mark torrents as errored.
+RequiresMountsFor=/media
+
+[Service]
+Type=simple
+# Must be the same user as media-approval-app — the app hardlinks from the
+# download tree and NFS ownership is not mapped between them.
+User=@@APP_USER@@
+Group=@@APP_USER@@
+# %h expands to the user's home directory; qBittorrent keeps its config in
+# ~/.config/qBittorrent, which must be writable or it exits immediately.
+Environment=HOME=%h
+Environment=QBT_NOX=1
+# No -d: systemd owns the process lifecycle and supervises/restarts it.
+# No --profile: that flag is deprecated; the default config path is used.
+ExecStart=/usr/bin/qbittorrent-nox --webui-port=8080
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qbittorrent-nox
+
+[Install]
+WantedBy=multi-user.target
