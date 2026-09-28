@@ -122,7 +122,7 @@ $(log "Done — services were not started automatically.")
 
   Dashboard:   http://$IP:3000
   qBittorrent: http://$IP:8080
-  Logs:        journalctl -u media-approval-app -f
+  Logs:        sudo journalctl -u media-approval-app -f
 
   The app needs write access to the media directories before move/import
   works. See the Permissions section in DEPLOYMENT.md.

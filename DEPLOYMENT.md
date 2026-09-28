@@ -131,8 +131,14 @@ qBittorrent that reports a different prefix, and should normally both be unset.
 systemctl status  media-approval-app
 systemctl restart media-approval-app
 journalctl -u media-approval-app -f
+journalctl -u media-approval-app -p err   # errors only
 journalctl -u qbittorrent-nox -f
 ```
+
+`journalctl` needs `sudo` unless your user is in `adm` or `systemd-journal`.
+Both groups grant read access to *all* system logs, not just these units, so on a
+single-admin box prefer `sudo journalctl -u <unit> -f`. Without it you get the
+"You are currently not seeing messages from other users" hint and no output.
 
 After a `git pull`: `sudo ./setup.sh && systemctl restart media-approval-app`.
 
