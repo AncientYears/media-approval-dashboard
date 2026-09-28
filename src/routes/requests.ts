@@ -17,7 +17,6 @@ import {
   PROCESSED_TV,
   PROCESSING_WORKSPACE,
   TRACKERS_DIR,
-  MEDIA_MOVIES,
   MEDIA_TV,
 } from "../config/paths";
 import fs from "fs";
@@ -5088,10 +5087,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const magnetUrl = release.info_url?.includes("magnet") ? release.info_url : "";
         if (magnetUrl) {
           try {
+            // Downloads must land in the immutable Download tree, never in the
+            // Jellyfin library. Seeding from the library breaks as soon as
+            // Sonarr/Radarr import renames or moves the file, and it skips the
+            // Download -> Processed -> Library hardlink flow entirely.
             const savePath = request.type === "movie"
-              ? MEDIA_MOVIES
-              : MEDIA_TV;
-            await qbittorrent.addTorrent(magnetUrl, savePath);
+              ? DOWNLOADS_MOVIES
+              : DOWNLOADS_TV;
+            await qbittorrent.addTorrent(magnetUrl, toQBittorrentPath(savePath));
             console.log(`[Grab] Added torrent via magnet for ${request.title}: ${release.title}`);
           } catch (grabErr: any) {
             console.error(`[Grab] Failed to add torrent for ${request.title}:`, grabErr.message);
