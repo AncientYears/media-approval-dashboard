@@ -1183,6 +1183,41 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
           mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         }
+        // Inject a Specials (S00) season for native series when content is on
+        // disk or cached TMDB season-0 episodes exist (mirrors the Sonarr
+        // unrequested-season injection for arr-free franchises).
+        if (sonarrId == null && !mappedSeasons.some((s: any) => s.season === 0)) {
+          const seasonFolder = findSeasonFolder(franchiseTitle, 0);
+          let diskFiles: string[] = [];
+          try {
+            if (seasonFolder) diskFiles = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+          } catch {}
+          let tmdbSpecials = 0;
+          try {
+            const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(libraryKey) as any;
+            if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
+          } catch {}
+          if (diskFiles.length > 0 || tmdbSpecials > 0) {
+            const coveredEps = new Set<number>();
+            for (const f of diskFiles) {
+              const epNum = extractEpisodeFromFilename(f);
+              if (epNum != null) coveredEps.add(epNum);
+            }
+            const extras = unnumberedFilesInSeasonFolder(franchiseTitle, 0);
+            mappedSeasons.push({
+              season: 0,
+              request_id: null,
+              status: null,
+              total_size_mb: 0,
+              release_count: 0,
+              title: franchiseTitle,
+              episode_count: Math.max(tmdbSpecials, coveredEps.size + extras),
+              covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+              extras,
+            });
+            mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+          }
+        }
         if (processedBytes === 0) {
           franchiseSize = mappedSeasons.reduce((sum: number, s: any) => sum + (s.total_size_mb || 0), 0);
         }
@@ -4142,10 +4177,106 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           file_count: fileCount,
         };
       });
+      // Inject a Specials (S00) row when a disk folder or cached TMDB season 0
+      // exists but no media_request row does (specials added after import).
+      if (!seasons.some((s: any) => s.season === 0)) {
+        const seasonFolder = findSeasonFolder(title, 0);
+        let diskFiles: string[] = [];
+        try {
+          if (seasonFolder) diskFiles = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+        } catch {}
+        let tmdbSpecials = 0;
+        try {
+          const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(seed.library_key) as any;
+          if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
+        } catch {}
+        if (diskFiles.length > 0 || tmdbSpecials > 0) {
+          const coveredEps = new Set<number>();
+          for (const f of diskFiles) {
+            const epNum = extractEpisodeFromFilename(f);
+            if (epNum != null) coveredEps.add(epNum);
+          }
+          const extras = unnumberedFilesInSeasonFolder(title, 0);
+          seasons.push({
+            season: 0,
+            request_id: null,
+            status: null,
+            title,
+            episode_count: Math.max(tmdbSpecials, coveredEps.size + extras),
+            covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+            extras,
+            file_count: diskFiles.length,
+          });
+          seasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+        }
+      }
       res.json({ library_key: seed.library_key, title, language: franchiseLanguage(db, seed.library_key), seasons });
     } catch (error) {
       console.error("Error fetching native franchise:", error);
       res.status(500).json({ error: "Failed to fetch native franchise" });
+    }
+  });
+
+  // GET /api/requests/native-franchise/:id/episodes - episode grid for a native
+  // (arr-free) franchise season that has no media_request row yet (injected
+  // Specials). Mirrors /:id/episodes keyed by library_key + season.
+  router.get("/native-franchise/:id/episodes", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(404).json({ error: "Series request with library_key not found" });
+      }
+      const season = parseInt(req.query.season as string, 10);
+      const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
+      const baseTitle = (seed.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const covered = coveredEpisodesForRequest(db, { id: -1, title: baseTitle, season: sNum, episode_count: null } as any);
+      const extras: { name: string }[] = [];
+      try {
+        const folder = findSeasonFolder(baseTitle, sNum);
+        if (folder) {
+          for (const f of fs.readdirSync(folder)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
+          }
+        }
+      } catch {}
+      let meta: SeasonMeta | null = null;
+      try {
+        meta = await fetchTMDBSeason(db, seed.library_key, sNum, baseTitle, { language: franchiseLanguage(db, seed.library_key) });
+      } catch (err: any) {
+        console.error(`[TMDB] native season episode fetch failed for ${seed.library_key} S${sNum}: ${err.message}`);
+      }
+      let episodes: any[];
+      if (meta) {
+        episodes = meta.episodes.map((ep: any) => ({ ...ep, present: covered.has(ep.episode_number) }));
+        const metaNums = new Set(meta.episodes.map((e: any) => e.episode_number));
+        for (const n of covered) {
+          if (!metaNums.has(n)) episodes.push({ episode_number: n, name: "", air_date: null, present: true });
+        }
+        episodes.sort((a, b) => a.episode_number - b.episode_number);
+      } else {
+        const max = covered.size ? Math.max(...covered) : 0;
+        episodes = [];
+        for (let n = 1; n <= max; n++) {
+          episodes.push({ episode_number: n, name: "", air_date: null, present: covered.has(n) });
+        }
+      }
+      res.json({
+        type: "series",
+        season: sNum,
+        title: baseTitle,
+        library_key: seed.library_key,
+        episodes,
+        extras,
+        covered: Array.from(covered).sort((a, b) => a - b),
+        metadata: meta
+          ? { tmdb_show_id: meta.tmdb_show_id, show_name: meta.show_name, resolvedVia: meta.resolvedVia, source: "tmdb" }
+          : null,
+      });
+    } catch (error: any) {
+      console.error("Error fetching native season episodes:", error.message || error);
+      res.status(500).json({ error: "Failed to fetch native season episodes" });
     }
   });
 

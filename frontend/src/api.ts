@@ -49,6 +49,11 @@ export async function fetchNativeFranchise(requestId: number) {
   return response.data;
 }
 
+export async function fetchNativeSeasonEpisodes(requestId: number, season: number) {
+  const response = await api.get(`/requests/native-franchise/${requestId}/episodes`, { params: { season } });
+  return response.data;
+}
+
 export async function refreshRequestMetadata(requestId: number) {
   const response = await api.post(`/requests/${requestId}/refresh-metadata`);
   return response.data;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchRequestEpisodes, refreshRequestMetadata, setFranchiseLanguage } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, setFranchiseLanguage } from "../api";
 import { useToast } from "../components/Toast";
 
 const LANGUAGES = ["pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA", "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO", "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA"];
@@ -20,7 +20,10 @@ export default function NativeFranchise() {
   const loadEpisodes = async (season: any) => {
     if (episodes[season.season]) return;
     try {
-      const data = await fetchRequestEpisodes(season.request_id);
+      const data =
+        season.request_id != null
+          ? await fetchRequestEpisodes(season.request_id)
+          : await fetchNativeSeasonEpisodes(Number(id), season.season);
       setEpisodes((prev) => ({ ...prev, [season.season]: data }));
     } catch {}
   };
@@ -79,8 +82,13 @@ export default function NativeFranchise() {
       await setFranchiseLanguage(seedId, value || null);
       for (const s of franchise.seasons) {
         if (expanded.has(s.season) && episodes[s.season]) {
-          await refreshRequestMetadata(s.request_id);
-          const data = await fetchRequestEpisodes(s.request_id);
+          if (s.request_id != null) {
+            await refreshRequestMetadata(s.request_id);
+          }
+          const data =
+            s.request_id != null
+              ? await fetchRequestEpisodes(s.request_id)
+              : await fetchNativeSeasonEpisodes(Number(id), s.season);
           setEpisodes((ep) => ({ ...ep, [s.season]: data }));
         }
       }
@@ -167,12 +175,18 @@ export default function NativeFranchise() {
                   )}
                 </div>
                 <div className="fr-season-right" style={{ gap: 6 }}>
-                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
-                    {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
-                  </button>
-                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
-                    Open Releases
-                  </button>
+                  {season.request_id != null ? (
+                    <>
+                      <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
+                        {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
+                      </button>
+                      <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
+                        Open Releases
+                      </button>
+                    </>
+                  ) : (
+                    <span className="season-status empty" style={{ fontSize: 11 }}>on disk — no request row</span>
+                  )}
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
                 </div>
               </div>

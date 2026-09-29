@@ -587,10 +587,18 @@ export default function Dashboard() {
                       const total = s.episode_count;
                       const extra = s.extras || 0;
                       const shown = covered + extra;
-                      const denom = total ? total + extra : shown;
+                      const isNativeSpecials = !item.sonarr_id && s.season === 0;
+                      // Native S00 episode_count is a file snapshot that already
+                      // includes the unnumbered extras — adding extras would double
+                      // count. TMDB/Sonarr-backed totals are real episode lists,
+                      // so extras are additive there.
+                      const denom = isNativeSpecials ? Math.max(shown, total || 0) : total ? total + extra : shown;
                       const label = s.request_id ? (denom ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : "pending") : (denom > 0 ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : "—");
+                      const nav = item.sonarr_id
+                        ? (s.request_id ? () => navigate(`/requests/${s.request_id}`, { state: { back: `/managed/${item.sonarr_id}` } }) : undefined)
+                        : () => navigate(`/native/${item.first_request_id}?open=${s.season}`);
                       return (
-                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={s.request_id ? () => navigate(item.sonarr_id ? `/requests/${s.request_id}` : `/native/${item.first_request_id}?open=${s.season}`, item.sonarr_id ? { state: { back: `/managed/${item.sonarr_id}` } } : undefined) : undefined} style={{ opacity: s.request_id ? 1 : 0.4, cursor: s.request_id ? "pointer" : "default" }}>
+                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={nav} style={{ opacity: s.request_id || shown > 0 ? 1 : 0.4, cursor: nav ? "pointer" : "default" }}>
                           <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${shown > 0 ? "has-content" : "empty"}`}>
                             {label}
