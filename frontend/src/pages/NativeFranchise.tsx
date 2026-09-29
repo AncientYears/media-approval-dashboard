@@ -112,7 +112,7 @@ export default function NativeFranchise() {
         <div className="detail-title">
           <span className="detail-title-text">{franchise.title}</span>
           <span className="type-suffix">- Series</span>
-          <span className="rtag" style={{ marginLeft: 8 }}>{franchise.library_key}</span>
+          <span className="rtag" style={{ marginLeft: 8 }} title="library_key — stable franchise identity (series:&lt;tvdb|imdb|slug&gt;:&lt;year&gt;) used to group seasons without Sonarr">{franchise.library_key}</span>
         </div>
         <select
           className="lang-select"

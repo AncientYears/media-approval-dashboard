@@ -73,9 +73,13 @@ function isSeasonPackTitle(title: string, season: number): boolean {
 }
 
 function extractEpisodeFromFilename(filePath: string): number | null {
+  const base = filePath.split(/[/\\]/).pop() || filePath;
+  // "S0X" releases mark standalone specials/movies without TMDB special numbers
+  // (e.g. "Fineasz i Ferb S0XE03 Fretka kontra Wszechświat.mkv"). The trailing
+  // number is the release's own, not a real episode — treat as unnumbered.
+  if (/[Ss]0[Xx]/.test(base)) return null;
   const m = filePath.match(/[Ee](\d{1,3})/);
   if (m) return parseInt(m[1], 10);
-  const base = filePath.split(/[/\\]/).pop() || filePath;
   const lead = base.match(/^(\d{1,3})\s/);
   if (lead) return parseInt(lead[1], 10);
   const ep = base.match(/[Ee]pisode\s*(\d{1,3})/);
