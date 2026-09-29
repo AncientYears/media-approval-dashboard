@@ -2404,6 +2404,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           movies_with_imdb_id: lib.movies.filter((m) => m.imdbId).length,
           movies_without_imdb_id: moviesWithoutImdb.length,
           movies_without_imdb_sample: moviesWithoutImdb.slice(0, SAMPLE),
+          // Movie folders that hold no video directly inside them. Extras-only
+          // or artwork-only folders get dropped by the scanner, so anything
+          // listed here needs a look before import.
+          movies_without_files: lib.movies.filter((m) => !m.files.length).map((m) => m.dir),
           series_shows: lib.shows.length,
           series_files: lib.shows.reduce((n, s) => n + s.files.length, 0),
           series_with_imdb_id: lib.shows.filter((s) => s.imdbId).length,

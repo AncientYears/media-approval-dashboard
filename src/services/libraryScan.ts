@@ -17,8 +17,23 @@ const YEAR_RANGE_RE = /[\[(]?((?:19|20)\d{2})\s*[-/]\s*(?:19|20)\d{2}[\])]?/;
 /** Unbracketed year, e.g. "Dune.2021.1080p". Only a last resort -- a title can
  *  contain a bare number ("1917 (2019)"), so a bracketed year must win. */
 const BARE_YEAR_RE = /(?:^|[.\s[(])((?:19|20)\d{2})(?=[.\s\]),]|$)/;
-const SEASON_DIR_RE =
+export const SEASON_DIR_RE =
   /(?:^|[^a-z0-9])(?:s(\d{1,2})|season[\s._-]*(\d{1,2})|sezon[\s._-]*(\d{1,2}))(?![0-9])/i;
+/** "Sezon III" -- the Polish library uses Roman numerals for season folders. */
+export const ROMAN_SEASON_RE = /(?:^|[^a-z0-9])(?:season|sezon)[\s._-]*([ivxlc]{1,5})(?![a-z0-9])/i;
+
+function romanToNumber(raw: string): number | null {
+  const map: Record<string, number> = { i: 1, v: 5, x: 10, l: 50, c: 100 };
+  const s = raw.toLowerCase();
+  let total = 0;
+  for (let i = 0; i < s.length; i++) {
+    const v = map[s[i]];
+    if (v === undefined) return null;
+    // A smaller numeral before a larger one is subtracted (IV = 4, IX = 9).
+    total += i + 1 < s.length && map[s[i + 1]] > v ? -v : v;
+  }
+  return total > 0 && total <= 99 ? total : null;
+}
 const EPISODE_RE = /\bs(\d{1,2})e(\d{1,3})\b/i;
 /** Trailing metadata groups: ids, season hints, quality, language, release group. */
 const BRACKET_GROUP_RE = /[\[({][^\])}]*[\])}]/g;
@@ -94,15 +109,29 @@ export function parseDirName(name: string): {
   // "Krecik  Krtek (1957-2002) {Sezon 1} DVDRip AVC (Lektor PL) NoGrp [R68]".
   // A bare year with no brackets, e.g. "Kacze opowieści - DuckTales 2017-2021".
   // YEAR_RANGE_RE already covers the hyphenated form.
-  title = title
-    .replace(/\b(19|20)\d{2}\b/g, " ")
-    .replace(/\b(1080p|2160p|720p|480p|4K|UHD)\b/gi, " ")
-    .replace(/\b(BluRay|Blu-Ray|WEB[- .]?DL|WEBRip|WEB|HDTV|DVDRip|DVD|REMUX)\b/gi, " ")
-    .replace(/\b(x264|x265|h ?\.?264|h ?\.?265|HEVC|AVC)\b/gi, " ")
-    .replace(/\bNoGrp\b/gi, " ")
-    .replace(/[.\-_]+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+  // Work on a dotted/underscored token list rather than a flattened string, so
+  // a token is dropped only when it is recognisably release metadata. Guessing
+  // at trailing release groups by shape would eat real title words ("The
+  // Smurfs" -> "The"), so that is deliberately not done: a slightly messy
+  // title is much cheaper to fix than a truncated one.
+  const drop = [
+    /^(?:19|20)\d{2}$/, // bare year
+    /^\d{3,4}[pi]$/, // 1080p
+    /^(?:4k|uhd|hd|bd|sd|remux|bdrip|dvdrip|web|webrip|web-dl|hdtv|dvd|video)$/i,
+    /^(?:x|h)[ .]?26[45](?:[-._][a-z0-9]{2,12})?$/i, // x264-GRP, 264-AL3X, H.264
+    /^(?:h|hevc|avc|xvid|divx)$/i,
+    /^(?:mkv|mp4|avi|mov|ts|m4v)$/i,
+    /^(?:pl|en|de|fr|es|it|nl|sv|no|da|fi|cs|hu|ro|tr|jp|kr|cn|multi)$/i,
+    /^(?:dub|dubbing|napis|sub|subs|subbed|dual|lektor)$/i,
+    /^s(?:eason|ezon)?[\s._-]*\d{1,2}$/i,
+    /^(?:no?grp|rarbg|yify|yts|ettv|eldb|amzn|ntb|pldub|0nnline)$/i,
+  ];
+  const words = title
+    .split(/[.\s_]+/)
+    .map((w) => w.trim())
+    .filter((w) => w && !drop.some((re) => re.test(w)));
+
+  title = words.join(" ").replace(/\s{2,}/g, " ").trim();
 
   return { title: title || name, year: yearMatch ? Number(yearMatch[1]) : null, imdbId, tvdbId };
 }
@@ -174,15 +203,22 @@ function listEntries(dir: string, errors: string[]): fs.Dirent[] {
   }
 }
 
-function walkFiles(root: string, errors: string[]): string[] {
+/**
+ * Collect video files under a root. `maxDepth` counts directory levels below the
+ * root: 0 is files directly inside it, undefined means unlimited.
+ */
+function walkFiles(root: string, errors: string[], maxDepth?: number): string[] {
   const out: string[] = [];
-  const stack: string[] = [root];
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
   while (stack.length) {
-    const dir = stack.pop()!;
+    const { dir, depth } = stack.pop()!;
     for (const entry of listEntries(dir, errors)) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile() && isVideoFile(full)) out.push(full);
+      if (entry.isDirectory()) {
+        if (maxDepth === undefined || depth + 1 <= maxDepth) stack.push({ dir: full, depth: depth + 1 });
+      } else if (entry.isFile() && isVideoFile(full)) {
+        out.push(full);
+      }
     }
   }
   return out;
@@ -210,7 +246,12 @@ function resolveEpisode(
     if (!part) continue;
     const m = part.match(SEASON_DIR_RE);
     if (m) {
-      return { season: Number(m[1] ?? m[2]), episode: null, source: "folder" };
+      return { season: Number(m[1] ?? m[2] ?? m[3]), episode: null, source: "folder" };
+    }
+    const rm = part.match(ROMAN_SEASON_RE);
+    if (rm) {
+      const n = romanToNumber(rm[1]);
+      if (n !== null) return { season: n, episode: null, source: "folder" };
     }
   }
 
@@ -268,16 +309,20 @@ export function scanLibrary(
 
     const meta = parseDirName(entry.name);
     const files: ScannedFile[] = [];
-    for (const f of walkFiles(full, errors)) {
+    // Only files sitting directly in the movie folder count as versions. A full
+    // Blu-ray extract also nests featurettes under "Extras/" -- Pitch Black
+    // keeps its Director's Cut and Theatrical cuts here plus 56 extras deeper,
+    // and recursing would report 58 versions for a movie that has two.
+    for (const f of walkFiles(full, errors, 1)) {
       const sf = toScannedFile(f, null);
       if (sf) {
         files.push(sf);
         filesScanned++;
       }
     }
-    // Movie ids usually live in the filename, not the folder: the folder is
-    // "Avatar (2009)" while the file is "avatar.2009.1080p.web-dl.tt1049413.mkv".
     if (files.length) {
+      // Movie ids usually live in the filename, not the folder: the folder is
+      // "Avatar (2009)" while the file is "avatar.2009.1080p.web-dl.tt1049413.mkv".
       movies.push({
         ...meta,
         imdbId: meta.imdbId ?? findImdbId(files.map((f) => path.basename(f.path))),
