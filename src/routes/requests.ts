@@ -79,7 +79,11 @@ function extractEpisodeFromFilename(filePath: string): number | null {
   // number is the release's own, not a real episode — treat as unnumbered.
   if (/[Ss]0[Xx]/.test(base)) return null;
   const m = filePath.match(/[Ee](\d{1,3})/);
-  if (m) return parseInt(m[1], 10);
+  if (m) {
+    // E00 (pilot/special convention) is not a real episode either.
+    const n = parseInt(m[1], 10);
+    if (n > 0) return n;
+  }
   const lead = base.match(/^(\d{1,3})\s/);
   if (lead) return parseInt(lead[1], 10);
   const ep = base.match(/[Ee]pisode\s*(\d{1,3})/);
