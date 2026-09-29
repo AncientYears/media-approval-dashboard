@@ -27,6 +27,7 @@ import {
   PROCESSING_WORKSPACE,
   TRACKERS_DIR,
   MEDIA_TV,
+  MEDIA_MOVIES,
 } from "../config/paths";
 import fs from "fs";
 import path from "path";
@@ -5330,6 +5331,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         ).get(id) as any;
 
         if (!release || !release.torrent_hash) {
+          if (request.library_key) {
+            return res.status(400).json({ error: "arr-free request — use the per-file To Library button in the processed panel" });
+          }
           return res.status(400).json({ error: "No torrent found for this request" });
         }
 
@@ -5364,6 +5368,39 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (!destFolder) {
           return res.status(500).json({ error: "Could not determine movie folder from Radarr" });
         }
+      } else if (request.library_key) {
+        // Native (arr-free) request: resolve the library destination from the
+        // title, tolerating localized names / year suffixes like the processed
+        // folder lookups do.
+        if (request.type === "series") {
+          const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+          let showFolder = path.join(MEDIA_TV, baseTitle);
+          if (!fs.existsSync(showFolder)) {
+            const want = normalizeFolder(baseTitle);
+            let found: string | null = null;
+            try {
+              for (const d of fs.readdirSync(MEDIA_TV)) {
+                const norm = normalizeFolder(d);
+                if (!norm) continue;
+                if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+                  found = d;
+                  break;
+                }
+              }
+            } catch {}
+            if (found) showFolder = path.join(MEDIA_TV, found);
+          }
+          if (!fs.existsSync(showFolder)) {
+            return res.status(500).json({ error: "Could not locate library folder for this series" });
+          }
+          const seasonNum = request.season || 1;
+          destFolder = path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
+        } else {
+          destFolder = MEDIA_MOVIES;
+        }
+        try {
+          if (!fs.existsSync(destFolder)) fs.mkdirSync(destFolder, { recursive: true });
+        } catch {}
       } else {
         return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
       }
