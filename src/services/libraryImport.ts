@@ -72,7 +72,7 @@ export interface LibraryImportCandidate {
   requestId: number | null;
   existingStatus: string | null;
   existingEpisodeCount: number | null;
-  action: "create" | "adopt" | "update" | "skip";
+  action: "create" | "adopt" | "update" | "skip" | "noop";
   reason?: string;
 }
 
@@ -189,6 +189,24 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
     rows.find((r: any) => normTitle(r.title) === normTitle(title) && r.season === season && !r.library_key) ||
     null;
 
+  // Already-associated processed files per request, so "update" only fires when
+  // there is actually something new to merge (an idempotent re-run → noop).
+  const ahRows = db
+    .prepare(
+      "SELECT request_id, processed_files FROM approval_history WHERE release_id IS NULL" +
+        " AND request_id IN (SELECT id FROM media_requests WHERE library_key IS NOT NULL)",
+    )
+    .all() as any[];
+  const associatedByRequest = new Map<number, Set<string>>();
+  for (const r of ahRows) {
+    let set = associatedByRequest.get(r.request_id);
+    if (!set) {
+      set = new Set<string>();
+      associatedByRequest.set(r.request_id, set);
+    }
+    for (const p of JSON.parse(r.processed_files || "[]")) set.add(p);
+  }
+
   // ---- Phase 1: group every library file by identity -----------------------
 
   // Movies: identity = folder identity enriched from file names (IMDb id / year).
@@ -279,7 +297,9 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
     } else if (existing.status !== "COMPLETED") {
       candidates.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
     } else {
-      candidates.push({ ...base, action: "update" });
+      const associated = associatedByRequest.get(existing.id) ?? new Set<string>();
+      const missing = base.processedRelPaths.filter((p) => !associated.has(p));
+      candidates.push(missing.length ? { ...base, action: "update" } : { ...base, action: "noop" });
     }
   }
 
@@ -313,12 +333,15 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
     } else if (existing.status !== "COMPLETED") {
       candidates.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
     } else {
-      candidates.push({ ...base, action: "update" });
+      const associated = associatedByRequest.get(existing.id) ?? new Set<string>();
+      const missing = base.processedRelPaths.filter((p) => !associated.has(p));
+      const epStale = existing.episode_count == null || base.episodeCount !== existing.episode_count;
+      candidates.push(missing.length || epStale ? { ...base, action: "update" } : { ...base, action: "noop" });
     }
   }
 
   const totals = { create: 0, adopt: 0, update: 0, skip: 0 };
-  for (const c of candidates) totals[c.action]++;
+  for (const c of candidates) if (c.action !== "noop") totals[c.action]++;
 
   return { candidates, totals, filesScanned: lib.filesScanned + proc.filesScanned, unparsed: lib.unparsed.length, errors };
 }
@@ -362,6 +385,7 @@ export function executeLibraryImport(db: Database, plan: LibraryImportPlan): Lib
   const totals = { create: 0, adopt: 0, update: 0, skip: 0 };
 
   for (const c of plan.candidates) {
+    if (c.action === "noop") continue;
     totals[c.action]++;
     if (c.action === "skip") continue;
 
