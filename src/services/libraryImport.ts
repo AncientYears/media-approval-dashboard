@@ -71,6 +71,7 @@ export interface LibraryImportCandidate {
   processedRelPaths: string[];
   requestId: number | null;
   existingStatus: string | null;
+  existingEpisodeCount: number | null;
   action: "create" | "adopt" | "update" | "skip";
   reason?: string;
 }
@@ -162,10 +163,10 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
   // Fetch media_requests once; filtering happens in JS so the plan is safe
   // against rows appearing mid-scan.
   const movieRows = db
-    .prepare("SELECT id, title, status, library_key, radarr_id FROM media_requests WHERE type = 'movie'")
+    .prepare("SELECT id, title, status, library_key, radarr_id, episode_count FROM media_requests WHERE type = 'movie'")
     .all() as any[];
   const seriesRows = db
-    .prepare("SELECT id, title, status, library_key, sonarr_id, season FROM media_requests WHERE type = 'series'")
+    .prepare("SELECT id, title, status, library_key, sonarr_id, season, episode_count FROM media_requests WHERE type = 'series'")
     .all() as any[];
 
   const processedRelPathsFor = (files: ScannedFile[], processedRoot: string): { rels: string[]; matched: number } => {
@@ -267,6 +268,7 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
       processedRelPaths: rels,
       requestId: existing?.id ?? null,
       existingStatus: existing?.status ?? null,
+      existingEpisodeCount: existing?.episode_count ?? null,
     };
     if (!existing) {
       candidates.push({ ...base, action: "create" });
@@ -300,6 +302,7 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
       processedRelPaths: rels,
       requestId: existing?.id ?? null,
       existingStatus: existing?.status ?? null,
+      existingEpisodeCount: existing?.episode_count ?? null,
     };
     if (!existing) {
       candidates.push({ ...base, action: "create" });
@@ -367,6 +370,11 @@ export function executeLibraryImport(db: Database, plan: LibraryImportPlan): Lib
       if (c.action === "adopt") {
         adoptReq.run(c.libraryKey, c.requestId);
         adoptedIds.push(c.requestId);
+      }
+      // Refresh a stale episode count (imports bump file parsing; sonarr-less
+      // rows can otherwise be stuck on an undercount forever).
+      if (c.kind === "series" && c.episodeCount != null && c.episodeCount !== c.existingEpisodeCount) {
+        db.prepare("UPDATE media_requests SET episode_count = ? WHERE id = ?").run(c.episodeCount, c.requestId);
       }
       attachProcessed(db, c.requestId, c.processedRelPaths);
     }
