@@ -1,7 +1,7 @@
 import path from "path";
 import { Database } from "better-sqlite3";
 import { MEDIA_MOVIES, MEDIA_TV, PROCESSED_MOVIES, PROCESSED_TV } from "../config/paths";
-import { scanLibrary, scanProcessed, type ScannedFile } from "./libraryScan";
+import { parseLooseMovieName, scanLibrary, scanProcessed, type ScannedFile, type ScannedMovie, type ScannedShow } from "./libraryScan";
 
 /**
  * Arr-free library reconcile.
@@ -10,9 +10,23 @@ import { scanLibrary, scanProcessed, type ScannedFile } from "./libraryScan";
  * a movie folder or a series folder that exists IS content the app owns, and
  * without Radarr/Sonarr there is no external metadata service to ask. This
  * planner turns disk state into media_requests (identity = library_key, our own
- * key derived from the folder: family + stable id/title + year) and links each
- * library file to its processed counterpart by inode, exactly like adoption
- * does for links.
+ * key derived from the folder: family + stable id/title + year).
+ *
+ * Identity is derived from the richest source available, because library FOLDER
+ * names are unreliable: two "Akademia pana Kleksa" folders may be the 1984 and
+ * 2024 films, "Hobbit" may be three different films, and the 1987 vs 2017
+ * DuckTales shows can share a name. So:
+ *
+ * - Movie identity: folder title/year, enriched from the movie FILES (their
+ *   embedded IMDb id and year win), so Kleks Academy (2024), Mr Blot's Academy
+ *   (1984) and Travels of Mr Blot (1986) get distinct keys even though two of
+ *   their folders share a name.
+ * - Series identity: folder title/year, enriched from the PROCESSED show
+ *   folder each file inode-links to (adoption preserves that structure), so
+ *   DuckTales (2017) keyed against Kacze opowieści - DuckTales (1987) resolve
+ *   apart because the 2017 processed folder carries a year.
+ * - Folders that resolve to the SAME identity are merged into one request
+ *   (multiple versions), never duplicated.
  *
  * Safety:
  * - Read-only planner; execute() only INSERTs / UPDATEs. It never deletes rows
@@ -108,6 +122,12 @@ function distinctEpisodes(files: ScannedFile[]): number {
   return eps.size || files.length;
 }
 
+/** A processed file, enriched with the parsed year of the show folder it lives in. */
+interface ProcRef {
+  path: string;
+  showYear: number | null;
+}
+
 /**
  * Produce the reconcile plan.
  *
@@ -117,23 +137,22 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
   const lib = scanLibrary(MEDIA_MOVIES, MEDIA_TV);
   const proc = scanProcessed(PROCESSED_MOVIES, PROCESSED_TV);
 
-  const candidates: LibraryImportCandidate[] = [];
   const errors: string[] = [...lib.errors, ...proc.errors];
-  const skippedSoFar = new Map<string, string>();
 
   // ino -> processed files. A hardlink of a library file shares the ino, so the
   // same file may map to several processed paths (multiple versions, adoption
-  // links, download twin).
-  const procByIno = new Map<number, ScannedFile[]>();
+  // links, download twin). Series refs carry the parsed year of their processed
+  // show folder so identity can key off the richer processed structure.
+  const procByIno = new Map<number, ProcRef[]>();
   for (const f of proc.movieFiles) {
     const arr = procByIno.get(f.ino) || [];
-    arr.push(f);
+    arr.push({ path: f.path, showYear: null });
     procByIno.set(f.ino, arr);
   }
   for (const s of proc.shows) {
     for (const f of s.files) {
       const arr = procByIno.get(f.ino) || [];
-      arr.push(f);
+      arr.push({ path: f.path, showYear: s.year });
       procByIno.set(f.ino, arr);
     }
   }
@@ -147,8 +166,7 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
     .prepare("SELECT id, title, status, library_key, sonarr_id, season FROM media_requests WHERE type = 'series'")
     .all() as any[];
 
-  const buildMovie = (dir: string, title: string, year: number | null, imdbId: string | null, files: ScannedFile[]): LibraryImportCandidate => {
-    const key = movieKey(imdbId, title, year);
+  const processedRelPathsFor = (files: ScannedFile[], processedRoot: string): { rels: string[]; matched: number } => {
     const rels: string[] = [];
     let matched = 0;
     for (const f of files) {
@@ -156,153 +174,141 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
       if (!pf) continue;
       matched++;
       for (const p of pf) {
-        const rel = path.relative(PROCESSED_MOVIES, p.path);
+        const rel = path.relative(processedRoot, p.path);
         if (rel && !rel.startsWith("..") && !rels.includes(rel)) rels.push(rel);
       }
     }
-
-    const byKey = movieRows.filter((r: any) => r.library_key === key);
-    const byTitle = !byKey.length
-      ? movieRows.filter((r: any) => normTitle(r.title) === normTitle(title) && !r.library_key)
-      : [];
-
-    const existing: any = byKey[0] || byTitle[0];
-    if (!existing) {
-      return {
-        kind: "movie",
-        title,
-        year,
-        libraryDir: dir,
-        libraryKey: key,
-        season: null,
-        episodeCount: null,
-        filesMatched: matched,
-        filesTotal: files.length,
-        processedRelPaths: rels,
-        requestId: null,
-        existingStatus: null,
-        action: "create",
-      };
-    }
-
-    const base = {
-      kind: "movie" as const,
-      title,
-      year,
-      libraryDir: dir,
-      libraryKey: key,
-      season: null,
-      episodeCount: null,
-      filesMatched: matched,
-      filesTotal: files.length,
-      processedRelPaths: rels,
-      requestId: existing.id,
-      existingStatus: existing.status,
-    };
-
-    if (ACTIVE_STATUSES.has(existing.status)) {
-      return { ...base, action: "skip", reason: `existing request ${existing.status}` };
-    }
-    if (!existing.library_key) {
-      return { ...base, action: "adopt", reason: DORMANT_STATUSES.has(existing.status) ? `was ${existing.status}` : undefined };
-    }
-    if (existing.status !== "COMPLETED") {
-      return { ...base, action: "skip", reason: `existing request ${existing.status}` };
-    }
-    return { ...base, action: "update" };
+    return { rels, matched };
   };
 
-  const buildShowSeason = (
-    dir: string,
-    title: string,
-    year: number | null,
-    imdbId: string | null,
-    tvdbId: string | null,
-    files: ScannedFile[],
-  ): LibraryImportCandidate[] => {
-    const key = showKey(tvdbId, imdbId, title, year);
+  const resolveRow = (rows: any[], key: string, title: string, season: number | null): any =>
+    rows.find((r: any) => r.library_key === key && r.season === season) ||
+    rows.find((r: any) => normTitle(r.title) === normTitle(title) && r.season === season && !r.library_key) ||
+    null;
 
-    // Group season-0 files (specials) and parsed seasons; drop unresolved files.
+  // ---- Phase 1: group every library file by identity -----------------------
+
+  // Movies: identity = folder identity enriched from file names (IMDb id / year).
+  const movieGroups = new Map<string, { title: string; year: number | null; dir: string; files: ScannedFile[] }>();
+  for (const m of lib.movies) {
+    const fileYears: number[] = [];
+    const fileImdb: string[] = [];
+    for (const f of m.files) {
+      const fm = parseLooseMovieName(path.basename(f.path));
+      if (fm.year != null) fileYears.push(fm.year);
+      if (fm.imdbId) fileImdb.push(fm.imdbId);
+    }
+    const distinctYears = [...new Set(fileYears)];
+    const year = m.year ?? (distinctYears.length === 1 ? distinctYears[0] : null);
+    const imdbId = m.imdbId ?? fileImdb[0] ?? null;
+    const key = movieKey(imdbId, m.title, year);
+    const existing = movieGroups.get(key);
+    if (existing) {
+      existing.files.push(...m.files);
+    } else {
+      movieGroups.set(key, { title: m.title, year, dir: m.dir, files: [...m.files] });
+    }
+  }
+
+  // Series: identity = folder identity enriched from the processed show folder
+  // each file links to (cracks DuckTales (1987) vs (2017)).
+  const seriesGroups = new Map<string, { title: string; year: number | null; dir: string; season: number; files: ScannedFile[] }>();
+  for (const s of lib.shows) {
+    let year = s.year;
+    if (year == null) {
+      const years = new Set<number>();
+      for (const f of s.files) {
+        for (const pr of procByIno.get(f.ino) || []) {
+          if (pr.showYear != null) years.add(pr.showYear);
+        }
+      }
+      if (years.size === 1) year = [...years][0];
+    }
+    const key = showKey(s.tvdbId, s.imdbId, s.title, year);
+
     const bySeason = new Map<number, ScannedFile[]>();
-    for (const f of files) {
+    for (const f of s.files) {
       if (f.season == null) continue;
       const arr = bySeason.get(f.season) || [];
       arr.push(f);
       bySeason.set(f.season, arr);
     }
 
-    const out: LibraryImportCandidate[] = [];
-    for (const [season, seasonFiles] of [...bySeason.entries()].sort((a, b) => a[0] - b[0])) {
-      const rels: string[] = [];
-      let matched = 0;
-      for (const f of seasonFiles) {
-        const pf = procByIno.get(f.ino);
-        if (!pf) continue;
-        matched++;
-        for (const p of pf) {
-          const rel = path.relative(PROCESSED_TV, p.path);
-          if (rel && !rel.startsWith("..") && !rels.includes(rel)) rels.push(rel);
-        }
+    for (const [season, files] of bySeason) {
+      const groupKey = `${key}::${season}`;
+      const existing = seriesGroups.get(groupKey);
+      if (existing) {
+        existing.files.push(...files);
+      } else {
+        seriesGroups.set(groupKey, { title: s.title, year, dir: s.dir, season, files: [...files] });
       }
-
-      const byKey = seriesRows.filter((r: any) => r.library_key === key && r.season === season);
-      const byTitle = !byKey.length
-        ? seriesRows.filter((r: any) => normTitle(r.title) === normTitle(title) && r.season === season && !r.library_key)
-        : [];
-
-      const existing: any = byKey[0] || byTitle[0];
-
-      const base = {
-        kind: "series" as const,
-        title,
-        year,
-        libraryDir: dir,
-        libraryKey: key,
-        season,
-        episodeCount: distinctEpisodes(seasonFiles),
-        filesMatched: matched,
-        filesTotal: seasonFiles.length,
-        processedRelPaths: rels,
-        requestId: existing?.id ?? null,
-        existingStatus: existing?.status ?? null,
-      };
-
-      if (!existing) {
-        out.push({ ...base, action: "create" });
-        continue;
-      }
-      if (ACTIVE_STATUSES.has(existing.status)) {
-        out.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
-        continue;
-      }
-      if (!existing.library_key) {
-        out.push({
-          ...base,
-          action: "adopt",
-          reason: DORMANT_STATUSES.has(existing.status) ? `was ${existing.status}` : undefined,
-        });
-        continue;
-      }
-      if (existing.status !== "COMPLETED") {
-        out.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
-        continue;
-      }
-      out.push({ ...base, action: "update" });
     }
-
-    // A dormant/absent row may already claim this identity; dedupe by
-    // season+requestId so we never double-plan.
-    return out;
-  };
-
-  for (const m of lib.movies) {
-    candidates.push(buildMovie(m.dir, m.title, m.year, m.imdbId, m.files));
   }
-  for (const s of lib.shows) {
-    for (const c of buildShowSeason(s.dir, s.title, s.year, s.imdbId, s.tvdbId, s.files)) {
-      if (c.action === "skip" && skippedSoFar.has(`${c.libraryKey}:${c.season}`)) continue;
-      if (c.action === "skip") skippedSoFar.set(`${c.libraryKey}:${c.season}`, "");
-      candidates.push(c);
+
+  // ---- Phase 2: candidate per identity -------------------------------------
+
+  const candidates: LibraryImportCandidate[] = [];
+
+  for (const [key, g] of movieGroups) {
+    const { rels, matched } = processedRelPathsFor(g.files, PROCESSED_MOVIES);
+    const existing = resolveRow(movieRows, key, g.title, null);
+    const base = {
+      kind: "movie" as const,
+      title: g.title,
+      year: g.year,
+      libraryDir: g.dir,
+      libraryKey: key,
+      season: null,
+      episodeCount: null,
+      filesMatched: matched,
+      filesTotal: g.files.length,
+      processedRelPaths: rels,
+      requestId: existing?.id ?? null,
+      existingStatus: existing?.status ?? null,
+    };
+    if (!existing) {
+      candidates.push({ ...base, action: "create" });
+    } else if (ACTIVE_STATUSES.has(existing.status)) {
+      candidates.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
+    } else if (!existing.library_key) {
+      candidates.push({ ...base, action: "adopt", reason: DORMANT_STATUSES.has(existing.status) ? `was ${existing.status}` : undefined });
+    } else if (existing.status !== "COMPLETED") {
+      candidates.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
+    } else {
+      candidates.push({ ...base, action: "update" });
+    }
+  }
+
+  for (const [groupKey, g] of [...seriesGroups.entries()].sort(
+    (a, b) => a[1].title.localeCompare(b[1].title) || a[1].season - b[1].season,
+  )) {
+    const key = groupKey.slice(0, groupKey.lastIndexOf("::"));
+    const { rels, matched } = processedRelPathsFor(g.files, PROCESSED_TV);
+    const existing = resolveRow(seriesRows, key, g.title, g.season);
+    const base = {
+      kind: "series" as const,
+      title: g.title,
+      year: g.year,
+      libraryDir: g.dir,
+      libraryKey: key,
+      season: g.season,
+      episodeCount: distinctEpisodes(g.files),
+      filesMatched: matched,
+      filesTotal: g.files.length,
+      processedRelPaths: rels,
+      requestId: existing?.id ?? null,
+      existingStatus: existing?.status ?? null,
+    };
+    if (!existing) {
+      candidates.push({ ...base, action: "create" });
+    } else if (ACTIVE_STATUSES.has(existing.status)) {
+      candidates.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
+    } else if (!existing.library_key) {
+      candidates.push({ ...base, action: "adopt", reason: DORMANT_STATUSES.has(existing.status) ? `was ${existing.status}` : undefined });
+    } else if (existing.status !== "COMPLETED") {
+      candidates.push({ ...base, action: "skip", reason: `existing request ${existing.status}` });
+    } else {
+      candidates.push({ ...base, action: "update" });
     }
   }
 
