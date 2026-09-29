@@ -20,6 +20,10 @@ function apiKey(): string {
   return process.env.TMDB_API_KEY || "";
 }
 
+function lang(): string {
+  return process.env.TMDB_LANGUAGE || "en-US";
+}
+
 function extractExternalId(libraryKey: string): { source: "tvdb_id" | "imdb_id"; id: string } | null {
   const parts = libraryKey.split(":");
   const ident = parts[1] ?? "";
@@ -49,12 +53,12 @@ async function tmdbGet<T>(path: string): Promise<T | null> {
 async function resolveShowId(libraryKey: string, title: string): Promise<{ id: number; via: string } | null> {
   const ext = extractExternalId(libraryKey);
   if (ext) {
-    const data = await tmdbGet<any>(`/find/${encodeURIComponent(ext.id)}?external_source=${ext.source}&language=en-US`);
+    const data = await tmdbGet<any>(`/find/${encodeURIComponent(ext.id)}?external_source=${ext.source}&language=${lang()}`);
     const hit = data?.tv_results?.[0];
     if (hit?.id) return { id: hit.id, via: ext.source };
   }
   const year = libraryKeyYear(libraryKey);
-  const query = `/search/tv?query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ""}&language=en-US`;
+  const query = `/search/tv?query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ""}&language=${lang()}`;
   const data = await tmdbGet<any>(query);
   const hit = data?.results?.[0];
   if (hit?.id) return { id: hit.id, via: "search" };
@@ -89,7 +93,7 @@ export async function fetchTMDBSeason(
     if (!cacheRow) console.warn(`[TMDB] no show match for ${libraryKey} "${title}"`);
     return null;
   }
-  const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=en-US`);
+  const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${lang()}`);
   if (!data?.episodes) return null;
 
   const meta: SeasonMeta = {
