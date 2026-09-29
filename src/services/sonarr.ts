@@ -65,7 +65,7 @@ export class SonarrService {
 
       return Array.from(seasonMap.values());
     } catch (error) {
-      console.error("Sonarr: Failed to fetch wanted missing episodes", error);
+      console.error(`Sonarr: Failed to fetch wanted missing episodes: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -77,7 +77,7 @@ export class SonarrService {
       const response = await this.client.get("/api/v3/release", { params });
       return response.data as RadarrSearchResult[];
     } catch (error) {
-      console.error("Sonarr: Failed to search releases", error);
+      console.error(`Sonarr: Failed to search releases: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -90,7 +90,7 @@ export class SonarrService {
       });
       return response.data;
     } catch (error) {
-      console.error("Sonarr: Failed to grab release", error);
+      console.error(`Sonarr: Failed to grab release: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -114,7 +114,7 @@ export class SonarrService {
       const response = await this.client.get("/api/v3/series");
       return response.data;
     } catch (error) {
-      console.error("Sonarr: Failed to fetch all series", error);
+      console.error(`Sonarr: Failed to fetch all series: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -195,7 +195,7 @@ export class SonarrService {
         episodeFile?: { id: number; path: string; fileName: string; size: number };
       }>;
     } catch (error) {
-      console.error(`[Sonarr] Failed to fetch episodes for series ${seriesId} season ${seasonNumber}:`, error);
+      console.error(`[Sonarr] Failed to fetch episodes for series ${seriesId} season ${seasonNumber}: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -217,8 +217,8 @@ export class SonarrService {
       await this.client.post("/api/v3/command", body);
       return { success: true };
     } catch (error) {
-      console.error("Sonarr: scanDownloadedEpisodes failed", error);
-      return { success: false, error: String(error) };
+      console.error(`Sonarr: scanDownloadedEpisodes failed: ${errorSummary(error)}`);
+      return { success: false, error: errorSummary(error) };
     }
   }
 

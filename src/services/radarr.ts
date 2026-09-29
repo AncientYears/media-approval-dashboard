@@ -22,8 +22,8 @@ export class RadarrService {
         params: { monitored: true },
       });
       return response.data.filter((m: any) => m.monitored);
-    } catch (error) {
-      console.error("Radarr: Failed to fetch wanted movies", error);
+} catch (error) {
+      console.error(`Radarr: Failed to fetch wanted movies: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -37,8 +37,8 @@ export class RadarrService {
         },
       });
       return response.data as RadarrSearchResult[];
-    } catch (error) {
-      console.error("Radarr: Failed to search releases", error);
+} catch (error) {
+      console.error(`Radarr: Failed to search releases: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -50,8 +50,8 @@ export class RadarrService {
         indexerId,
       });
       return response.data;
-    } catch (error) {
-      console.error("Radarr: Failed to grab release", error);
+} catch (error) {
+      console.error(`Radarr: Failed to grab release: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -61,7 +61,7 @@ export class RadarrService {
       const response = await this.client.get(`/api/v3/movie/${movieId}`);
       return response.data;
     } catch (error) {
-      console.error("Radarr: Failed to fetch movie", error);
+      console.error(`Radarr: Failed to fetch movie: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -93,7 +93,7 @@ export class RadarrService {
       const response = await this.client.get("/api/v3/movie");
       return response.data as Array<{ id: number; title: string; hasFile: boolean; monitored: boolean }>;
     } catch (error) {
-      console.error("Radarr: Failed to fetch all movies", error);
+      console.error(`Radarr: Failed to fetch all movies: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -123,7 +123,7 @@ export class RadarrService {
       });
       console.log(`[Radarr] Deleted movie ${movieId} (deleteFiles=${deleteFiles})`);
     } catch (error) {
-      console.error(`[Radarr] Failed to delete movie ${movieId}:`, error);
+      console.error(`[Radarr] Failed to delete movie ${movieId}: ${errorSummary(error)}`);
       throw error;
     }
   }
@@ -145,8 +145,8 @@ export class RadarrService {
       await this.client.post("/api/v3/command", body);
       return { success: true };
     } catch (error) {
-      console.error("Radarr: scanDownloadedMovie failed", error);
-      return { success: false, error: String(error) };
+      console.error(`Radarr: scanDownloadedMovie failed: ${errorSummary(error)}`);
+      return { success: false, error: errorSummary(error) };
     }
   }
 
