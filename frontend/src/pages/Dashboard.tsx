@@ -303,7 +303,7 @@ export default function Dashboard() {
                 lines.push("New COMPLETED requests:");
                 for (const c of (plan.candidates || [])) {
                   if (c.action !== "create") continue;
-                  lines.push(`  + [${c.kind}] ${c.title}${c.season != null ? ` S${String(c.season).padStart(2, "0")}` : ""} — ${c.filesMatched}/${c.filesTotal} file(s) linked into processed`);
+                  lines.push(`  + [${c.kind}] ${c.title}${c.season != null ? ` S${String(c.season).padStart(2, "0")}` : ""} → ${c.libraryKey} — ${c.filesMatched}/${c.filesTotal} file(s)`);
                 }
               }
               if ((t.adopt || 0) > 0) {
@@ -311,7 +311,7 @@ export default function Dashboard() {
                 lines.push("Asserted library identity onto existing rows:");
                 for (const c of (plan.candidates || [])) {
                   if (c.action !== "adopt") continue;
-                  lines.push(`  = [${c.kind}] ${c.title}${c.season != null ? ` S${String(c.season).padStart(2, "0")}` : ""}#${c.requestId}${c.reason ? ` (${c.reason})` : ""}`);
+                  lines.push(`  = [${c.kind}] ${c.title}${c.season != null ? ` S${String(c.season).padStart(2, "0")}` : ""} → ${c.libraryKey}${c.reason ? ` (${c.reason})` : ""}`);
                 }
               }
               if ((t.update || 0) > 0) {
