@@ -277,6 +277,85 @@ function processedDestForEntry(entryPath: string, type: string): { destDir: stri
   return { destDir: PROCESSED_TV, base: path.basename(entryPath) };
 }
 
+// Find the media_request (native or arr-linked) that a download entry / torrent
+// name most plausibly belongs to. Title + type + optional season match, best
+// word-overlap wins. Never links across different types.
+const TORRENT_DOWNLOADING_STATES = ["downloading", "forceddl", "queueddl", "pauseddl"];
+const TORRENT_SEEDING_STATES = ["uploading", "stalledup", "forcedup", "queuedup", "pausedup"];
+
+function findBestRequestForDownload(db: Database, name: string, type: string, season?: number | null): any | null {
+  const want = normalizeTitleForMatch(name || "");
+  if (!want) return null;
+  const rows = db.prepare(
+    "SELECT id, title, type, status, season, library_key, sonarr_id, radarr_id FROM media_requests WHERE type = ?"
+  ).all(type) as any[];
+  let best: any = null;
+  let bestScore = 0;
+  const wantWords = new Set(want.split(/\s+/));
+  for (const r of rows) {
+    if (season != null && r.season != null && r.season !== season) continue;
+    const rn = normalizeTitleForMatch(r.title);
+    if (!rn || !titlesMatch(rn, want)) continue;
+    let score = 0;
+    for (const w of rn.split(/\s+/)) if (wantWords.has(w)) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
+}
+
+// Link a torrent (already in qBittorrent) to the best-matching request by
+// creating a release_candidate + approval_history row, so the torrent panel and
+// version counts pick it up. Returns the linked request, or null when no match.
+function linkTorrentToRequest(db: Database, torrent: any, entryName: string, type: string, downloadRoot: string): any | null {
+  const parsed = parseTorrentName((torrent && torrent.name) || entryName);
+  const season = type === "series" ? (parsed.season != null ? parsed.season : null) : null;
+  const match = findBestRequestForDownload(db, (torrent && torrent.name) || entryName, type, season);
+  if (!match) return null;
+
+  const hash = torrent?.hash || "";
+  if (!hash) return null;
+
+  const dup = db.prepare(
+    "SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?"
+  ).get(match.id, hash) as any;
+  if (dup) return { ...match, existing: true };
+
+  const sizeMb = Math.round((torrent?.size || 0) / (1024 * 1024));
+  const title = torrent?.name || entryName;
+  const episodeStr = parsed.season !== null ? (parsed.episodes.length > 0 ? formatEpisodes(parsed) : `S${String(parsed.season).padStart(2, "0")}`) : "";
+
+  const rcResult = db.prepare(
+    "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) " +
+    "VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
+  ).run(
+    match.id,
+    `attach-${hash.slice(0, 12)}`,
+    title,
+    sizeMb,
+    hash,
+    fromQBittorrentPath(torrent?.save_path || downloadRoot),
+    parseQualityFromName(title),
+    episodeStr
+  );
+  db.prepare("INSERT INTO approval_history (request_id, release_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)")
+    .run(match.id, rcResult.lastInsertRowid);
+
+  // An already-complete torrent should report SEEDING (counts as a version
+  // immediately); only genuinely downloading state stays DOWNLOADING.
+  const state = String(torrent?.state || "").toLowerCase();
+  const isSeeding = TORRENT_SEEDING_STATES.includes(state) || (torrent?.progress === 1 && !TORRENT_DOWNLOADING_STATES.includes(state));
+  const newStatus = isSeeding ? "SEEDING" : "DOWNLOADING";
+  if (match.status !== newStatus) {
+    db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(newStatus, match.id);
+  }
+  console.log(`[DownloadDirs] Linked attached torrent to request #${match.id} (${match.title}) → ${newStatus}`);
+  return match;
+}
+
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
 // localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
@@ -2426,6 +2505,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           }
 
+          const parsed = parseTorrentName(e.name);
+          const matchedReq = findBestRequestForDownload(
+            db,
+            e.name,
+            type,
+            type === "series" && parsed.season != null ? parsed.season : null
+          );
+
           items.push({
             type,
             name: e.name,
@@ -2436,6 +2523,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             trackedName,
             existsInProcessed,
             videoCount: inodes.size,
+            matchedRequest: matchedReq
+              ? { id: matchedReq.id, title: matchedReq.title, season: matchedReq.season ?? null }
+              : null,
           });
         }
       };
@@ -2499,18 +2589,38 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               continue;
             }
             const qbitSavePath = toQBittorrentPath(root);
+            const preHashes = new Set((await qbittorrent.getTorrents()).map((t: any) => t.hash));
+
             if (magnetUrl) {
               await qbittorrent.addTorrent(magnetUrl, qbitSavePath);
             } else {
               const buf = Buffer.from(torrentBase64, "base64");
               await qbittorrent.addTorrentFile(buf, item?.torrentFilename || "attached.torrent", qbitSavePath);
             }
+
+            // Poll qBittorrent for the newly added torrent (so we can link it).
+            let newTorrent: any = null;
+            for (let attempt = 0; attempt < 10; attempt++) {
+              await new Promise((r) => setTimeout(r, 3000));
+              const torrents = await qbittorrent.getTorrents();
+              newTorrent = torrents.find((t: any) => !preHashes.has(t.hash)) || null;
+              if (newTorrent) break;
+            }
+
+            const entryName = path.basename(entryPath);
+            let linked: any = null;
+            if (newTorrent) {
+              linked = linkTorrentToRequest(db, newTorrent, entryName, type, root);
+            }
+
             results.push({
               path: entryPath,
               action,
               ok: true,
               detail: magnetUrl ? "torrent added from magnet" : "torrent added from file",
               savePath: root,
+              hash: newTorrent?.hash || "",
+              linked: linked ? { requestId: linked.id, title: linked.title, existing: !!linked.existing } : null,
             });
           } else if (action === "hardlink-process" || action === "move-process") {
             const { destDir, base } = processedDestForEntry(entryPath, type);

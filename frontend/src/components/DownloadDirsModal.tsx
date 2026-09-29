@@ -11,6 +11,7 @@ interface DirEntry {
   trackedName: string;
   existsInProcessed: boolean;
   videoCount: number;
+  matchedRequest?: { id: number; title: string; season: number | null } | null;
 }
 
 interface Result {
@@ -19,6 +20,8 @@ interface Result {
   ok: boolean;
   detail?: string;
   dest?: string;
+  hash?: string;
+  linked?: { requestId: number; title: string; existing?: boolean } | null;
   error?: string;
 }
 
@@ -122,6 +125,11 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                       <span className="badge" style={{ background: "#6b7280" }}>{formatSize(entry.sizeMb)}</span>
                       {entry.tracked && <span className="badge" style={{ background: "#10b981" }} title={entry.trackedName}>tracked</span>}
                       {!entry.tracked && <span className="badge" style={{ background: entry.existsInProcessed ? "#3b82f6" : "#ef4444" }}>{entry.existsInProcessed ? "in Processed" : "orphan"}</span>}
+                      {entry.matchedRequest && (
+                        <span className="badge" style={{ background: "#0ea5e9" }} title="auto-matches this request">
+                          → {entry.matchedRequest.title}{entry.matchedRequest.season != null ? ` S${String(entry.matchedRequest.season).padStart(2, "0")}` : ""}
+                        </span>
+                      )}
                       {busyPath === entry.path && <span style={{ color: "#94a3b8", fontSize: 12 }}>working…</span>}
                     </div>
                     {!entry.tracked && (
@@ -162,7 +170,9 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                     )}
                     {r && (
                       <div className="modal-line" style={{ color: r.ok ? "#10b981" : "#f87171", fontSize: 12 }}>
-                        {r.ok ? `✓ ${r.action}: ${r.detail || "ok"}${r.dest ? ` → ${r.dest}` : ""}` : `✗ ${r.error || "failed"}`}
+                        {r.ok
+                          ? `✓ ${r.action}: ${r.detail || "ok"}${r.dest ? ` → ${r.dest}` : ""}${r.linked ? ` · linked to request "${r.linked.title}"${r.linked.existing ? " (already linked)" : ""}` : r.action === "attach" ? " · no matching request found" : ""}`
+                          : `✗ ${r.error || "failed"}`}
                       </div>
                     )}
                   </div>
