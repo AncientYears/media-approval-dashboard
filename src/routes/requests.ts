@@ -197,6 +197,34 @@ function resolveLibraryFolder(request: {
   return MEDIA_MOVIES;
 }
 
+// Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
+// localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
+// Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
+function nativeMovieLibraryFolders(requestTitle: string): string[] {
+  const want = normalizeFolder((requestTitle || "").replace(/ \(\d{4}\)$/i, ""));
+  if (!want) return [MEDIA_MOVIES];
+  const exact: string[] = [];
+  const fuzzy: string[] = [];
+  try {
+    for (const d of fs.readdirSync(MEDIA_MOVIES)) {
+      const full = path.join(MEDIA_MOVIES, d);
+      try {
+        if (!fs.statSync(full).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      const norm = normalizeFolder(d);
+      const normNoYear = normalizeFolder(d.replace(/\(\d{4}\)[-\s].*$/i, "").replace(/\(\d{4}\)$/i, ""));
+      if (normNoYear === want || norm === want) {
+        exact.push(full);
+      } else if ((want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+        fuzzy.push(full);
+      }
+    }
+  } catch {}
+  return exact.length ? exact : fuzzy.length ? fuzzy : [MEDIA_MOVIES];
+}
+
 /** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset. */
 function franchiseLanguage(db: Database, libraryKey: string): string | null {
   const row = db.prepare("SELECT language FROM tmdb_franchise_prefs WHERE library_key = ?").get(libraryKey) as any;
@@ -3952,9 +3980,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {
           // ignore
         }
-      } else if (request?.library_key) {
-        // Native (arr-free) request — resolve the library folder the same way
-        // move-to-library does and match files by inode (hardlinks) or name.
+      } else if (request?.library_key && request.type === "series") {
+        // Native (arr-free) series — resolve the library season folder the same
+        // way move-to-library does and match files by inode (hardlinks) or name.
         try {
           const libFolder = resolveLibraryFolder(request);
           if (libFolder && fs.existsSync(libFolder)) {
@@ -3971,6 +3999,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               } catch {}
             }
             if (!destPath) destPath = libFolder;
+          }
+        } catch {
+          // ignore
+        }
+      } else if (request?.library_key && request.type === "movie") {
+        // Native (arr-free) movie — scan the movie's "<Title> (Year)/" folder(s).
+        try {
+          for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+            if (!fs.existsSync(folder)) continue;
+            for (const f of fs.readdirSync(folder)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              const fPath = path.join(folder, f);
+              try {
+                const st = fs.statSync(fPath);
+                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
+                  destPath = fPath;
+                  inLibrary = true;
+                  break;
+                }
+              } catch {}
+            }
+            if (destPath && inLibrary) break;
+            if (!destPath) destPath = folder;
           }
         } catch {
           // ignore
@@ -4852,8 +4903,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           }
         } catch {}
-      } else if (request.library_key) {
-        // Native (arr-free) request — scan the library folder the same way
+      } else if (request.library_key && request.type === "series") {
+        // Native (arr-free) series — scan the library season folder the same way
         // move-to-library resolves it (fuzzy show folder, localized season
         // folders like "Sezon I"), matching by inode for hardlinks.
         try {
@@ -4862,6 +4913,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             for (const f of fs.readdirSync(libFolder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
                 const fPath = path.join(libFolder, f);
+                libraryFiles.add(f);
+                try {
+                  const st = fs.statSync(fPath);
+                  libraryInodes.add(st.ino);
+                  librarySizes.set(st.size, fPath);
+                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, fPath);
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+      } else if (request.library_key && request.type === "movie") {
+        // Native (arr-free) movie — movies live in a "<Title> (Year)/" subfolder
+        // under MEDIA_MOVIES, so resolve the folder(s) and scan each.
+        try {
+          for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+            if (!fs.existsSync(folder)) continue;
+            for (const f of fs.readdirSync(folder)) {
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                const fPath = path.join(folder, f);
                 libraryFiles.add(f);
                 try {
                   const st = fs.statSync(fPath);
