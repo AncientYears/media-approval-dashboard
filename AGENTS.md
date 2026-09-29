@@ -295,6 +295,7 @@ Download (100% complete)
 | `src/services/qbittorrent.ts` | qBittorrent Web API v2 (torrents, auth) |
 | `src/services/scoring.ts` | Release scoring engine |
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
+| `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/routes/requests.ts` | All API endpoints (~5420 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
 | `src/jobs/pollSonarr.ts` | Discovers wanted series (no auto-search) |
@@ -399,6 +400,7 @@ NTFY_TOPIC=
 - Processed files in /Processed are preserved by destroy either way
 - `--card-bg: #1e293b` CSS variable fixes transparent modals
 - **Import-library processed_files**: Always targets/creates `release_id IS NULL` AH rows (not torrent-linked rows). Skips adding files already in /processed by inode check (`alreadyImported`).
+- **Native identity (`library_key`)**: `media_requests.library_key` is the arr-free identity (`movie:<imdb|slug>:<year>` / `series:<tvdb|imdb|slug>:<year>`). `/managed` groups series by `sonarr_id` OR `library_key`. Reconcile (`POST /import-library/native`) only creates/adopts dormant rows; rows in DOWNLOADING/SEEDING/SEARCHING/AWAITING_APPROVAL/APPROVED are never touched. Native series cards have no sonarr_id — frontend "Manage" falls back to `/requests/{first_request_id}`, and the Delete button is hidden (needs Sonarr).
 - **Scan endpoint movie import**: Skips importing the main movie file from Radarr library if the request already has a tracked torrent (`torrent_hash != ''`). Extras still imported.
 - **Dashboard version count**: `release_count + processed_count`. `processed_count` queries only `release_id IS NULL` AH rows. Startup inode-dedup removes processed files that are hardlinks of torrent download files (same inode → not a separate version).
 - **Processed endpoint series scanning**: Only scans the specific season subfolder matching the request's season (e.g. only `S02/` for season 2), not all seasons. No longer adds directory entries as files.

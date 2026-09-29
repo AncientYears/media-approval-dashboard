@@ -151,6 +151,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
           type TEXT NOT NULL CHECK(type IN ('movie', 'series')),
           radarr_id INTEGER,
           sonarr_id INTEGER,
+          library_key TEXT,
           season INTEGER,
           status TEXT NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED', 'REJECTED', 'DISMISSED')),
           requested_by TEXT NOT NULL DEFAULT '[]',
@@ -205,6 +206,12 @@ export function initializeDatabase(dbPath: string): DBInstance {
     // Migration: add last_searched_at to media_requests
     if (!mrColNames.includes("last_searched_at")) {
       db.exec(`ALTER TABLE media_requests ADD COLUMN last_searched_at TEXT`);
+    }
+
+    // Migration: add library_key to media_requests (native arr-free identity)
+    if (!mrColNames.includes("library_key")) {
+      db.exec(`ALTER TABLE media_requests ADD COLUMN library_key TEXT`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_requests_library_key ON media_requests(library_key)`);
     }
 
     // Migration: add processed_files to approval_history

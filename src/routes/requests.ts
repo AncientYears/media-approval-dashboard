@@ -13,6 +13,7 @@ import {
   type ScannedFile,
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
+import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -678,26 +679,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const managed: any[] = [];
 
-      // Group series by sonarr_id (franchise)
-      const seriesGroups = new Map<number, any[]>();
+      // Group series by sonarr_id (franchise) or library_key (native library)
+      const seriesGroups = new Map<string, { sonarrId: number | null; libraryKey: string | null; seasons: any[] }>();
       const movies: any[] = [];
 
       for (const row of rows) {
-        if (row.type === "series" && row.sonarr_id) {
-          if (!seriesGroups.has(row.sonarr_id)) {
-            seriesGroups.set(row.sonarr_id, []);
+        if (row.type === "series") {
+          const key = row.sonarr_id ? `s:${row.sonarr_id}` : row.library_key ? `l:${row.library_key}` : null;
+          if (key) {
+            if (!seriesGroups.has(key)) {
+              seriesGroups.set(key, { sonarrId: row.sonarr_id || null, libraryKey: row.library_key || null, seasons: [] });
+            }
+            seriesGroups.get(key)!.seasons.push(row);
+            continue;
           }
-          seriesGroups.get(row.sonarr_id)!.push(row);
-        } else {
-          movies.push(row);
         }
+        movies.push(row);
       }
 
       // Build franchise cards for series
-      for (const [sonarrId, seasons] of seriesGroups) {
+      for (const [gk, { sonarrId, libraryKey, seasons }] of seriesGroups) {
         // Backfill episode_count from Sonarr for any seasons missing it
-        const seriesObj = await sonarr.getSeries(sonarrId).catch(() => null);
-        if (seriesObj) {
+        const seriesObj = sonarrId != null ? await sonarr.getSeries(sonarrId).catch(() => null) : null;
+        if (seriesObj && sonarrId != null) {
           for (const s of seasons) {
             if (!s.episode_count) {
               const sn = (seriesObj.seasons || []).find((x: any) => x.seasonNumber === s.season);
@@ -813,7 +817,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           };
         }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         // Inject unrequested seasons from Sonarr (e.g., Specials/season 0)
-        if (seriesObj) {
+        if (seriesObj && sonarrId != null) {
           const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
           for (const sn of (seriesObj.seasons || [])) {
             if (!existingSeasons.has(sn.seasonNumber)) {
@@ -857,6 +861,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           title: franchiseTitle,
           type: "series",
           sonarr_id: sonarrId,
+          library_key: libraryKey,
+          group_key: gk,
           first_request_id: firstRequestId,
           seasons: mappedSeasons,
           total_size_mb: franchiseSize,
@@ -2550,6 +2556,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (err: any) {
       console.error(`[Adopt-into-processed] failed:`, err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /import-library/native - Arr-free library reconcile (dry run unless apply)
+  // Scans the library tree, ensures a COMPLETED media_request per movie/series
+  // season (keyed by our own library_key identity), and links each library file
+  // to its processed counterpart by inode. Never touches active requests.
+  router.post("/import-library/native", async (req: Request, res: Response) => {
+    try {
+      const apply = req.body?.apply === true;
+      const plan = planLibraryImport(db);
+      if (!apply) {
+        return res.json({ dryRun: true, ...plan });
+      }
+      const result = executeLibraryImport(db, plan);
+      console.log(
+        `[ImportLibrary] Reconcile done: ${result.totals.create} created, ${result.totals.adopt} adopted, ${result.totals.update} updated, ${result.totals.skip} skipped, ${result.filesAssociated} files associated`,
+      );
+      return res.json({ dryRun: false, ...plan, result });
+    } catch (error: any) {
+      console.error("Error in native library import:", error);
+      res.status(500).json({ error: `Failed to import library: ${error.message}` });
     }
   });
 

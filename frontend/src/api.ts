@@ -224,6 +224,11 @@ export async function importLibrary() {
   return response.data;
 }
 
+export async function importLibraryNative(opts?: { apply?: boolean }) {
+  const response = await api.post("/requests/import-library/native", opts || {});
+  return response.data;
+}
+
 export async function scanWorkspaces() {
   const response = await api.post("/requests/workspaces/scan");
   return response.data;

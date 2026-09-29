@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed } from "../api";
+import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibraryNative, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed } from "../api";
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 
 function formatSize(mb: number): string {
@@ -285,24 +285,61 @@ export default function Dashboard() {
             loadData();
           }}>Scan Downloads</button>
           <button className="btn btn-primary btn-tiny" onClick={async () => {
-            setModal({ title: "Import Library", lines: ["Scanning Radarr/Sonarr library..."] });
-            const result = await importLibrary();
-            const lines = [
-              `Imported ${result.imported} file(s) into processed.`,
-              `Already exists: ${result.exists}.`,
-              `Skipped (no file): ${result.skipped}.`,
-              `Errors: ${result.errors}.`,
-            ];
-            if (result.results && result.results.length > 0) {
-              lines.push("");
-              for (const r of result.results) {
-                if (r.status === "imported") lines.push(`[+] ${r.title}`);
-                else if (r.status === "exists") lines.push(`[=] ${r.title} (already in processed)`);
-                else if (r.status === "error") lines.push(`[!] ${r.title}: ${r.error}`);
+            setModal({ title: "Import Library", lines: ["Planning from disk..."] });
+            try {
+              const plan = await importLibraryNative();
+              const t = plan.totals || {};
+              if ((t.create || 0) + (t.adopt || 0) + (t.update || 0) === 0) {
+                setModal({ title: "Import Library", lines: ["Nothing to reconcile — library already matches requests.", ...(plan.errors || []).map((e: string) => `Scan: ${e}`)] });
+                return;
               }
+              const lines: string[] = [
+                `Movies + series found: ${plan.candidates?.length || 0}.`,
+                `To create: ${t.create}. To adopt: ${t.adopt}. To update: ${t.update}.`,
+                `Active requests skipped: ${t.skip} (never touched).`,
+              ];
+              if ((t.create || 0) > 0) {
+                lines.push("");
+                lines.push("New COMPLETED requests:");
+                for (const c of (plan.candidates || [])) {
+                  if (c.action !== "create") continue;
+                  lines.push(`  + [${c.kind}] ${c.title}${c.season != null ? ` S${String(c.season).padStart(2, "0")}` : ""} — ${c.filesMatched}/${c.filesTotal} file(s) linked into processed`);
+                }
+              }
+              if ((t.adopt || 0) > 0) {
+                lines.push("");
+                lines.push("Asserted library identity onto existing rows:");
+                for (const c of (plan.candidates || [])) {
+                  if (c.action !== "adopt") continue;
+                  lines.push(`  = [${c.kind}] ${c.title}${c.season != null ? ` S${String(c.season).padStart(2, "0")}` : ""}#${c.requestId}${c.reason ? ` (${c.reason})` : ""}`);
+                }
+              }
+              if ((t.update || 0) > 0) {
+                lines.push("");
+                lines.push(`Updated (merging missing processed files): ${t.update}.`);
+              }
+              setModal({ title: "Import Library", lines, onApply: async () => {
+                setModal({ title: "Import Library", lines: ["Reconciling..."] });
+                try {
+                  const result = await importLibraryNative({ apply: true });
+                  const r = result.result || {};
+                  setModal({
+                    title: "Import Library",
+                    lines: [
+                      `Created: ${r.totals?.create}. Adopted: ${r.totals?.adopt}. Updated: ${r.totals?.update}.`,
+                      `Active skipped: ${r.totals?.skip}.`,
+                      `Files associated: ${r.filesAssociated}.`,
+                      ...(plan.errors || []).map((e: string) => `Scan: ${e}`),
+                    ],
+                  });
+                  loadData();
+                } catch (err: any) {
+                  setModal({ title: "Import Library", lines: [`Error: ${err.message}`] });
+                }
+              } });
+            } catch (err: any) {
+              setModal({ title: "Import Library", lines: [`Error: ${err.message}`] });
             }
-            setModal({ title: "Import Library", lines });
-            loadData();
           }}>Import Library</button>
           <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
             setModal({ title: "Cleanup Duplicates", lines: ["Checking for duplicates..."] });
@@ -538,7 +575,7 @@ export default function Dashboard() {
           <div className="requests-grid">
             {managed.map((item: any) => (
               item.type === "series" ? (
-                <div key={item.sonarr_id} className="request-card managed-card">
+                <div key={item.group_key || item.sonarr_id || item.library_key} className="request-card managed-card">
                   <h3 className="managed-title">{item.title} <span className="type-suffix">- Series</span></h3>
                   <div className="managed-seasons">
                     {item.seasons.map((s: any) => {
@@ -557,12 +594,14 @@ export default function Dashboard() {
                   </div>
                   <div className="managed-footer">
                     <span className="rtag">{item.total_covered || item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
-                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${item.sonarr_id}`)}>Manage</button>
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(item.sonarr_id ? `/managed/${item.sonarr_id}` : `/requests/${item.first_request_id}`)}>Manage</button>
+                    {item.sonarr_id ? (
                     <button className="btn btn-danger btn-tiny" onClick={() => {
                       if (window.confirm(`Delete "${item.title}" from DB + Sonarr?`)) {
                         deleteFranchise(item.sonarr_id).then(() => loadData());
                       }
                     }}>Delete</button>
+                    ) : null}
                   </div>
                 </div>
               ) : (
