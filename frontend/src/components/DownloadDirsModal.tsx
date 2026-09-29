@@ -162,7 +162,7 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                   <div key={entry.path} className="download-dirs-item">
                     <div className="download-dirs-item-row">
                       <span className="badge" style={{ background: entry.type === "movie" ? "#3b82f6" : "#8b5cf6" }}>{entry.type}</span>
-                      <span className="download-dirs-name" title={entry.path}>{entry.name.length > 70 ? entry.name.slice(0, 70) + "..." : entry.name}</span>
+                      <span className="download-dirs-name" title={entry.path}>{entry.name}</span>
                       <span className="badge" style={{ background: "#6b7280" }}>{formatSize(entry.sizeMb)}</span>
                       {entry.tracked && <span className="badge" style={{ background: "#10b981" }} title={entry.trackedName}>tracked</span>}
                       {!entry.tracked && <span className="badge" style={{ background: entry.existsInProcessed ? "#3b82f6" : "#ef4444" }}>{entry.existsInProcessed ? "in Processed" : "orphan"}</span>}

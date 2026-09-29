@@ -1969,6 +1969,19 @@ body {
   gap: 8px;
 }
 
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
 .download-dirs-modal {
   max-width: 780px;
 }
@@ -1984,7 +1997,7 @@ body {
 .download-dirs-item {
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   margin-bottom: 8px;
   background: #0f172a;
 }
