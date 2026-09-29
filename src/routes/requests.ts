@@ -5477,6 +5477,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       res.json({ success: true, message: `Files ${method} to library`, source: sourcePath, destination: finalDest });
     } catch (error: any) {
       console.error("Error moving to library:", error);
+      if (error?.code === "EACCES") {
+        const folder = typeof error.path === "string" ? path.dirname(error.path) : "";
+        return res.status(403).json({
+          error: `Permission denied — the library folder is owned by another user (root from a Sonarr/Radarr import). Fix on the server: sudo chown -R <appuser>:<appuser> "${folder}"`,
+        });
+      }
       res.status(500).json({ error: `Failed to move to library: ${error.message}` });
     }
   });
