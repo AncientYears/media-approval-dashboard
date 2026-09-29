@@ -212,6 +212,7 @@ export default function RequestDetail() {
   const [scanning, setScanning] = useState(false);
   const [seasonEpisodes, setSeasonEpisodes] = useState<any>(null);
   const [refreshingMeta, setRefreshingMeta] = useState(false);
+  const [episodesExpanded, setEpisodesExpanded] = useState(false);
 
   const refreshMoveStatus = async () => {
     try {
@@ -615,7 +616,7 @@ export default function RequestDetail() {
 
       {request.type === "series" && request.season != null && seasonEpisodes && (
         <div className="torrent-panel">
-          <div className="section-divider">
+          <div className="section-divider" onClick={() => setEpisodesExpanded((e) => !e)} style={{ cursor: "pointer" }}>
             Season Episodes
             <span className="rtag" style={{ marginLeft: 8 }}>{seasonEpisodes.season != null ? `S${String(seasonEpisodes.season).padStart(2, "0")}` : ""} · {seasonEpisodes.episodes.filter((ep: any) => ep.present).length}/{seasonEpisodes.episodes.length}</span>
             {seasonEpisodes.metadata ? (
@@ -627,34 +628,41 @@ export default function RequestDetail() {
                 file-derived
               </span>
             )}
-            <button className="btn btn-secondary btn-tiny" style={{ marginLeft: "auto" }} disabled={refreshingMeta} onClick={async () => {
-              setRefreshingMeta(true);
-              try {
-                await refreshRequestMetadata(Number(id));
-                const epData = await fetchRequestEpisodes(Number(id));
-                setSeasonEpisodes(epData);
-                toast("Metadata refreshed", "success");
-              } catch {
-                toast("Metadata unavailable (no TMDB key or server offline?)", "error");
-              }
-              setRefreshingMeta(false);
-            }}>{refreshingMeta ? "Refreshing..." : "Refresh Metadata"}</button>
+            <span style={{ marginLeft: "auto" }} className="fr-arrow">{episodesExpanded ? "\u25BC" : "\u25B6"}</span>
           </div>
-          <div className="season-expanded-content" style={{ padding: 8 }}>
-            <div className="episode-list">
-              {seasonEpisodes.episodes.map((ep: any) => (
-                <div key={ep.episode_number} className={`episode-row ${ep.present ? "ep-covered" : "ep-missing-row"}`}>
-                  <span className="ep-num">E{String(ep.episode_number).padStart(2, "0")}</span>
-                  <span className="ep-title">{ep.name || `Episode ${ep.episode_number}`}</span>
-                  {ep.present ? (
-                    <span className="ep-badge ep-filled">FILLED</span>
-                  ) : (
-                    <span className="ep-badge ep-missed">MISSING</span>
-                  )}
+          {episodesExpanded && (
+            <>
+              <div style={{ display: "flex", gap: 8, padding: "4px 0 8px" }}>
+                <button className="btn btn-secondary btn-tiny" disabled={refreshingMeta} onClick={async () => {
+                  setRefreshingMeta(true);
+                  try {
+                    await refreshRequestMetadata(Number(id));
+                    const epData = await fetchRequestEpisodes(Number(id));
+                    setSeasonEpisodes(epData);
+                    toast("Metadata refreshed", "success");
+                  } catch {
+                    toast("Metadata unavailable (no TMDB key or server offline?)", "error");
+                  }
+                  setRefreshingMeta(false);
+                }}>{refreshingMeta ? "Refreshing..." : "Refresh Metadata"}</button>
+              </div>
+              <div className="season-expanded-content" style={{ padding: 8 }}>
+                <div className="episode-list">
+                  {seasonEpisodes.episodes.map((ep: any) => (
+                    <div key={ep.episode_number} className={`episode-row ${ep.present ? "ep-covered" : "ep-missing-row"}`}>
+                      <span className="ep-num">E{String(ep.episode_number).padStart(2, "0")}</span>
+                      <span className="ep-title">{ep.name || `Episode ${ep.episode_number}`}</span>
+                      {ep.present ? (
+                        <span className="ep-badge ep-filled">FILLED</span>
+                      ) : (
+                        <span className="ep-badge ep-missed">MISSING</span>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 

@@ -44,6 +44,11 @@ export async function fetchRequestEpisodes(requestId: number) {
   return response.data;
 }
 
+export async function fetchNativeFranchise(requestId: number) {
+  const response = await api.get(`/requests/native-franchise/${requestId}`);
+  return response.data;
+}
+
 export async function refreshRequestMetadata(requestId: number) {
   const response = await api.post(`/requests/${requestId}/refresh-metadata`);
   return response.data;

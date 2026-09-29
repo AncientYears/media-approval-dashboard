@@ -3550,6 +3550,37 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  // GET /api/requests/native-franchise/:id - arr-free franchise overview: all
+  // seasons grouped by the library_key of a seed request, each with file-derived
+  // coverage. Episodes themselves come from GET /:id/episodes on expand.
+  router.get("/native-franchise/:id", (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(404).json({ error: "Series request with library_key not found" });
+      }
+      const rows = db
+        .prepare("SELECT * FROM media_requests WHERE type = 'series' AND library_key = ? AND status != 'DISMISSED' ORDER BY COALESCE(season, 0)")
+        .all(seed.library_key) as any[];
+      if (!rows.length) return res.status(404).json({ error: "No seasons for this franchise" });
+      const titleSeason = rows.find((r: any) => r.season !== 0) || rows[0];
+      const title = (titleSeason.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const seasons = rows.map((s: any) => ({
+        season: s.season,
+        request_id: s.id,
+        status: s.status,
+        title: s.title,
+        episode_count: s.episode_count,
+        covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
+      }));
+      res.json({ library_key: seed.library_key, title, seasons });
+    } catch (error) {
+      console.error("Error fetching native franchise:", error);
+      res.status(500).json({ error: "Failed to fetch native franchise" });
+    }
+  });
+
   // POST /api/requests/:id/refresh-metadata - force re-fetch season metadata from TMDB
   router.post("/:id/refresh-metadata", async (req: Request, res: Response) => {
     try {

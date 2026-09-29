@@ -3,6 +3,7 @@ import "./App.css";
 import Dashboard from "./pages/Dashboard";
 import RequestDetail from "./pages/RequestDetail";
 import FranchiseDetail from "./pages/FranchiseDetail";
+import NativeFranchise from "./pages/NativeFranchise";
 import Settings from "./pages/Settings";
 import DatabaseViewer from "./pages/DatabaseViewer";
 import { ToastProvider } from "./components/Toast";
@@ -41,6 +42,7 @@ function App() {
             <Route path="/db" element={<DatabaseViewer />} />
             <Route path="/requests/:id" element={<RequestDetail />} />
             <Route path="/managed/:sonarrId" element={<FranchiseDetail />} />
+            <Route path="/native/:id" element={<NativeFranchise />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>

@@ -583,7 +583,7 @@ export default function Dashboard() {
                       const total = s.episode_count;
                       const label = s.request_id ? (total ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "pending") : (total > 0 ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "—");
                       return (
-                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={s.request_id ? () => navigate(`/requests/${s.request_id}`) : undefined} style={{ opacity: s.request_id ? 1 : 0.4, cursor: s.request_id ? "pointer" : "default" }}>
+                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={s.request_id ? () => navigate(item.sonarr_id ? `/requests/${s.request_id}` : `/native/${item.first_request_id}?open=${s.season}`) : undefined} style={{ opacity: s.request_id ? 1 : 0.4, cursor: s.request_id ? "pointer" : "default" }}>
                           <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${covered > 0 ? "has-content" : "empty"}`}>
                             {label}
@@ -594,7 +594,7 @@ export default function Dashboard() {
                   </div>
                   <div className="managed-footer">
                     <span className="rtag">{item.total_covered || item.total_releases} EP · {formatSize(item.total_size_mb)}</span>
-                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(item.sonarr_id ? `/managed/${item.sonarr_id}` : `/requests/${item.first_request_id}`)}>Manage</button>
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(item.sonarr_id ? `/managed/${item.sonarr_id}` : `/native/${item.first_request_id}`)}>Manage</button>
                     {item.sonarr_id ? (
                     <button className="btn btn-danger btn-tiny" onClick={() => {
                       if (window.confirm(`Delete "${item.title}" from DB + Sonarr?`)) {
