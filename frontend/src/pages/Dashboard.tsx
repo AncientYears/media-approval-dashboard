@@ -516,7 +516,7 @@ export default function Dashboard() {
                         <div
                           key={sn.season}
                           className={`managed-season ${req ? "" : "unrequested"}`}
-                          onClick={() => req && navigate(`/requests/${req.id}`)}
+                          onClick={() => req && navigate(`/requests/${req.id}`, { state: { back: `/managed/${franchise.sonarr_id}` } })}
                           style={{ opacity: req ? 1 : 0.4, cursor: req ? "pointer" : "default" }}
                         >
                           <span className="season-label">S{String(sn.season).padStart(2, "0")}</span>
@@ -583,7 +583,7 @@ export default function Dashboard() {
                       const total = s.episode_count;
                       const label = s.request_id ? (total ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "pending") : (total > 0 ? `${covered}/${total} EP` : covered > 0 ? `${covered} EP` : "—");
                       return (
-                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={s.request_id ? () => navigate(item.sonarr_id ? `/requests/${s.request_id}` : `/native/${item.first_request_id}?open=${s.season}`) : undefined} style={{ opacity: s.request_id ? 1 : 0.4, cursor: s.request_id ? "pointer" : "default" }}>
+                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={s.request_id ? () => navigate(item.sonarr_id ? `/requests/${s.request_id}` : `/native/${item.first_request_id}?open=${s.season}`, item.sonarr_id ? { state: { back: `/managed/${item.sonarr_id}` } } : undefined) : undefined} style={{ opacity: s.request_id ? 1 : 0.4, cursor: s.request_id ? "pointer" : "default" }}>
                           <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${covered > 0 ? "has-content" : "empty"}`}>
                             {label}

@@ -1,5 +1,5 @@
 import { useEffect, useState, Fragment } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
@@ -174,6 +174,7 @@ function Breakdown({ r, profile }: { r: any; profile: ScoreProfile }) {
 export default function RequestDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
   const [request, setRequest] = useState<any>(null);
   const [releases, setReleases] = useState<any[]>([]);
@@ -709,7 +710,7 @@ export default function RequestDetail() {
       )}
 
       <div className="detail-topbar">
-        <button className="btn btn-secondary btn-tiny" onClick={() => navigate("/")}>Back</button>
+        <button className="btn btn-secondary btn-tiny" onClick={() => navigate((location.state as any)?.back || "/")}>Back</button>
         <div className="detail-title">
           <span className="detail-title-text">{request.title}</span>
           {request.type === "series" && request.season != null && (

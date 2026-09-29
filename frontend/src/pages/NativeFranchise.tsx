@@ -170,7 +170,7 @@ export default function NativeFranchise() {
                   <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
                     {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
                   </button>
-                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`); }}>
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
                     Open Releases
                   </button>
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
