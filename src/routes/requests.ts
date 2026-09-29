@@ -122,7 +122,7 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   `).all(req.id) as any[];
   const diskEps = new Set<number>();
   let seasonFolderExists = false;
-  const seasonFolder = findSeasonFolder(baseTitle, season, libraryKeyYear(req.library_key));
+  const seasonFolder = seasonFolderForLibraryKey(db, req.library_key, baseTitle, season);
   try {
     if (seasonFolder && fs.existsSync(seasonFolder)) {
       seasonFolderExists = true;
@@ -479,16 +479,18 @@ function findSeasonFolder(baseTitle: string, season: number, year?: number | nul
 
 /** Season folders physically present under a show's processed folder, mapped to
  * the video file names inside them. Empty when the show has no processed
- * folder. Lets seasons appear even without a request row (structure-first). */
-function diskSeasonFolders(baseTitle: string, year?: number | null): Map<number, string[]> {
+ * folder. Lets seasons appear even without a request row (structure-first).
+ * `extraShowDir` is a PROCESSED_TV-relative show folder to include when the
+ * title-based match can't see it (localized vs English library folder names). */
+function diskSeasonFolders(baseTitle: string, year?: number | null, extraShowDir?: string | null): Map<number, string[]> {
   const out = new Map<number, string[]>();
-  for (const showDir of matchShowFolders(baseTitle, year)) {
+  const scan = (showDir: string) => {
     const full = path.join(PROCESSED_TV, showDir);
     let ents: fs.Dirent[];
     try {
       ents = fs.readdirSync(full, { withFileTypes: true });
     } catch {
-      continue;
+      return;
     }
     for (const e of ents) {
       if (!e.isDirectory()) continue;
@@ -504,8 +506,57 @@ function diskSeasonFolders(baseTitle: string, year?: number | null): Map<number,
       if (videos.length === 0) continue;
       out.set(sn, videos);
     }
-  }
+  };
+  for (const showDir of matchShowFolders(baseTitle, year)) scan(showDir);
+  if (extraShowDir) scan(extraShowDir);
   return out;
+}
+
+/** Show directory (PROCESSED_TV-relative) that holds a set of request ids'
+ * processed files, derived from their stored relative paths. Bridges titles
+ * that don't fuzzy-match the disk folder (library folder "Krecik Krtek" vs
+ * processed folder "The Adventures of the Mole"). */
+function processedShowDirFromFiles(db: Database, requestIds: number[]): string | null {
+  if (!requestIds.length) return null;
+  let rows: any[];
+  try {
+    rows = db
+      .prepare(
+        "SELECT processed_files FROM approval_history WHERE release_id IS NULL" +
+          ` AND request_id IN (${requestIds.map(() => "?").join(",")})` +
+          " AND processed_files IS NOT NULL AND processed_files != '[]'",
+      )
+      .all(...requestIds) as any[];
+  } catch {
+    return null;
+  }
+  for (const r of rows) {
+    for (const p of JSON.parse(r.processed_files || "[]") as string[]) {
+      const parts = String(p).split(/[/\\]+/);
+      if (parts.length < 2) continue;
+      if (fs.existsSync(path.join(PROCESSED_TV, parts[0]))) return parts[0];
+    }
+  }
+  return null;
+}
+
+/** The season folder backing a native library_key + season: title-matched
+ * first, then derived from the franchise's own processed file paths (handles
+ * libraries whose folder name has nothing in common with the processed one). */
+function seasonFolderForLibraryKey(db: Database, library_key: string | null | undefined, baseTitle: string, season: number): string | null {
+  const byTitle = findSeasonFolder(baseTitle, season, libraryKeyYear(library_key));
+  if (byTitle) return byTitle;
+  if (!library_key) return null;
+  let rows: any[];
+  try {
+    rows = db.prepare("SELECT id FROM media_requests WHERE type = 'series' AND library_key = ?").all(library_key) as any[];
+  } catch {
+    return null;
+  }
+  const showDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id));
+  if (!showDir) return null;
+  const cand = path.join(PROCESSED_TV, showDir, `S${String(season).padStart(2, "0")}`);
+  return fs.existsSync(cand) ? cand : null;
 }
 
 /** Year embedded in the library_key (`series:<id|slug>:<year>`), if any. */
@@ -1202,7 +1253,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // Compute folder size from the season folder (source of truth)
           let folderSizeBytes = 0;
           try {
-            const seasonFolder = findSeasonFolder(franchiseTitle, s.season, libraryKeyYear(libraryKey));
+            const seasonFolder = seasonFolderForLibraryKey(db, libraryKey, franchiseTitle, s.season);
             if (seasonFolder) {
               for (const f of fs.readdirSync(seasonFolder)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
@@ -1270,7 +1321,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (sonarrId == null) {
           const franchiseYear = libraryKeyYear(libraryKey);
           const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
-          const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear);
+          const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id));
+          const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear, fallbackShowDir);
           for (const [sn, files] of diskSeasons) {
             if (existingSeasons.has(sn)) continue;
             let tmdbCount = 0;
@@ -4264,10 +4316,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const title = (titleSeason.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const seasons = rows.map((s: any) => {
         const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-        const seasonYear = libraryKeyYear(s.library_key);
         let fileCount = 0;
         try {
-          const folder = findSeasonFolder(baseTitle, s.season ?? 0, seasonYear);
+          const folder = seasonFolderForLibraryKey(db, s.library_key, baseTitle, s.season ?? 0);
           if (folder) {
             fileCount = fs.readdirSync(folder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).length;
           }
@@ -4279,7 +4330,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           title: s.title,
           episode_count: s.episode_count,
           covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
-          extras: unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, seasonYear),
+          extras: unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, libraryKeyYear(s.library_key)),
           file_count: fileCount,
         };
       });
@@ -4288,7 +4339,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // root got imported as Specials, or a season exists disk-first).
       const franchiseYear = libraryKeyYear(seed.library_key);
       const existingSeasons = new Set(seasons.map((s: any) => s.season));
-      const diskSeasons = diskSeasonFolders(title, franchiseYear);
+      const fallbackShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id));
+      const diskSeasons = diskSeasonFolders(title, franchiseYear, fallbackShowDir);
       for (const [sn, files] of diskSeasons) {
         if (existingSeasons.has(sn)) continue;
         let tmdbCount = 0;
@@ -4357,11 +4409,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const season = parseInt(req.query.season as string, 10);
       const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
       const baseTitle = (seed.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-      const franchiseYear = libraryKeyYear(seed.library_key);
       const covered = coveredEpisodesForRequest(db, { id: -1, title: baseTitle, season: sNum, episode_count: null, library_key: seed.library_key } as any);
       const extras: { name: string }[] = [];
       try {
-        const folder = findSeasonFolder(baseTitle, sNum, franchiseYear);
+        const folder = seasonFolderForLibraryKey(db, seed.library_key, baseTitle, sNum);
         if (folder) {
           for (const f of fs.readdirSync(folder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
