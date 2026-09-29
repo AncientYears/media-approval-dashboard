@@ -2548,6 +2548,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         sample: result.linked.slice(0, 50),
       });
     } catch (err: any) {
+      console.error(`[Adopt-into-processed] failed:`, err);
       res.status(500).json({ error: err.message });
     }
   });

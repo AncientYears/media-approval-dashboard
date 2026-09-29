@@ -435,7 +435,17 @@ export default function Dashboard() {
                 setModal({ title: "Adopt into Processed", lines: ["Linking..."] });
                 try {
                   const result = await adoptIntoProcessed({ apply: true });
-                  setModal({ title: "Adopt into Processed", lines: [`Linked ${result.linked} file(s).${result.failed?.length ? `\n${result.failed.length} failed.` : ""}`] });
+                  const lines: string[] = [`Linked ${result.linked} file(s).`];
+                  if (result.failed?.length) {
+                    lines.push(`${result.failed.length} failed:`);
+                    const shown = result.failed.slice(0, 100);
+                    for (const f of shown) {
+                      lines.push(`  🞩 ${f.destination.replace(/.*processed\//, "processed/")}`);
+                      lines.push(`    ${f.error}`);
+                    }
+                    if (result.failed.length > shown.length) lines.push(`  ... and ${result.failed.length - shown.length} more`);
+                  }
+                  setModal({ title: "Adopt into Processed", lines });
                   loadData();
                 } catch (err: any) {
                   setModal({ title: "Adopt into Processed", lines: [`Error: ${err.message}`] });

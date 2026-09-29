@@ -210,6 +210,9 @@ export function executeAdoption(plan: AdoptionPlan): AdoptionResult {
             ? "EXDEV: processed is on a different filesystem, refusing to copy"
             : `${err.code || "ERR"}: ${err.message}`,
       });
+      console.error(
+        `[Adoption] link failed: ${item.destination} ← ${item.source} -> ${err.code || "ERR"}: ${err.message}`
+      );
     }
   }
 
