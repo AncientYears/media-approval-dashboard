@@ -113,6 +113,9 @@ export default function NativeFranchise() {
                   )}
                 </div>
                 <div className="fr-season-right" style={{ gap: 6 }}>
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
+                    {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
+                  </button>
                   <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`); }}>
                     Open Releases
                   </button>
@@ -122,12 +125,6 @@ export default function NativeFranchise() {
 
               {isExpanded && data && (
                 <div className="season-expanded-content">
-                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                    <span className="rtag">{data.metadata ? data.metadata.show_name : "file-derived (no TMDB metadata)"}</span>
-                    <button className="btn btn-secondary btn-tiny" onClick={() => handleRefresh(season)} disabled={refreshing === season.season}>
-                      {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
-                    </button>
-                  </div>
                   <div className="episode-list">
                     {data.episodes.map((ep: any) => (
                       <div key={ep.episode_number} className={`episode-row ${ep.present ? "ep-covered" : "ep-missing-row"}`}>
@@ -138,6 +135,13 @@ export default function NativeFranchise() {
                         ) : (
                           <span className="ep-badge ep-missed">MISSING</span>
                         )}
+                      </div>
+                    ))}
+                    {(data.extras || []).map((x: any, i: number) => (
+                      <div key={`extra-${i}`} className="episode-row ep-covered">
+                        <span className="ep-num">SPECIAL</span>
+                        <span className="ep-title">{x.name}</span>
+                        <span className="ep-badge ep-filled">FILLED</span>
                       </div>
                     ))}
                   </div>

@@ -3510,6 +3510,20 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
       const season = request.season ?? 0;
       const covered = coveredEpisodesForRequest(db, request);
+      // Present files with no parseable episode number (e.g. S00 movies like
+      // "Candace Against the Universe") — TMDB has no special entry, but the
+      // file is there and should show as FILLED.
+      const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const extras: { name: string }[] = [];
+      try {
+        const folder = path.join(PROCESSED_TV, baseTitle, `S${String(season).padStart(2, "0")}`);
+        if (fs.existsSync(folder)) {
+          for (const f of fs.readdirSync(folder)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
+          }
+        }
+      } catch {}
       let meta: SeasonMeta | null = null;
       if (request.library_key) {
         try {
@@ -3539,6 +3553,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         title: request.title,
         library_key: request.library_key,
         episodes,
+        extras,
         covered: Array.from(covered).sort((a, b) => a - b),
         metadata: meta
           ? { tmdb_show_id: meta.tmdb_show_id, show_name: meta.show_name, resolvedVia: meta.resolvedVia, source: "tmdb" }
