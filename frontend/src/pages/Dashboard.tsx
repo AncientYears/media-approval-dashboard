@@ -161,7 +161,7 @@ export default function Dashboard() {
 
   return (
     <div className="container">
-      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => { setModal(null); setPendingCleanup(null); }} onCleanup={modal.onCleanup} onOk={pendingCleanup ? async () => {
+      {modal && <Modal title={modal.title} lines={modal.lines} onClose={() => { setModal(null); setPendingCleanup(null); }} onCleanup={modal.onCleanup} onApply={modal.onApply} onOk={pendingCleanup ? async () => {
         setPendingCleanup(null);
         setModal({ title: "Cleanup Duplicates", lines: ["Deleting..."] });
         try {
