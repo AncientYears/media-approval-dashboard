@@ -112,7 +112,16 @@ export default function NativeFranchise() {
         <div className="detail-title">
           <span className="detail-title-text">{franchise.title}</span>
           <span className="type-suffix">- Series</span>
-          <span className="rtag" style={{ marginLeft: 8 }} title="library_key — stable franchise identity (series:&lt;tvdb|imdb|slug&gt;:&lt;year&gt;) used to group seasons without Sonarr">{franchise.library_key}</span>
+          <span
+            className="rtag"
+            style={{ marginLeft: 8, cursor: "pointer" }}
+            title="library_key — stable franchise identity used to group seasons without Sonarr. Click to copy."
+            onClick={(e) => {
+              e.stopPropagation();
+              navigator.clipboard?.writeText(franchise.library_key).catch(() => {});
+              toast("library_key: stable identity grouping this franchise's seasons (no Sonarr needed). Copied to clipboard.", "info");
+            }}
+          >{franchise.library_key}</span>
         </div>
         <select
           className="lang-select"
@@ -139,7 +148,16 @@ export default function NativeFranchise() {
               <div className="franchise-season-header" style={{ display: "flex", cursor: "pointer", alignItems: "center" }} onClick={() => toggle(season)}>
                 <div className="fr-season-left">
                   <span className={`season-label ${season.season === 0 ? "season-special" : ""}`}>{season.season === 0 ? "Special" : `S${String(season.season).padStart(2, "0")}`}</span>
-                  {coveredCount > 0 ? (
+                  {season.season === 0 ? (
+                    season.file_count > 0 ? (
+                      <>
+                        <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{season.file_count} file{season.file_count === 1 ? "" : "s"}</span>
+                        <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>numbered {coveredCount}/{epCount}</span>
+                      </>
+                    ) : (
+                      <span className="season-status empty">no episodes</span>
+                    )
+                  ) : coveredCount > 0 ? (
                     <>
                       <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{coveredCount}{epCount > 0 ? `/${epCount}` : ""}</span>
                       {missingCount > 0 && <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>}

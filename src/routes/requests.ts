@@ -3593,14 +3593,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       if (!rows.length) return res.status(404).json({ error: "No seasons for this franchise" });
       const titleSeason = rows.find((r: any) => r.season !== 0) || rows[0];
       const title = (titleSeason.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-      const seasons = rows.map((s: any) => ({
-        season: s.season,
-        request_id: s.id,
-        status: s.status,
-        title: s.title,
-        episode_count: s.episode_count,
-        covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
-      }));
+      const seasons = rows.map((s: any) => {
+        const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        let fileCount = 0;
+        try {
+          const folder = path.join(PROCESSED_TV, baseTitle, `S${String(s.season ?? 0).padStart(2, "0")}`);
+          if (fs.existsSync(folder)) {
+            fileCount = fs.readdirSync(folder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).length;
+          }
+        } catch {}
+        return {
+          season: s.season,
+          request_id: s.id,
+          status: s.status,
+          title: s.title,
+          episode_count: s.episode_count,
+          covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
+          file_count: fileCount,
+        };
+      });
       res.json({ library_key: seed.library_key, title, language: franchiseLanguage(db, seed.library_key), seasons });
     } catch (error) {
       console.error("Error fetching native franchise:", error);
