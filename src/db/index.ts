@@ -104,6 +104,16 @@ export function initializeDatabase(dbPath: string): DBInstance {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS tmdb_season_cache (
+      library_key TEXT NOT NULL,
+      season INTEGER NOT NULL,
+      tmdb_show_id INTEGER,
+      show_name TEXT,
+      payload TEXT NOT NULL,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (library_key, season)
+    );
+
     CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       torrent_name TEXT NOT NULL,

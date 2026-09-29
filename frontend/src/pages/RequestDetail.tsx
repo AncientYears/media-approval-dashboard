@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
+import { fetchReleases, fetchRequestEpisodes, refreshRequestMetadata, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -210,6 +210,8 @@ export default function RequestDetail() {
   const [scanFiles, setScanFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
   const [scanSelected, setScanSelected] = useState<Set<string>>(new Set());
   const [scanning, setScanning] = useState(false);
+  const [seasonEpisodes, setSeasonEpisodes] = useState<any>(null);
+  const [refreshingMeta, setRefreshingMeta] = useState(false);
 
   const refreshMoveStatus = async () => {
     try {
@@ -236,6 +238,11 @@ export default function RequestDetail() {
       setApprovedReleases(data.approved_releases || []);
       if (initial) setSearchTerm(data.title || "");
       setError(null);
+      if (data.type === "series" && data.season != null) {
+        fetchRequestEpisodes(Number(id)).then((epData) => setSeasonEpisodes(epData)).catch(() => {});
+      } else {
+        setSeasonEpisodes(null);
+      }
         try {
           const moveStatus = await fetchMoveStatus(Number(id));
           if (moveStatus?.moves) {
@@ -601,6 +608,51 @@ export default function RequestDetail() {
               <button className="btn btn-primary" onClick={handleAssociateSelected} disabled={scanSelected.size === 0}>
                 Link Selected ({scanSelected.size})
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {request.type === "series" && request.season != null && seasonEpisodes && (
+        <div className="torrent-panel">
+          <div className="section-divider">
+            Season Episodes
+            <span className="rtag" style={{ marginLeft: 8 }}>{seasonEpisodes.season != null ? `S${String(seasonEpisodes.season).padStart(2, "0")}` : ""} · {seasonEpisodes.episodes.filter((ep: any) => ep.present).length}/{seasonEpisodes.episodes.length}</span>
+            {seasonEpisodes.metadata ? (
+              <span className="rtag rtag-content-ok" style={{ marginLeft: 6 }} title={`TMDB show #${seasonEpisodes.metadata.tmdb_show_id} via ${seasonEpisodes.metadata.resolvedVia}`}>
+                {seasonEpisodes.metadata.show_name}
+              </span>
+            ) : (
+              <span className="rtag" style={{ marginLeft: 6 }} title="No TMDB metadata — gaps derived from filenames. Add TMDB_API_KEY to .env for exact totals & titles.">
+                file-derived
+              </span>
+            )}
+            <button className="btn btn-secondary btn-tiny" style={{ marginLeft: "auto" }} disabled={refreshingMeta} onClick={async () => {
+              setRefreshingMeta(true);
+              try {
+                await refreshRequestMetadata(Number(id));
+                const epData = await fetchRequestEpisodes(Number(id));
+                setSeasonEpisodes(epData);
+                toast("Metadata refreshed", "success");
+              } catch {
+                toast("Metadata unavailable (no TMDB key or server offline?)", "error");
+              }
+              setRefreshingMeta(false);
+            }}>{refreshingMeta ? "Refreshing..." : "Refresh Metadata"}</button>
+          </div>
+          <div className="season-expanded-content" style={{ padding: 8 }}>
+            <div className="episode-list">
+              {seasonEpisodes.episodes.map((ep: any) => (
+                <div key={ep.episode_number} className={`episode-row ${ep.present ? "ep-covered" : "ep-missing-row"}`}>
+                  <span className="ep-num">E{String(ep.episode_number).padStart(2, "0")}</span>
+                  <span className="ep-title">{ep.name || `Episode ${ep.episode_number}`}</span>
+                  {ep.present ? (
+                    <span className="ep-badge ep-filled">FILLED</span>
+                  ) : (
+                    <span className="ep-badge ep-missed">MISSING</span>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>

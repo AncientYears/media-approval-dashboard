@@ -14,6 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
+import { fetchTMDBSeason, type SeasonMeta } from "../services/tmdb";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -80,6 +81,64 @@ function extractEpisodeFromFilename(filePath: string): number | null {
   const ep = base.match(/[Ee]pisode\s*(\d{1,3})/);
   if (ep) return parseInt(ep[1], 10);
   return null;
+}
+
+/**
+ * Episode numbers physically present for a request: torrent-parsed episodes,
+ * processed_files entries, and a disk scan of the season folder (disk wins).
+ * Mirrors the /managed coverage computation so the grid matches the dashboard.
+ */
+function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
+  const coveredEps = new Set<number>();
+  const baseTitle = (req.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+  const season = req.season ?? 0;
+
+  const coveredRows = db.prepare(`
+    SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
+    JOIN approval_history ah ON ah.release_id = rc.id
+    WHERE ah.request_id = ? AND rc.torrent_hash != ''
+  `).all(req.id) as any[];
+  for (const cr of coveredRows) {
+    if (cr.parsed_episodes) {
+      const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
+      if (epMatches) for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
+      const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
+      if (rangeMatch) {
+        for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
+      }
+    } else if (req.episode_count && season != null && isSeasonPackTitle(cr.title || "", season)) {
+      for (let i = 1; i <= req.episode_count; i++) coveredEps.add(i);
+    }
+  }
+
+  const processedAh = db.prepare(`
+    SELECT processed_files FROM approval_history
+    WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'
+  `).all(req.id) as any[];
+  const diskEps = new Set<number>();
+  const seasonFolder = path.join(PROCESSED_TV, baseTitle, `S${String(season).padStart(2, "0")}`);
+  try {
+    if (fs.existsSync(seasonFolder)) {
+      for (const f of fs.readdirSync(seasonFolder)) {
+        if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+        const epNum = extractEpisodeFromFilename(f);
+        if (epNum != null) diskEps.add(epNum);
+      }
+    }
+  } catch {}
+  for (const pa of processedAh) {
+    const files: string[] = JSON.parse(pa.processed_files || "[]");
+    for (const pf of files) {
+      const epNum = extractEpisodeFromFilename(pf);
+      if (epNum != null) coveredEps.add(epNum);
+    }
+  }
+
+  if (diskEps.size > 0) {
+    for (const ep of coveredEps) if (!diskEps.has(ep)) coveredEps.delete(ep);
+    for (const ep of diskEps) coveredEps.add(ep);
+  }
+  return coveredEps;
 }
 
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
@@ -3436,6 +3495,80 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (error) {
       console.error("Error fetching request:", error);
       res.status(500).json({ error: "Failed to fetch request" });
+    }
+  });
+
+  // GET /api/requests/:id/episodes - arr-free season episode grid (TMDB metadata
+  // with on-disk coverage). Falls back to file-derived gaps when no metadata.
+  router.get("/:id/episodes", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (request.type !== "series") {
+        return res.json({ type: "movie", season: null, episodes: [], covered: [], metadata: null });
+      }
+      const season = request.season ?? 0;
+      const covered = coveredEpisodesForRequest(db, request);
+      let meta: SeasonMeta | null = null;
+      if (request.library_key) {
+        try {
+          meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "");
+        } catch (err: any) {
+          console.error(`[TMDB] episode fetch failed for request ${id}: ${err.message}`);
+        }
+      }
+      let episodes: any[];
+      if (meta) {
+        episodes = meta.episodes.map((ep: any) => ({ ...ep, present: covered.has(ep.episode_number) }));
+        const metaNums = new Set(meta.episodes.map((e: any) => e.episode_number));
+        for (const n of covered) {
+          if (!metaNums.has(n)) episodes.push({ episode_number: n, name: "", air_date: null, present: true });
+        }
+        episodes.sort((a, b) => a.episode_number - b.episode_number);
+      } else {
+        const max = covered.size ? Math.max(...covered) : 0;
+        episodes = [];
+        for (let n = 1; n <= max; n++) {
+          episodes.push({ episode_number: n, name: "", air_date: null, present: covered.has(n) });
+        }
+      }
+      res.json({
+        type: "series",
+        season,
+        title: request.title,
+        library_key: request.library_key,
+        episodes,
+        covered: Array.from(covered).sort((a, b) => a - b),
+        metadata: meta
+          ? { tmdb_show_id: meta.tmdb_show_id, show_name: meta.show_name, resolvedVia: meta.resolvedVia, source: "tmdb" }
+          : null,
+      });
+    } catch (error) {
+      console.error("Error fetching request episodes:", error);
+      res.status(500).json({ error: "Failed to fetch episodes" });
+    }
+  });
+
+  // POST /api/requests/:id/refresh-metadata - force re-fetch season metadata from TMDB
+  router.post("/:id/refresh-metadata", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (request.type !== "series" || !request.library_key) {
+        return res.status(400).json({ error: "No library_key to refresh" });
+      }
+      const season = request.season ?? 0;
+      const meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "", true);
+      if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
+      res.json({
+        refreshed: true,
+        metadata: { tmdb_show_id: meta.tmdb_show_id, show_name: meta.show_name, resolvedVia: meta.resolvedVia, source: "tmdb" },
+      });
+    } catch (error) {
+      console.error("Error refreshing metadata:", error);
+      res.status(500).json({ error: "Failed to refresh metadata" });
     }
   });
 

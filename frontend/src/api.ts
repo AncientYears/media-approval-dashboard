@@ -39,6 +39,16 @@ export async function fetchReleases(requestId: number) {
   return response.data;
 }
 
+export async function fetchRequestEpisodes(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/episodes`);
+  return response.data;
+}
+
+export async function refreshRequestMetadata(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/refresh-metadata`);
+  return response.data;
+}
+
 export async function approveRelease(requestId: number, releaseId: number, reason?: string) {
   const response = await api.post(`/requests/${requestId}/approve`, {
     releaseId,
