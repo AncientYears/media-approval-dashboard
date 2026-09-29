@@ -571,22 +571,29 @@ function hardlinkDirRecursive(srcDir: string, destDir: string) {
   }
 }
 
-function getContentVideoInodes(contentPath: string): { inodes: Set<number>; names: Set<string> } {
+function getContentVideoInodes(contentPath: string): { inodes: Set<number>; names: Set<string>; sizes: Set<number> } {
   const inodes = new Set<number>();
   const names = new Set<string>();
-  if (!fs.existsSync(contentPath)) return { inodes, names };
+  const sizes = new Set<number>();
+  if (!fs.existsSync(contentPath)) return { inodes, names, sizes };
   const stat = fs.statSync(contentPath);
   if (stat.isDirectory()) {
     for (const entry of fs.readdirSync(contentPath)) {
       if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
       const fullPath = path.join(contentPath, entry);
-      try { const st = fs.statSync(fullPath); inodes.add(st.ino); names.add(entry); } catch {}
+      try {
+        const st = fs.statSync(fullPath);
+        inodes.add(st.ino);
+        names.add(entry);
+        if (st.size > 0) sizes.add(st.size);
+      } catch {}
     }
   } else {
     inodes.add(stat.ino);
     names.add(path.basename(contentPath));
+    if (stat.size > 0) sizes.add(stat.size);
   }
-  return { inodes, names };
+  return { inodes, names, sizes };
 }
 
 export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService, prowlarr: ProwlarrService, deletedFranchiseIds?: Set<number>) {
@@ -4360,99 +4367,61 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       let destPath = "";
       let inLibrary = false;
-      const { inodes: contentInodes, names: contentNames } = getContentVideoInodes(contentPath);
-      if (request?.radarr_id) {
-        try {
+      const { inodes: contentInodes, names: contentNames, sizes: contentSizes } = getContentVideoInodes(contentPath);
+
+      // Candidate library folders for this request. A request may carry BOTH an
+      // arr id and a native library_key (or a dead arr id), so try every branch
+      // that resolves and merge the results instead of trusting the first.
+      const libraryFolders = new Set<string>();
+      try {
+        if (request?.radarr_id) {
           const movie = await radarr.getMovie(request.radarr_id);
-          const movieFolder = movie.path || movie.movieFile?.folderPath || movie.folderPath || "";
-          if (movieFolder && fs.existsSync(movieFolder)) {
-            for (const f of fs.readdirSync(movieFolder)) {
-              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              const fPath = path.join(movieFolder, f);
-              try {
-                const st = fs.statSync(fPath);
-                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
-                  destPath = fPath;
-                  inLibrary = true;
-                  break;
-                }
-              } catch {}
-            }
-          }
-          if (!destPath && movieFolder) destPath = movieFolder;
-        } catch {
-          // ignore
+          const mf = movie.path || movie.movieFile?.folderPath || movie.folderPath || "";
+          if (mf && fs.existsSync(mf)) libraryFolders.add(mf);
         }
-      } else if (request?.sonarr_id) {
-        try {
+      } catch {}
+      try {
+        if (request?.sonarr_id) {
           const series = await sonarr.getSeries(request.sonarr_id);
+          const sf = series.path || path.join(MEDIA_TV, series.title);
           const seasonNum = request.season || 1;
-          const seriesFolder = series.path || path.join(MEDIA_TV, series.title);
-          const seasonFolder = path.join(seriesFolder, `S${String(seasonNum).padStart(2, "0")}`);
-          if (fs.existsSync(seasonFolder)) {
-            for (const f of fs.readdirSync(seasonFolder)) {
-              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              const fPath = path.join(seasonFolder, f);
-              try {
-                const st = fs.statSync(fPath);
-                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
-                  destPath = fPath;
-                  inLibrary = true;
-                  break;
-                }
-              } catch {}
-            }
-          }
-          if (!destPath && seasonFolder) destPath = seasonFolder;
-        } catch {
-          // ignore
+          const sfold = path.join(sf, `S${String(seasonNum).padStart(2, "0")}`);
+          if (fs.existsSync(sfold)) libraryFolders.add(sfold);
         }
-      } else if (request?.library_key && request.type === "series") {
-        // Native (arr-free) series — resolve the library season folder the same
-        // way move-to-library does and match files by inode (hardlinks) or name.
-        try {
-          const libFolder = resolveLibraryFolder(request);
-          if (libFolder && fs.existsSync(libFolder)) {
-            for (const f of fs.readdirSync(libFolder)) {
-              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              const fPath = path.join(libFolder, f);
-              try {
-                const st = fs.statSync(fPath);
-                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
-                  destPath = fPath;
-                  inLibrary = true;
-                  break;
-                }
-              } catch {}
-            }
-            if (!destPath) destPath = libFolder;
-          }
-        } catch {
-          // ignore
+      } catch {}
+      try {
+        if (request?.library_key && request.type === "series") {
+          const lf = resolveLibraryFolder(request);
+          if (lf && fs.existsSync(lf)) libraryFolders.add(lf);
         }
-      } else if (request?.library_key && request.type === "movie") {
-        // Native (arr-free) movie — scan the movie's "<Title> (Year)/" folder(s).
-        try {
+      } catch {}
+      try {
+        if (request?.library_key && request.type === "movie") {
           for (const folder of nativeMovieLibraryFolders(request.title || "")) {
-            if (!fs.existsSync(folder)) continue;
-            for (const f of fs.readdirSync(folder)) {
-              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              const fPath = path.join(folder, f);
-              try {
-                const st = fs.statSync(fPath);
-                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
-                  destPath = fPath;
-                  inLibrary = true;
-                  break;
-                }
-              } catch {}
-            }
-            if (destPath && inLibrary) break;
-            if (!destPath) destPath = folder;
+            if (fs.existsSync(folder)) libraryFolders.add(folder);
           }
-        } catch {
-          // ignore
         }
+      } catch {}
+
+      outer: for (const folder of libraryFolders) {
+        try {
+          for (const f of fs.readdirSync(folder)) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            const fPath = path.join(folder, f);
+            try {
+              const st = fs.statSync(fPath);
+              const inodeHit = contentInodes.size > 0 && contentInodes.has(st.ino);
+              const nameHit = contentNames.has(f);
+              const sizeHit = contentSizes.size > 0 && st.size > 0 && contentSizes.has(st.size);
+              if (inodeHit || nameHit || sizeHit) {
+                destPath = fPath;
+                inLibrary = true;
+                break outer;
+              }
+            } catch {}
+          }
+        } catch {}
+        if (!destPath) destPath = folder;
       }
 
       // Is this torrent's content already captured under /Processed (hardlinked
@@ -4467,11 +4436,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (procDir && fs.existsSync(procDir)) {
           for (const en of fs.readdirSync(procDir, { withFileTypes: true })) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(en.name)) continue;
+            const full = path.join(procDir, en.name);
             try {
-              const st = fs.statSync(path.join(procDir, en.name));
-              if (contentInodes.size > 0 && contentInodes.has(st.ino)) {
+              const st = fs.statSync(full);
+              const inodeHit = contentInodes.size > 0 && contentInodes.has(st.ino);
+              const nameHit = contentNames.has(en.name);
+              const sizeHit = contentSizes.size > 0 && st.size > 0 && contentSizes.has(st.size);
+              if (inodeHit || nameHit || sizeHit) {
                 inProcessed = true;
-                processedPath = path.join(procDir, en.name);
+                processedPath = full;
                 break;
               }
             } catch {}
@@ -5428,19 +5401,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const files: { name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[] = [];
       const hasExplicitAssociations = matchedNames.size > 0;
+      const linkedViaInode: string[] = [];
 
       for (const e of allEntries) {
-        // Match by: exact name in matchedNames, relative path in matchedNames
-        if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath)) {
-          // Title-match fallback ONLY when request has zero explicit associations
-          // (avoids sequel bleed like NeverEnding Story I matching II and III files)
-          if (!hasExplicitAssociations) {
-            const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-            if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
-          } else {
-            continue;
-          }
-        }
         const fullPath = e.fullPath;
         let size = 0;
         let ino = 0;
@@ -5449,7 +5412,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           size = st.size;
           ino = st.ino;
         } catch {}
-        const inLibrary = (ino > 0 && libraryInodes.has(ino))
+
+        // Accept when: explicitly associated (name/relPath), OR the file is a
+        // hardlink of one of the request's library files (inode — authoritative
+        // even when a torrent is linked and association bookkeeping is lost),
+        // OR title-match fallback when the request has zero explicit associations.
+        const linkedToLibrary = ino > 0 && libraryInodes.has(ino);
+        if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary) {
+          if (!hasExplicitAssociations) {
+            const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
+          } else {
+            continue;
+          }
+        }
+        if (linkedToLibrary && !matchedNames.has(e.relPath) && !matchedNames.has(e.name)) {
+          linkedViaInode.push(e.relPath);
+        }
+        const inLibrary = linkedToLibrary
           || libraryFiles.has(e.name)
           || (e.isDir && [...libraryFiles].some((lf) => lf.startsWith(e.name)))
           || (size > 0 && librarySizes.has(size));
@@ -5458,6 +5438,26 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           libraryMatch = libraryNameByInode.get(ino) || [...libraryFiles].find((lf) => lf === e.name || lf.startsWith(e.name)) || librarySizes.get(size) || "";
         }
         files.push({ name: e.relPath, size, isDir: e.isDir, inLibrary, libraryPath: libraryMatch });
+      }
+
+      // Heal: record any processed file that is a hardlink of a library file but
+      // isn't in a null-release_id approval row yet, so processed_count / version
+      // accounting recovers when association bookkeeping was lost.
+      if (linkedViaInode.length > 0) {
+        try {
+          const existingAh = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(id) as any;
+          const existing = existingAh ? JSON.parse(existingAh.processed_files || "[]") : [];
+          const names = new Set<string>(existing);
+          for (const rp of linkedViaInode) names.add(rp);
+          if (names.size !== existing.length) {
+            const arr = [...names];
+            if (existingAh) {
+              db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(arr), existingAh.id);
+            } else {
+              db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(id, JSON.stringify(arr));
+            }
+          }
+        } catch {}
       }
 
       res.json({ files, processedDir });
