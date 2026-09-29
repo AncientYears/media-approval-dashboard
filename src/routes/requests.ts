@@ -870,63 +870,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ? processedBytes / (1024 * 1024)
           : seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0);
         const mappedSeasons = seasons.map((s: any) => {
-          // Get covered episodes from parsed_episodes on approved releases
-          const coveredRows = db.prepare(`
-            SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
-            JOIN approval_history ah ON ah.release_id = rc.id
-            WHERE ah.request_id = ? AND rc.torrent_hash != ''
-          `).all(s.id) as any[];
-          const coveredEps = new Set<number>();
-          for (const cr of coveredRows) {
-            if (cr.parsed_episodes) {
-              const epMatches = cr.parsed_episodes.match(/E(\d{1,3})/g);
-              if (epMatches) {
-                for (const em of epMatches) coveredEps.add(parseInt(em.slice(1), 10));
-              }
-              const rangeMatch = cr.parsed_episodes.match(/E(\d{1,3})\s*-\s*(\d{1,3})/);
-              if (rangeMatch) {
-                for (let i = parseInt(rangeMatch[1], 10); i <= parseInt(rangeMatch[2], 10); i++) coveredEps.add(i);
-              }
-            } else if (s.episode_count && s.season != null && isSeasonPackTitle(cr.title || '', s.season)) {
-              for (let i = 1; i <= s.episode_count; i++) coveredEps.add(i);
-            }
-          }
-          // Also count library-imported files — parse episode numbers from processed_files paths
-          const processedAh = db.prepare(`
-            SELECT processed_files FROM approval_history
-            WHERE request_id = ? AND (release_id IS NULL OR release_id = 0)
-            AND processed_files IS NOT NULL AND processed_files != '[]'
-          `).all(s.id) as any[];
-          for (const pa of processedAh) {
-            const files: string[] = JSON.parse(pa.processed_files || "[]");
-            for (const pf of files) {
-              const epNum = extractEpisodeFromFilename(pf);
-              if (epNum != null) coveredEps.add(epNum);
-            }
-          }
-          // Also scan the season folder on disk for files not yet in approval_history
+          // Covered episodes — same logic as the franchise page (/native-franchise)
+          // so dashboard counts always agree with the episode grid. This counts ALL
+          // processed_files rows (including torrent-linked ones), unlike the old
+          // inline version which only counted release_id IS NULL rows.
+          const coveredEps = coveredEpisodesForRequest(db, s);
+          // Compute folder size from the season folder (source of truth)
           let folderSizeBytes = 0;
-          const diskEps = new Set<number>();
           try {
-            const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(s.season).padStart(2, "0")}`);
-            if (fs.existsSync(seasonFolder)) {
+            const seasonFolder = findSeasonFolder(franchiseTitle, s.season);
+            if (seasonFolder) {
               for (const f of fs.readdirSync(seasonFolder)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-                const epNum = extractEpisodeFromFilename(f);
-                if (epNum != null) diskEps.add(epNum);
                 try { folderSizeBytes += fs.statSync(path.join(seasonFolder, f)).size; } catch {}
-              }
-              // Prefer disk coverage over RC coverage when season folder exists
-              for (const ep of coveredEps) {
-                if (diskEps.has(ep)) continue;
-                // Keep RC coverage only if the episode also exists in this season's folder
-                // (RC coverage without a matching disk file is stale — file was moved)
-                coveredEps.delete(ep);
               }
             }
           } catch {}
-          // Also add disk-only episodes (files without RC)
-          for (const ep of diskEps) coveredEps.add(ep);
           const folderSizeMb = folderSizeBytes / (1024 * 1024);
           const totalSizeMb = Math.max(s.total_size_mb || 0, folderSizeMb);
           return {
