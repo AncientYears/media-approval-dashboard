@@ -119,7 +119,9 @@ function showKey(tvdbId: string | null, imdbId: string | null, title: string, ye
 function distinctEpisodes(files: ScannedFile[]): number {
   const eps = new Set<number>();
   for (const f of files) if (f.episode != null) eps.add(f.episode);
-  return eps.size || files.length;
+  // Never undercount: if only some files parsed episode numbers, fall back to
+  // the file count so coverage displays at least the raw file total.
+  return Math.max(eps.size, files.length);
 }
 
 /** A processed file, enriched with the parsed year of the show folder it lives in. */
