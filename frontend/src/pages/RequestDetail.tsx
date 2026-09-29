@@ -637,25 +637,33 @@ export default function RequestDetail() {
                       {removeLibConfirm === f.name ? "Remove?" : "In Library"}
                     </button>
                   )}
-                  <div className="move-actions">
-                    {!f.inLibrary && (
-                      <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(f.name); try { await moveToLibrary(Number(id), f.name); await new Promise(r => setTimeout(r, 3000)); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed(null); }} disabled={movingProcessed === f.name}>
-                        {movingProcessed === f.name ? "..." : "To Library"}
+<div className="move-actions">
+                      {!f.inLibrary && (
+                        <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(f.name); try { await moveToLibrary(Number(id), f.name); await new Promise(r => setTimeout(r, 3000)); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed(null); }} disabled={movingProcessed === f.name}>
+                          {movingProcessed === f.name ? "..." : "To Library"}
+                        </button>
+                      )}
+                      {wsForFile ? (
+                        <button className="btn btn-secondary btn-tiny" onClick={() => setWsManagerIdx(wsForFile.index)}>Manage</button>
+                      ) : (
+                        <button className="btn btn-workspace btn-tiny" onClick={() => openProcWsPicker(f.name)} disabled={movingProcessed === f.name}>
+                          To Workspace
+                        </button>
+                      )}
+                      <button className="btn btn-danger btn-tiny" onClick={() => handleDeleteProcessedFile(f.name)} disabled={deletingProcessed === f.name}>
+                        {deletingProcessed === f.name ? "..." : "Delete"}
                       </button>
-                    )}
-                    {wsForFile ? (
-                      <button className="btn btn-secondary btn-tiny" onClick={() => setWsManagerIdx(wsForFile.index)}>Manage</button>
-                    ) : (
-                      <button className="btn btn-workspace btn-tiny" onClick={() => openProcWsPicker(f.name)} disabled={movingProcessed === f.name}>
-                        To Workspace
-                      </button>
-                    )}
-                    <button className="btn btn-danger btn-tiny" onClick={() => handleDeleteProcessedFile(f.name)} disabled={deletingProcessed === f.name}>
-                      {deletingProcessed === f.name ? "..." : "Delete"}
-                    </button>
+                    </div>
                   </div>
+                  {f.inLibrary && f.libraryPath && (
+                    <div className="torrent-path-row" style={{ paddingLeft: 18 }}>
+                      <span className="path-label">Library:</span>
+                      <span className="torrent-path path-exists" title={f.libraryPath} onClick={() => handleCopyPath(f.libraryPath)}>
+                        {f.libraryPath}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              </div>
             );
           })}
           </>

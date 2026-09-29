@@ -222,7 +222,7 @@ export default function TorrentPanel({
               {ts.in_library && (
                 <div className="torrent-path-row">
                   <span className="path-label">Library:</span>
-                  <span className="torrent-path" title="Click to copy" onClick={() => onCopyPath(ts.library_path)}>
+                  <span className="torrent-path path-exists" title="Click to copy" onClick={() => onCopyPath(ts.library_path)}>
                     {ts.library_path}
                   </span>
                   <button className={`btn btn-tiny ${isRemoveConfirm ? "btn-danger" : "btn-library-ok"}`} onClick={() => onRemoveFromLibrary(ar.id)}>

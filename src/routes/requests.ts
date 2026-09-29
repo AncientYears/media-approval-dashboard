@@ -161,6 +161,42 @@ function unnumberedFilesInSeasonFolder(baseTitle: string, season: number): numbe
   }
 }
 
+// Resolve the library folder for a native (arr-free) request — mirrors the
+// move-to-library resolution: fuzzy show folder under MEDIA_TV + existing
+// localized season folder (Sezon I, etc.), movies map flat to MEDIA_MOVIES.
+// Returns null when the library folder cannot be located.
+function resolveLibraryFolder(request: {
+  library_key?: string | null;
+  type?: string;
+  title?: string;
+  season?: number | null;
+}): string | null {
+  if (!request.library_key) return null;
+  if (request.type === "series") {
+    const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+    let showFolder = path.join(MEDIA_TV, baseTitle);
+    if (!fs.existsSync(showFolder)) {
+      const want = normalizeFolder(baseTitle);
+      let found: string | null = null;
+      try {
+        for (const d of fs.readdirSync(MEDIA_TV)) {
+          const norm = normalizeFolder(d);
+          if (!norm) continue;
+          if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+            found = d;
+            break;
+          }
+        }
+      } catch {}
+      if (found) showFolder = path.join(MEDIA_TV, found);
+    }
+    if (!fs.existsSync(showFolder)) return null;
+    const seasonNum = request.season || 1;
+    return findExistingSeasonFolder(showFolder, seasonNum) || path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
+  }
+  return MEDIA_MOVIES;
+}
+
 /** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset. */
 function franchiseLanguage(db: Database, libraryKey: string): string | null {
   const row = db.prepare("SELECT language FROM tmdb_franchise_prefs WHERE library_key = ?").get(libraryKey) as any;
@@ -3916,6 +3952,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         } catch {
           // ignore
         }
+      } else if (request?.library_key) {
+        // Native (arr-free) request — resolve the library folder the same way
+        // move-to-library does and match files by inode (hardlinks) or name.
+        try {
+          const libFolder = resolveLibraryFolder(request);
+          if (libFolder && fs.existsSync(libFolder)) {
+            for (const f of fs.readdirSync(libFolder)) {
+              if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+              const fPath = path.join(libFolder, f);
+              try {
+                const st = fs.statSync(fPath);
+                if ((contentInodes.size > 0 && contentInodes.has(st.ino)) || contentNames.has(f)) {
+                  destPath = fPath;
+                  inLibrary = true;
+                  break;
+                }
+              } catch {}
+            }
+            if (!destPath) destPath = libFolder;
+          }
+        } catch {
+          // ignore
+        }
       }
 
       res.json({
@@ -4762,12 +4821,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (fs.existsSync(seasonFolder)) {
             for (const f of fs.readdirSync(seasonFolder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                const fPath = path.join(seasonFolder, f);
                 libraryFiles.add(f);
                 try {
-                  const st = fs.statSync(path.join(seasonFolder, f));
+                  const st = fs.statSync(fPath);
                   libraryInodes.add(st.ino);
-                  librarySizes.set(st.size, f);
-                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, f);
+                  librarySizes.set(st.size, fPath);
+                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, fPath);
                 } catch {}
               }
             }
@@ -4780,12 +4840,34 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (movieFolder && fs.existsSync(movieFolder)) {
             for (const f of fs.readdirSync(movieFolder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                const fPath = path.join(movieFolder, f);
                 libraryFiles.add(f);
                 try {
-                  const st = fs.statSync(path.join(movieFolder, f));
+                  const st = fs.statSync(fPath);
                   libraryInodes.add(st.ino);
-                  librarySizes.set(st.size, f);
-                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, f);
+                  librarySizes.set(st.size, fPath);
+                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, fPath);
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+      } else if (request.library_key) {
+        // Native (arr-free) request — scan the library folder the same way
+        // move-to-library resolves it (fuzzy show folder, localized season
+        // folders like "Sezon I"), matching by inode for hardlinks.
+        try {
+          const libFolder = resolveLibraryFolder(request);
+          if (libFolder && fs.existsSync(libFolder)) {
+            for (const f of fs.readdirSync(libFolder)) {
+              if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
+                const fPath = path.join(libFolder, f);
+                libraryFiles.add(f);
+                try {
+                  const st = fs.statSync(fPath);
+                  libraryInodes.add(st.ino);
+                  librarySizes.set(st.size, fPath);
+                  if (!libraryNameByInode.has(st.ino)) libraryNameByInode.set(st.ino, fPath);
                 } catch {}
               }
             }

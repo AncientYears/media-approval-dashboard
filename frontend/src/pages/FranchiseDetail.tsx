@@ -716,6 +716,14 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                     </button>
                   </div>
                 </div>
+                {f.inLibrary && f.libraryPath && (
+                  <div className="torrent-path-row" style={{ paddingLeft: 18 }}>
+                    <span className="path-label">Library:</span>
+                    <span className="torrent-path path-exists" title={f.libraryPath} onClick={() => handleCopyPath(f.libraryPath)}>
+                      {f.libraryPath}
+                    </span>
+                  </div>
+                )}
               </div>
             );
           })}
