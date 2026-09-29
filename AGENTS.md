@@ -388,6 +388,7 @@ NTFY_TOPIC=
 - Managed media: series show always if DOWNLOADING/SEEDING; movies require `release_count > 0`
 - `franchise-season-row` uses flex layout with expandable inner content (click row header to toggle)
 - Hardlinks cannot cross filesystem boundaries — Download, Workspace, Processed, and Library must all be on the same volume
+- Cross-owner hardlinks (EPERM): library files owned by root (Radarr imports as root) fail adoption's `linkSync` with EPERM when the app runs as a normal uid and `fs.protected_hardlinks=1` (Debian default). `setup.sh` writes `fs.protected_hardlinks=0` to `/etc/sysctl.d/99-media-hardlinks.conf`. If adoption suddenly EPERMs again, check `/proc/sys/fs/protected_hardlinks` and the app user's uid vs the source file's owner.
 - qBittorrent and the app must mount the shared storage at the **same absolute path**. `fromQBittorrentPath()` / `toQBittorrentPath()` live in `src/config/paths.ts` and are no-ops unless `QBIT_PATH_PREFIX`/`QBIT_HOST_PREFIX` are set — never hardcode a path prefix at a call site
 - Hardlinks are created by the filesystem/NFS server, so qBittorrent may run in a different VM than the app as long as both mount the same export. A *path* mismatch is the real risk: it silently triggers the `EXDEV` → `copyFileSync` fallback in `processor.ts` and triples disk usage
 - Import endpoint FK fix: uses SELECT-then-INSERT (not INSERT OR IGNORE) to avoid `lastInsertRowid=0` causing FOREIGN KEY constraint failure on approval_history
