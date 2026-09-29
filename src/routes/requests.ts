@@ -4452,6 +4452,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       } catch {}
 
+      const _debug = {
+        releaseId: release.release_id,
+        releaseTitle: release.title,
+        releaseHash: release.torrent_hash,
+        contentPath,
+        contentPathExists: fs.existsSync(contentPath),
+        contentVideoInodes: contentInodes.size,
+        contentNames: [...contentNames],
+        contentSizes: [...contentSizes],
+        libraryFolders: [...libraryFolders],
+        inLibrary,
+        inProcessed,
+      };
+      console.log("[TorrentStatus-debug]", JSON.stringify(_debug));
+
       res.json({
         found: true,
         hash: torrent.hash,
@@ -4476,6 +4491,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         num_leechs: torrent.num_leechs,
         added_on: torrent.added_on,
         completion_on: torrent.completion_on,
+        _debug,
       });
     } catch (error) {
       console.error("Error fetching torrent status:", error);
