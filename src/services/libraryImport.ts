@@ -163,7 +163,7 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
   // Fetch media_requests once; filtering happens in JS so the plan is safe
   // against rows appearing mid-scan.
   const movieRows = db
-    .prepare("SELECT id, title, status, library_key, radarr_id, episode_count FROM media_requests WHERE type = 'movie'")
+    .prepare("SELECT id, title, status, library_key, radarr_id, season, episode_count FROM media_requests WHERE type = 'movie'")
     .all() as any[];
   const seriesRows = db
     .prepare("SELECT id, title, status, library_key, sonarr_id, season, episode_count FROM media_requests WHERE type = 'series'")
