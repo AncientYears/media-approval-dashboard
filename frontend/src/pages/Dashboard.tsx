@@ -2,6 +2,7 @@
 import { useNavigate } from "react-router-dom";
 import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibraryNative, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed } from "../api";
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
+import DownloadDirsModal from "../components/DownloadDirsModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -88,6 +89,7 @@ export default function Dashboard() {
   const [modal, setModal] = useState<{ title?: string; lines: string[]; onCleanup?: () => void; onApply?: () => void } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
+  const [downloadDirsOpen, setDownloadDirsOpen] = useState(false);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
 
   const loadData = useCallback(async () => {
@@ -176,6 +178,7 @@ export default function Dashboard() {
           setModal({ title: "Cleanup Error", lines: [err.message] });
         }
       } : undefined} />}
+      {downloadDirsOpen && <DownloadDirsModal onClose={() => { setDownloadDirsOpen(false); loadData(); }} />}
       {confirmDelete && (
         <ConfirmModal
           message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
@@ -492,6 +495,7 @@ export default function Dashboard() {
               setModal({ title: "Adopt into Processed", lines: [`Error: ${err.message}`] });
             }
           }}>Adopt into Processed</button>
+          <button className="btn btn-primary btn-tiny" onClick={() => setDownloadDirsOpen(true)}>Scan Download Dirs</button>
         </div>
       </div>
 

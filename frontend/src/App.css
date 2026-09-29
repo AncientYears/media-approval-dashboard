@@ -1969,6 +1969,76 @@ body {
   gap: 8px;
 }
 
+.download-dirs-modal {
+  max-width: 720px;
+}
+
+.download-dirs-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.download-dirs-item {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: #0f172a;
+}
+
+.download-dirs-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.download-dirs-name {
+  flex: 1;
+  min-width: 120px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.download-dirs-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.download-dirs-attach {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.download-dirs-input {
+  min-width: 220px;
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: #0b1220;
+  color: #e2e8f0;
+  font-size: 12px;
+}
+
+.download-dirs-file {
+  font-size: 12px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.download-dirs-file input[type="file"] {
+  display: none;
+}
+
 .modal {
   background: var(--card-bg);
   border: 1px solid var(--border);

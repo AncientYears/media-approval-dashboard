@@ -197,6 +197,86 @@ function resolveLibraryFolder(request: {
   return MEDIA_MOVIES;
 }
 
+// ---- Orphaned download-dir scan helpers -------------------------------------------------
+
+function isWithinDownloadRoot(p: string): string {
+  const root = isWithinRoot(p, DOWNLOADS_MOVIES) || isWithinRoot(p, DOWNLOADS_TV);
+  return root;
+}
+function isWithinRoot(p: string, root: string): string {
+  const rel = path.relative(root, p);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return "";
+  return root;
+}
+
+function collectVideoInodes(root: string): Set<number> {
+  const inodes = new Set<number>();
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e.name)) {
+        try { inodes.add(fs.statSync(full).ino); } catch {}
+      }
+    }
+  };
+  walk(root);
+  return inodes;
+}
+
+function dirSizeBytes(p: string): number {
+  let st;
+  try { st = fs.statSync(p); } catch { return 0; }
+  if (st.isFile()) return st.size;
+  let total = 0;
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else {
+        try { total += fs.statSync(full).size; } catch {}
+      }
+    }
+  };
+  walk(p);
+  return total;
+}
+
+// Hardlink an entry (file or dir tree) into dest. Mirrors directory structure;
+// returns number of files linked. Never copies (EXDEV is an error).
+function hardlinkTree(src: string, dest: string): number {
+  const st = fs.statSync(src);
+  if (st.isDirectory()) {
+    let count = 0;
+    fs.mkdirSync(dest, { recursive: true });
+    for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+      count += hardlinkTree(path.join(src, e.name), path.join(dest, e.name));
+    }
+    return count;
+  }
+  if (fs.existsSync(dest)) return 0;
+  try {
+    fs.linkSync(src, dest);
+    return 1;
+  } catch (err: any) {
+    if (err.code === "EEXIST") return 0;
+    if (err.code === "EXDEV") throw new Error(`EXDEV: ${src} is on another filesystem — refusing to copy`);
+    throw err;
+  }
+}
+
+// Dest tree for capturing an orphaned download entry into /Processed.
+// Movies: flat under PROCESSED_MOVIES. Series: mirror under PROCESSED_TV/<name>.
+function processedDestForEntry(entryPath: string, type: string): { destDir: string; base: string } {
+  if (type === "movie") return { destDir: PROCESSED_MOVIES, base: path.basename(entryPath) };
+  return { destDir: PROCESSED_TV, base: path.basename(entryPath) };
+}
+
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
 // localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
@@ -2276,6 +2356,216 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (error: any) {
       console.error("Error scanning downloads:", error);
       res.status(500).json({ error: `Failed to scan downloads: ${error.message}` });
+    }
+  });
+
+  // POST /api/requests/scan-download-dirs - Read-only scan of the download
+  // directories (DOWNLOADS_MOVIES/DOWNLOADS_TV) for content no longer tracked by
+  // any qBittorrent torrent (e.g. after trackers/torrents were wiped). Reports
+  // which entries still have a live torrent and which already exist in Processed
+  // (by inode) so the user can attach / move / delete per item.
+  router.post("/scan-download-dirs", async (req: Request, res: Response) => {
+    try {
+      let torrents: any[] = [];
+      try {
+        torrents = await qbittorrent.getTorrents();
+      } catch {}
+
+      const trackedContentPaths = new Set(
+        torrents
+          .map((t) => {
+            const p = t.content_path ? fromQBittorrentPath(t.content_path) : "";
+            return p;
+          })
+          .filter((p: string) => p)
+      );
+
+      const movieProcInodes = fs.existsSync(PROCESSED_MOVIES)
+        ? collectVideoInodes(PROCESSED_MOVIES)
+        : new Set<number>();
+      const seriesProcInodes = fs.existsSync(PROCESSED_TV)
+        ? collectVideoInodes(PROCESSED_TV)
+        : new Set<number>();
+
+      const items: any[] = [];
+
+      const scanRoot = (root: string, type: string) => {
+        if (!fs.existsSync(root)) return;
+        const procInodes = type === "movie" ? movieProcInodes : seriesProcInodes;
+        for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+          if (e.name.startsWith(".")) continue;
+          const full = path.join(root, e.name);
+
+          let tracked = false;
+          let trackedName = "";
+          for (const tp of trackedContentPaths) {
+            if (tp === full || tp.startsWith(full + path.sep)) {
+              tracked = true;
+              trackedName = tp;
+              break;
+            }
+          }
+          if (!tracked) {
+            const want = normalizeTitleForMatch(e.name);
+            for (const t of torrents) {
+              const tn = normalizeTitleForMatch(t.name || "");
+              if (tn && want && titlesMatch(want, tn)) {
+                tracked = true;
+                trackedName = t.name;
+                break;
+              }
+            }
+          }
+
+          const inodes = collectVideoInodes(full);
+          let existsInProcessed = false;
+          for (const ino of inodes) {
+            if (procInodes.has(ino)) {
+              existsInProcessed = true;
+              break;
+            }
+          }
+
+          items.push({
+            type,
+            name: e.name,
+            path: full,
+            isDir: e.isDirectory(),
+            sizeMb: Math.round(dirSizeBytes(full) / (1024 * 1024)),
+            tracked,
+            trackedName,
+            existsInProcessed,
+            videoCount: inodes.size,
+          });
+        }
+      };
+
+      scanRoot(DOWNLOADS_MOVIES, "movie");
+      scanRoot(DOWNLOADS_TV, "series");
+
+      items.sort(
+        (a, b) =>
+          (a.tracked ? 1 : 0) - (b.tracked ? 1 : 0) ||
+          a.type.localeCompare(b.type) ||
+          a.name.localeCompare(b.name)
+      );
+
+      res.json({ items, downloadRoots: { movies: DOWNLOADS_MOVIES, tv: DOWNLOADS_TV } });
+    } catch (error: any) {
+      console.error("Error scanning download dirs:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/scan-download-dirs/apply - Apply per-item actions chosen
+  // in the UI for orphaned download entries:
+  //   attach           - add magnet/.torrent to qBittorrent (saves into the download root)
+  //   hardlink-process - capture content into /Processed (no source deletion)
+  //   move-process     - rename content into /Processed (orphan becomes app-owned)
+  //   delete           - remove the download entry (requires exists-in-processed or force)
+  router.post("/scan-download-dirs/apply", async (req: Request, res: Response) => {
+    try {
+      const bodyItems: any[] = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (bodyItems.length === 0) return res.status(400).json({ error: "No items provided" });
+
+      const results: any[] = [];
+
+      for (const item of bodyItems) {
+        const entryPath: string = item?.path;
+        const action: string = item?.action;
+        const force: boolean = !!item?.force;
+
+        if (!entryPath || !action) {
+          results.push({ path: entryPath || "?", action, ok: false, error: "Missing path or action" });
+          continue;
+        }
+        const root = isWithinDownloadRoot(entryPath);
+        if (!root) {
+          results.push({ path: entryPath, action, ok: false, error: "Path is outside download directories" });
+          continue;
+        }
+        if (!fs.existsSync(entryPath)) {
+          results.push({ path: entryPath, action, ok: false, error: "Path no longer exists" });
+          continue;
+        }
+        const type = root === DOWNLOADS_MOVIES ? "movie" : "series";
+
+        try {
+          if (action === "attach") {
+            const magnetUrl: string = item?.magnet || "";
+            const torrentBase64: string = item?.torrentFileBase64 || "";
+            if (!magnetUrl && !torrentBase64) {
+              results.push({ path: entryPath, action, ok: false, error: "Provide magnetUrl or torrentFileBase64" });
+              continue;
+            }
+            const qbitSavePath = toQBittorrentPath(root);
+            if (magnetUrl) {
+              await qbittorrent.addTorrent(magnetUrl, qbitSavePath);
+            } else {
+              const buf = Buffer.from(torrentBase64, "base64");
+              await qbittorrent.addTorrentFile(buf, item?.torrentFilename || "attached.torrent", qbitSavePath);
+            }
+            results.push({
+              path: entryPath,
+              action,
+              ok: true,
+              detail: magnetUrl ? "torrent added from magnet" : "torrent added from file",
+              savePath: root,
+            });
+          } else if (action === "hardlink-process" || action === "move-process") {
+            const { destDir, base } = processedDestForEntry(entryPath, type);
+            fs.mkdirSync(destDir, { recursive: true });
+            if (action === "hardlink-process") {
+              const dest = type === "movie"
+                ? path.join(destDir, path.basename(entryPath))
+                : path.join(destDir, base);
+              if (fs.existsSync(dest)) {
+                results.push({ path: entryPath, action, ok: false, error: `Destination already exists: ${dest}` });
+                continue;
+              }
+              const count = hardlinkTree(entryPath, dest);
+              results.push({ path: entryPath, action, ok: true, detail: `hardlinked ${count} file(s)`, dest });
+            } else {
+              // move-process
+              const dest = type === "movie"
+                ? path.join(destDir, path.basename(entryPath))
+                : path.join(destDir, base);
+              if (fs.existsSync(dest)) {
+                results.push({ path: entryPath, action, ok: false, error: `Destination already exists: ${dest}` });
+                continue;
+              }
+              fs.renameSync(entryPath, dest);
+              results.push({ path: entryPath, action, ok: true, detail: "moved", dest });
+            }
+          } else if (action === "delete") {
+            const inodes = collectVideoInodes(entryPath);
+            const procInodes = type === "movie"
+              ? (fs.existsSync(PROCESSED_MOVIES) ? collectVideoInodes(PROCESSED_MOVIES) : new Set<number>())
+              : (fs.existsSync(PROCESSED_TV) ? collectVideoInodes(PROCESSED_TV) : new Set<number>());
+            const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
+            if (!existsInProcessed && !force) {
+              results.push({
+                path: entryPath,
+                action,
+                ok: false,
+                error: "Not found in Processed — refusing to delete without force (would lose data)",
+              });
+              continue;
+            }
+            fs.rmSync(entryPath, { recursive: true, force: true });
+            results.push({ path: entryPath, action, ok: true, detail: "deleted" });
+          } else {
+            results.push({ path: entryPath, action, ok: false, error: `Unknown action: ${action}` });
+          }
+        } catch (err: any) {
+          results.push({ path: entryPath, action, ok: false, error: err.message });
+        }
+      }
+
+      res.json({ results });
+    } catch (error: any) {
+      console.error("Error applying download-dir actions:", error);
+      res.status(500).json({ error: error.message });
     }
   });
 
