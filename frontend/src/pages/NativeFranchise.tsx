@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, setFranchiseLanguage } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage } from "../api";
 import { useToast } from "../components/Toast";
 
 const LANGUAGES = ["pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA", "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO", "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA"];
@@ -63,8 +63,14 @@ export default function NativeFranchise() {
   const handleRefresh = async (season: any) => {
     setRefreshing(season.season);
     try {
-      await refreshRequestMetadata(season.request_id);
-      const data = await fetchRequestEpisodes(season.request_id);
+      let data: any;
+      if (season.request_id != null) {
+        await refreshRequestMetadata(season.request_id);
+        data = await fetchRequestEpisodes(season.request_id);
+      } else {
+        await refreshNativeSeasonMetadata(Number(id), season.season);
+        data = await fetchNativeSeasonEpisodes(Number(id), season.season);
+      }
       setEpisodes((prev) => ({ ...prev, [season.season]: data }));
       toast("Metadata refreshed", "success");
     } catch {

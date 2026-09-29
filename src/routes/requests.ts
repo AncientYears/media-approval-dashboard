@@ -559,6 +559,38 @@ function seasonFolderForLibraryKey(db: Database, library_key: string | null | un
   return fs.existsSync(cand) ? cand : null;
 }
 
+/** Denominator for a native Specials (S00) season. Imported S00 rows carry an
+ * `episode_count` that is a file-count snapshot — episodes stored loose in the
+ * library root get miscast as "specials" and inflate the number (e.g. 55
+ * placeholder specials for a show whose real specials number 13). The honest
+ * count is TMDB's named special episodes plus whatever is physically in the
+ * S00 folder. */
+function nativeSpecialDenominator(db: Database, library_key: string | null | undefined, baseTitle: string, covered: Set<number>, extras: number): number {
+  let tmdb = 0;
+  if (library_key) {
+    try {
+      const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(library_key) as any;
+      if (tc) tmdb = namedSpecialCount(tc.payload);
+    } catch {}
+  }
+  return Math.max(tmdb, covered.size + extras);
+}
+
+/** Named special episodes in a cached TMDB season-0 payload. TMDB pads many
+ * series' Specials with unnamed "Episode N" mirrors of the real episodes —
+ * those are structure noise, not content, and shouldn't inflate special pills. */
+function namedSpecialCount(payload: string): number {
+  try {
+    const episodes: any[] = JSON.parse(payload)?.episodes || [];
+    return episodes.filter((ep) => {
+      const n = (ep?.name || "").trim();
+      return n !== "" && !/^episode\s*\d+$/i.test(n);
+    }).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Year embedded in the library_key (`series:<id|slug>:<year>`), if any. */
 function libraryKeyYear(key?: string | null): number | null {
   if (!key) return null;
@@ -1250,6 +1282,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // processed_files rows (including torrent-linked ones), unlike the old
           // inline version which only counted release_id IS NULL rows.
           const coveredEps = coveredEpisodesForRequest(db, s);
+          const extras = unnumberedFilesInSeasonFolder(franchiseTitle, s.season, libraryKeyYear(libraryKey));
           // Compute folder size from the season folder (source of truth)
           let folderSizeBytes = 0;
           try {
@@ -1270,9 +1303,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             total_size_mb: totalSizeMb,
             release_count: s.release_count,
             title: s.title,
-            episode_count: s.episode_count,
+            // Specials rows imported from a loose-root library miscast their
+            // episode_count as a file snapshot; the real denominator is TMDB's
+            // named specials plus anything physically in the S00 folder.
+            episode_count: sonarrId == null && s.season === 0 ? nativeSpecialDenominator(db, libraryKey, franchiseTitle, coveredEps, extras) : s.episode_count,
             covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-            extras: unnumberedFilesInSeasonFolder(franchiseTitle, s.season, libraryKeyYear(libraryKey)),
+            extras,
           };
         }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         // Inject unrequested seasons from Sonarr (e.g., Specials/season 0)
@@ -1351,12 +1387,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             existingSeasons.add(sn);
           }
           // Disk-less Specials still appear when cached TMDB season-0 episodes
-          // exist (mirrors the Sonarr unrequested-season injection).
           if (!existingSeasons.has(0)) {
             let tmdbSpecials = 0;
             try {
               const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(libraryKey) as any;
-              if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
+              if (tc) tmdbSpecials = namedSpecialCount(tc.payload);
             } catch {}
             if (tmdbSpecials > 0) {
               mappedSeasons.push({
@@ -4247,7 +4282,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const extras: { name: string }[] = [];
       try {
-        const folder = findSeasonFolder(baseTitle, season, libraryKeyYear(request.library_key));
+        const folder = seasonFolderForLibraryKey(db, request.library_key, baseTitle, season);
         if (folder) {
           for (const f of fs.readdirSync(folder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
@@ -4265,7 +4300,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           console.error(`[TMDB] episode fetch failed for request ${id}: ${err.message}`);
         }
       }
-      let episodes: any[];
+let episodes: any[];
       if (meta) {
         episodes = meta.episodes.map((ep: any) => ({ ...ep, present: covered.has(ep.episode_number) }));
         const metaNums = new Set(meta.episodes.map((e: any) => e.episode_number));
@@ -4280,10 +4315,17 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           episodes.push({ episode_number: n, name: "", air_date: null, present: covered.has(n) });
         }
       }
+      // Specials grids: drop TMDB's unnamed "Episode N" mirror entries unless
+      // the episode is actually present on disk (they're structure noise).
+      if (season === 0) {
+        episodes = episodes.filter(
+          (ep: any) => ep.present || ((ep.name || "").trim() !== "" && !/^episode\s*\d+$/i.test(ep.name))
+        );
+      }
       res.json({
         type: "series",
         season,
-        title: request.title,
+        title: baseTitle,
         library_key: request.library_key,
         episodes,
         extras,
@@ -4316,6 +4358,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const title = (titleSeason.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const seasons = rows.map((s: any) => {
         const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        const covered = coveredEpisodesForRequest(db, s);
+        const extras = unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, libraryKeyYear(s.library_key));
         let fileCount = 0;
         try {
           const folder = seasonFolderForLibraryKey(db, s.library_key, baseTitle, s.season ?? 0);
@@ -4328,9 +4372,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           request_id: s.id,
           status: s.status,
           title: s.title,
-          episode_count: s.episode_count,
-          covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
-          extras: unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, libraryKeyYear(s.library_key)),
+          episode_count: s.season === 0 ? nativeSpecialDenominator(db, s.library_key, baseTitle, covered, extras) : s.episode_count,
+          covered_episodes: Array.from(covered).sort((a, b) => a - b),
+          extras,
           file_count: fileCount,
         };
       });
@@ -4372,7 +4416,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         let tmdbSpecials = 0;
         try {
           const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(seed.library_key) as any;
-          if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
+          if (tc) tmdbSpecials = namedSpecialCount(tc.payload);
         } catch {}
         if (tmdbSpecials > 0) {
           seasons.push({
@@ -4441,6 +4485,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           episodes.push({ episode_number: n, name: "", air_date: null, present: covered.has(n) });
         }
       }
+      // Specials grids: drop TMDB's unnamed "Episode N" mirror entries unless
+      // the episode is actually present on disk.
+      if (sNum === 0) {
+        episodes = episodes.filter(
+          (ep: any) => ep.present || ((ep.name || "").trim() !== "" && !/^episode\s*\d+$/i.test(ep.name))
+        );
+      }
       res.json({
         type: "series",
         season: sNum,
@@ -4480,6 +4531,30 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       });
     } catch (error) {
       console.error("Error refreshing metadata:", error);
+      res.status(500).json({ error: "Failed to refresh metadata" });
+    }
+  });
+
+  // POST /api/requests/native-franchise/:id/refresh?season=N - force-refetch TMDB
+  // metadata for an injected (request-id-less) native season.
+  router.post("/native-franchise/:id/refresh", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(404).json({ error: "Series request with library_key not found" });
+      }
+      const season = parseInt(req.query.season as string, 10);
+      const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
+      const baseTitle = (seed.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const meta = await fetchTMDBSeason(db, seed.library_key, sNum, baseTitle, {
+        language: franchiseLanguage(db, seed.library_key),
+        force: true,
+      });
+      if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
+      res.json({ refreshed: true, season: sNum });
+    } catch (error: any) {
+      console.error("Error refreshing native season metadata:", error.message || error);
       res.status(500).json({ error: "Failed to refresh metadata" });
     }
   });
