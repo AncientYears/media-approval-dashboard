@@ -152,6 +152,27 @@ function franchiseLanguage(db: Database, libraryKey: string): string | null {
   return row?.language ?? null;
 }
 
+/** Infer a season number from a folder name (S01 / Season 1 / Sezon 1 / Sezon I). */
+function parseSeasonFromFolderName(name: string): number | null {
+  const m = name.match(/\bS(\d{1,2})(?:\b|$)/i) || name.match(/\bSeason[ ]?\d{1,4}[- ]?(\d{1,2})\b/i) || name.match(/\bSeason[ ]?(\d{1,2})\b/i) || name.match(/\bSezon[ ]?(\d{1,2})\b/i);
+  if (m) return parseInt(m[1], 10);
+  const roman = name.match(/\bSezon[ ]?([IVXLCDM]{1,6})\b/i);
+  if (roman) return ROMAN[roman[1].toUpperCase()] ?? null;
+  return null;
+}
+
+/** Prefer an existing season folder in the show dir (handles localized names
+ * like "Sezon I") over creating a fresh "S01". */
+function findExistingSeasonFolder(showFolder: string, season: number): string | null {
+  try {
+    for (const d of fs.readdirSync(showFolder, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      if (parseSeasonFromFolderName(d.name) === season) return path.join(showFolder, d.name);
+    }
+  } catch {}
+  return null;
+}
+
 function normalizeFolder(name: string): string {
   return name
     .toLowerCase()
@@ -5394,7 +5415,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             return res.status(500).json({ error: "Could not locate library folder for this series" });
           }
           const seasonNum = request.season || 1;
-          destFolder = path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
+          destFolder = findExistingSeasonFolder(showFolder, seasonNum) || path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
         } else {
           destFolder = MEDIA_MOVIES;
         }
