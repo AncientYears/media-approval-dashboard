@@ -121,7 +121,7 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
     WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'
   `).all(req.id) as any[];
   const diskEps = new Set<number>();
-  const seasonFolder = findSeasonFolder(baseTitle, season);
+  const seasonFolder = findSeasonFolder(baseTitle, season, libraryKeyYear(req.library_key));
   try {
     if (seasonFolder) {
       for (const f of fs.readdirSync(seasonFolder)) {
@@ -149,9 +149,9 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
 // Count unnumbered presentation files in a season folder (e.g. S00 movies like
 // "Across the 2nd Dimension"). These render as always-FILLED SPECIAL rows in the
 // episode grid and should count as covered in summary pills too.
-function unnumberedFilesInSeasonFolder(baseTitle: string, season: number): number {
+function unnumberedFilesInSeasonFolder(baseTitle: string, season: number, year?: number | null): number {
   try {
-    const folder = findSeasonFolder(baseTitle, season);
+    const folder = findSeasonFolder(baseTitle, season, year);
     if (!folder) return 0;
     return fs.readdirSync(folder).filter(
       (f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f) && extractEpisodeFromFilename(f) == null
@@ -421,7 +421,7 @@ function normalizeFolder(name: string): string {
 
 /** Locate a show's season folder under PROCESSED_TV, tolerating name variations
  * (localized titles, " (2007)" year suffixes, " - alt title" joiners). */
-function findSeasonFolder(baseTitle: string, season: number): string | null {
+function findSeasonFolder(baseTitle: string, season: number, year?: number | null): string | null {
   const Sxx = `S${String(season).padStart(2, "0")}`;
   const exact = path.join(PROCESSED_TV, baseTitle, Sxx);
   if (fs.existsSync(exact)) return exact;
@@ -433,15 +433,57 @@ function findSeasonFolder(baseTitle: string, season: number): string | null {
   } catch {
     return null;
   }
+  // Collect every folder that fuzzy-matches the title so same-named shows with
+  // different years can be told apart (e.g. DuckTales (1987) vs (2017), where
+  // one folder may even omit its year entirely).
+  const candidates: { dir: string; year: number | null }[] = [];
   for (const d of dirs) {
     const norm = normalizeFolder(d);
     if (!norm) continue;
     const match = norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm));
     if (!match) continue;
-    const cand = path.join(PROCESSED_TV, d, Sxx);
+    candidates.push({ dir: d, year: folderYear(d) });
+  }
+  if (candidates.length === 0) return null;
+  if (year != null) {
+    let chosen: string | null = null;
+    const yearHit = candidates.find((c) => c.year === year);
+    if (yearHit) {
+      chosen = yearHit.dir;
+    } else {
+      // No folder carries the requested year: a lone year-less folder is the
+      // strongest signal that THIS show is stored without its year.
+      const yearless = candidates.filter((c) => c.year == null);
+      if (yearless.length === 1 && candidates.length > yearless.length) chosen = yearless[0].dir;
+    }
+    // Year matched (or resolved) folders are authoritative: never fall through
+    // to a different-year folder just because the Sxx subfolder is missing.
+    if (chosen) {
+      const cand = path.join(PROCESSED_TV, chosen, Sxx);
+      return fs.existsSync(cand) ? cand : null;
+    }
+  }
+  // No year disambiguation: keep the historical first-candidate-with-folder pick.
+  for (const c of candidates) {
+    const cand = path.join(PROCESSED_TV, c.dir, Sxx);
     if (fs.existsSync(cand)) return cand;
   }
   return null;
+}
+
+/** Year embedded in the library_key (`series:<id|slug>:<year>`), if any. */
+function libraryKeyYear(key?: string | null): number | null {
+  if (!key) return null;
+  const y = parseInt(key.split(":")[2] ?? "", 10);
+  return Number.isFinite(y) && y > 0 ? y : null;
+}
+
+/** Year parsed from a disk folder name (`Foo (2017)`, `Foo 2017`, ...). */
+function folderYear(name: string): number | null {
+  const bracketed = name.match(/[\[(]((?:19|20)\d{2})[\])]/);
+  if (bracketed) return parseInt(bracketed[1], 10);
+  const bare = name.match(/(?:^|[.\s[(])((?:19|20)\d{2})(?=[.\s\]),]|$)/);
+  return bare ? parseInt(bare[1], 10) : null;
 }
 
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
@@ -1123,7 +1165,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // Compute folder size from the season folder (source of truth)
           let folderSizeBytes = 0;
           try {
-            const seasonFolder = findSeasonFolder(franchiseTitle, s.season);
+            const seasonFolder = findSeasonFolder(franchiseTitle, s.season, libraryKeyYear(libraryKey));
             if (seasonFolder) {
               for (const f of fs.readdirSync(seasonFolder)) {
                 if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
@@ -1142,7 +1184,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             title: s.title,
             episode_count: s.episode_count,
             covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-            extras: unnumberedFilesInSeasonFolder(franchiseTitle, s.season),
+            extras: unnumberedFilesInSeasonFolder(franchiseTitle, s.season, libraryKeyYear(libraryKey)),
           };
         }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         // Inject unrequested seasons from Sonarr (e.g., Specials/season 0)
@@ -1187,7 +1229,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // disk or cached TMDB season-0 episodes exist (mirrors the Sonarr
         // unrequested-season injection for arr-free franchises).
         if (sonarrId == null && !mappedSeasons.some((s: any) => s.season === 0)) {
-          const seasonFolder = findSeasonFolder(franchiseTitle, 0);
+          const franchiseYear = libraryKeyYear(libraryKey);
+          const seasonFolder = findSeasonFolder(franchiseTitle, 0, franchiseYear);
           let diskFiles: string[] = [];
           try {
             if (seasonFolder) diskFiles = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
@@ -1203,7 +1246,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const epNum = extractEpisodeFromFilename(f);
               if (epNum != null) coveredEps.add(epNum);
             }
-            const extras = unnumberedFilesInSeasonFolder(franchiseTitle, 0);
+            const extras = unnumberedFilesInSeasonFolder(franchiseTitle, 0, franchiseYear);
             mappedSeasons.push({
               season: 0,
               request_id: null,
@@ -4090,7 +4133,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const extras: { name: string }[] = [];
       try {
-        const folder = findSeasonFolder(baseTitle, season);
+        const folder = findSeasonFolder(baseTitle, season, libraryKeyYear(request.library_key));
         if (folder) {
           for (const f of fs.readdirSync(folder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
@@ -4159,9 +4202,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const title = (titleSeason.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const seasons = rows.map((s: any) => {
         const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        const seasonYear = libraryKeyYear(s.library_key);
         let fileCount = 0;
         try {
-          const folder = findSeasonFolder(baseTitle, s.season ?? 0);
+          const folder = findSeasonFolder(baseTitle, s.season ?? 0, seasonYear);
           if (folder) {
             fileCount = fs.readdirSync(folder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).length;
           }
@@ -4173,14 +4217,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           title: s.title,
           episode_count: s.episode_count,
           covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
-          extras: unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0),
+          extras: unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, seasonYear),
           file_count: fileCount,
         };
       });
       // Inject a Specials (S00) row when a disk folder or cached TMDB season 0
       // exists but no media_request row does (specials added after import).
       if (!seasons.some((s: any) => s.season === 0)) {
-        const seasonFolder = findSeasonFolder(title, 0);
+        const franchiseYear = libraryKeyYear(seed.library_key);
+        const seasonFolder = findSeasonFolder(title, 0, franchiseYear);
         let diskFiles: string[] = [];
         try {
           if (seasonFolder) diskFiles = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
@@ -4196,7 +4241,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const epNum = extractEpisodeFromFilename(f);
             if (epNum != null) coveredEps.add(epNum);
           }
-          const extras = unnumberedFilesInSeasonFolder(title, 0);
+          const extras = unnumberedFilesInSeasonFolder(title, 0, franchiseYear);
           seasons.push({
             season: 0,
             request_id: null,
@@ -4230,10 +4275,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const season = parseInt(req.query.season as string, 10);
       const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
       const baseTitle = (seed.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-      const covered = coveredEpisodesForRequest(db, { id: -1, title: baseTitle, season: sNum, episode_count: null } as any);
+      const franchiseYear = libraryKeyYear(seed.library_key);
+      const covered = coveredEpisodesForRequest(db, { id: -1, title: baseTitle, season: sNum, episode_count: null, library_key: seed.library_key } as any);
       const extras: { name: string }[] = [];
       try {
-        const folder = findSeasonFolder(baseTitle, sNum);
+        const folder = findSeasonFolder(baseTitle, sNum, franchiseYear);
         if (folder) {
           for (const f of fs.readdirSync(folder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
@@ -4562,7 +4608,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       try {
         const baseProcTitle = (request?.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         const procDir = request?.type === "series"
-          ? findSeasonFolder(baseProcTitle, request?.season || 1)
+          ? findSeasonFolder(baseProcTitle, request?.season || 1, libraryKeyYear(request?.library_key))
           : PROCESSED_MOVIES;
         if (procDir && fs.existsSync(procDir)) {
           for (const en of fs.readdirSync(procDir, { withFileTypes: true })) {
@@ -4676,7 +4722,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const baseProcTitle = (request?.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const processedDirForReq = request?.type === "series"
-        ? findSeasonFolder(baseProcTitle, request?.season || 1)
+        ? findSeasonFolder(baseProcTitle, request?.season || 1, libraryKeyYear(request?.library_key))
         : PROCESSED_MOVIES;
 
       const results: any[] = [];

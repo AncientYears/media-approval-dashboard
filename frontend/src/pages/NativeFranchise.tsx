@@ -157,7 +157,7 @@ export default function NativeFranchise() {
                 <div className="fr-season-left">
                   <span className={`season-label ${season.season === 0 ? "season-special" : ""}`}>{season.season === 0 ? "Special" : `S${String(season.season).padStart(2, "0")}`}</span>
                   {season.season === 0 ? (
-                    season.file_count > 0 ? (
+                    season.file_count > 0 || epCount > 0 ? (
                       <>
                         <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{season.file_count} file{season.file_count === 1 ? "" : "s"}</span>
                         <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>numbered {coveredCount}/{epCount}</span>
