@@ -75,6 +75,20 @@ if ! mountpoint -q /media 2>/dev/null; then
   printf '         export before move/import operations will work.\n'
 fi
 
+# --------------------------------------------------------------- hardlinks
+# Library files under /media are owned by root (Radarr/Sonarr import as root),
+# while the app runs as $APP_USER (uid 1000). fs.protected_hardlinks=1 (Debian
+# default) refuses link() when the caller does not own the source inode, which
+# makes adoption EPERM on every cross-owner hardlink. Weaker security — the
+# tradeoff of allowing hardlinks to root-owned media — but required for
+# adoption to work on this single-user box.
+if [ "$(cat /proc/sys/fs/protected_hardlinks 2>/dev/null || echo 1)" != "0" ]; then
+  log "Disabling fs.protected_hardlinks (cross-owner NFS hardlinks)"
+
+  printf 'fs.protected_hardlinks=0\n' > /etc/sysctl.d/99-media-hardlinks.conf
+  printf '0' > /proc/sys/fs/protected_hardlinks
+fi
+
 # ------------------------------------------------------------------ backend
 log "Installing backend dependencies"
 # build-essential/python3 are the fallback if better-sqlite3 has no prebuild
