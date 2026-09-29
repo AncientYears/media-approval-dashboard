@@ -146,6 +146,21 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   return coveredEps;
 }
 
+// Count unnumbered presentation files in a season folder (e.g. S00 movies like
+// "Across the 2nd Dimension"). These render as always-FILLED SPECIAL rows in the
+// episode grid and should count as covered in summary pills too.
+function unnumberedFilesInSeasonFolder(baseTitle: string, season: number): number {
+  try {
+    const folder = findSeasonFolder(baseTitle, season);
+    if (!folder) return 0;
+    return fs.readdirSync(folder).filter(
+      (f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f) && extractEpisodeFromFilename(f) == null
+    ).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset. */
 function franchiseLanguage(db: Database, libraryKey: string): string | null {
   const row = db.prepare("SELECT language FROM tmdb_franchise_prefs WHERE library_key = ?").get(libraryKey) as any;
@@ -897,6 +912,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             title: s.title,
             episode_count: s.episode_count,
             covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+            extras: unnumberedFilesInSeasonFolder(franchiseTitle, s.season),
           };
         }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         // Inject unrequested seasons from Sonarr (e.g., Specials/season 0)
@@ -931,6 +947,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 title: franchiseTitle,
                 episode_count: actualEpCount,
                 covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+                extras: unnumberedFilesInSeasonFolder(franchiseTitle, sn.seasonNumber),
               });
             }
           }
@@ -939,7 +956,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (processedBytes === 0) {
           franchiseSize = mappedSeasons.reduce((sum: number, s: any) => sum + (s.total_size_mb || 0), 0);
         }
-        const totalCovered = mappedSeasons.reduce((sum: number, s: any) => sum + (s.covered_episodes?.length || 0), 0);
+        const totalCovered = mappedSeasons.reduce((sum: number, s: any) => sum + (s.covered_episodes?.length || 0) + (s.extras || 0), 0);
         managed.push({
           title: franchiseTitle,
           type: "series",
@@ -3623,6 +3640,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           title: s.title,
           episode_count: s.episode_count,
           covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
+          extras: unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0),
           file_count: fileCount,
         };
       });
