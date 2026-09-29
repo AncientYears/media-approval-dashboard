@@ -3988,7 +3988,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   // GET /api/requests/db/:table - View raw table data for debugging
   router.get("/db/:table", (req: Request, res: Response) => {
     const table = req.params.table;
-    const allowed = ["media_requests", "release_candidates", "approval_history"];
+    const allowed = ["media_requests", "release_candidates", "approval_history", "tmdb_season_cache"];
     if (!allowed.includes(table)) {
       return res.status(400).json({ error: `Invalid table. Allowed: ${allowed.join(", ")}` });
     }
