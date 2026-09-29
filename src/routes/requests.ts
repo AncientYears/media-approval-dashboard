@@ -120,9 +120,9 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
     WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'
   `).all(req.id) as any[];
   const diskEps = new Set<number>();
-  const seasonFolder = path.join(PROCESSED_TV, baseTitle, `S${String(season).padStart(2, "0")}`);
+  const seasonFolder = findSeasonFolder(baseTitle, season);
   try {
-    if (fs.existsSync(seasonFolder)) {
+    if (seasonFolder) {
       for (const f of fs.readdirSync(seasonFolder)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
         const epNum = extractEpisodeFromFilename(f);
@@ -149,6 +149,39 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
 function franchiseLanguage(db: Database, libraryKey: string): string | null {
   const row = db.prepare("SELECT language FROM tmdb_franchise_prefs WHERE library_key = ?").get(libraryKey) as any;
   return row?.language ?? null;
+}
+
+function normalizeFolder(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\((\d{4})\)/g, "")
+    .replace(/\[(\d{4})\]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+/** Locate a show's season folder under PROCESSED_TV, tolerating name variations
+ * (localized titles, " (2007)" year suffixes, " - alt title" joiners). */
+function findSeasonFolder(baseTitle: string, season: number): string | null {
+  const Sxx = `S${String(season).padStart(2, "0")}`;
+  const exact = path.join(PROCESSED_TV, baseTitle, Sxx);
+  if (fs.existsSync(exact)) return exact;
+  const want = normalizeFolder(baseTitle);
+  if (!want) return null;
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(PROCESSED_TV);
+  } catch {
+    return null;
+  }
+  for (const d of dirs) {
+    const norm = normalizeFolder(d);
+    if (!norm) continue;
+    const match = norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm));
+    if (!match) continue;
+    const cand = path.join(PROCESSED_TV, d, Sxx);
+    if (fs.existsSync(cand)) return cand;
+  }
+  return null;
 }
 
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
@@ -3526,8 +3559,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const extras: { name: string }[] = [];
       try {
-        const folder = path.join(PROCESSED_TV, baseTitle, `S${String(season).padStart(2, "0")}`);
-        if (fs.existsSync(folder)) {
+        const folder = findSeasonFolder(baseTitle, season);
+        if (folder) {
           for (const f of fs.readdirSync(folder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
             if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
@@ -3597,8 +3630,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         let fileCount = 0;
         try {
-          const folder = path.join(PROCESSED_TV, baseTitle, `S${String(s.season ?? 0).padStart(2, "0")}`);
-          if (fs.existsSync(folder)) {
+          const folder = findSeasonFolder(baseTitle, s.season ?? 0);
+          if (folder) {
             fileCount = fs.readdirSync(folder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)).length;
           }
         } catch {}
