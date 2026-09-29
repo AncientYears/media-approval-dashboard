@@ -97,16 +97,41 @@ export async function fetchTMDBSeason(
   const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`);
   if (!data?.episodes) return cached;
 
+  // Where the requested language has no translation, TMDB leaves the original
+  // name — except some episodes bottom out as "Episode N" placeholders. Overlay
+  // the en-US names so we never show a placeholder when a real English title
+  // exists (e.g. Polish shows with partially-translated specials).
+  let fallbackNames: Map<number, string> | null = null;
+  if (language !== "en-US") {
+    const en = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=en-US`);
+    if (en?.episodes) {
+      fallbackNames = new Map(
+        en.episodes
+          .filter((e: any) => typeof e.name === "string" && e.name.trim())
+          .map((e: any) => [e.episode_number, e.name]),
+      );
+    }
+  }
+  const isPlaceholder = (name: string) => /^(Episode|Odcinek|Folge|Épisode|Episodio|Episódio)\s+\d+$/i.test(name.trim());
+
   const meta: SeasonMeta = {
     tmdb_show_id: show.id,
     show_name: typeof data.name === "string" ? data.name : title,
     resolvedVia: show.via,
     language,
-    episodes: data.episodes.map((e: any) => ({
-      episode_number: e.episode_number,
-      name: typeof e.name === "string" ? e.name : "",
-      air_date: e.air_date ? String(e.air_date) : null,
-    })),
+    episodes: data.episodes.map((e: any) => {
+      const preferred = typeof e.name === "string" ? e.name.trim() : "";
+      let name = preferred;
+      if ((!name || isPlaceholder(name)) && fallbackNames) {
+        const fb = fallbackNames.get(e.episode_number);
+        if (fb && fb !== name) name = fb;
+      }
+      return {
+        episode_number: e.episode_number,
+        name,
+        air_date: e.air_date ? String(e.air_date) : null,
+      };
+    }),
   };
   db.prepare("INSERT OR REPLACE INTO tmdb_season_cache (library_key, season, tmdb_show_id, show_name, payload, fetched_at) VALUES (?, ?, ?, ?, ?, ?)").run(
     libraryKey,
