@@ -55,34 +55,63 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 
 ### Data Flow
 
-/Processed is the **source of truth**. Files there are independent — not linked to any torrent.
+`/Download` is the **primary source of truth** and is read-only: qBittorrent seeds from it
+forever, so nothing may modify or delete files there. `/Processed` is the **modifiable
+second source of truth** — the working set the app owns and edits. `/Library` is the
+presentation layer, normally hardlinked from `/Processed`.
+
+Identity is the **inode**, not the path or filename. The same file can appear at
+several paths (download release name, processed name, library name) and stays one file
+until something is actually copied or moved. This is why reconciliation must compare
+`stat().ino` and never match on title — library names are localized (e.g. `Xiaolin
+Showdown`, `Tajemnica Sagali`) while download/processed names are English release names.
 
 ```
 qBittorrent
      │
      ▼
-/Download (immutable, always seeds from here)
+/Download (PRIMARY source, READ-ONLY while seeding)
      │
      ├────── [no processing needed] ────── hardlink to /Processed ──┐
-     │     (treated as independent file, not linked to torrent)     │
-     │                                                              │
-     └────── [processing needed] ── hardlink to /Workspace          │
-              │                                                     │
-              ▼                                                     │
-         /Workspace/{id}-{name}/                                    │
-              inputs/  →  mkvmerge/ffmpeg  →  output/              │
-              │                                                     │
-              └──── delete inputs, MOVE output to /Processed ───────┘
-                    (outputs are new files, different inodes, truly independent)
-                                                                      │
-                                                       /Processed    │
-                                                          │          │
-                                                          ▼          │
-                                                    Sonarr/Radarr import
-                                                          │          │
-                                                          ▼          │
-                                                        /Library     │
+     │                                                             │
+     └────── [processing needed] ── hardlink to /Workspace ────┐    │
+              │                                                │    │
+              ▼                                                │    │
+         /Workspace/{id}-{name}/                               │    │
+              inputs/ → mkvmerge/ffmpeg → output/             │    │
+              │                                                │    │
+              └──── delete inputs, MOVE output ───────────────┘    │
+                    (new files, different inodes) ── MOVES to /Processed
+                                                                 │
+                                          /Processed (SECOND source, modifiable)
+                                             │        │
+                                             │        └── may also be hardlinked
+                                             │            from an existing /Library file
+                                             │            (see Adoption)
+                                             ▼
+                                          /Library (hardlinked from /Processed)
 ```
+
+### Adoption (Library → Processed)
+Libraries imported before the app existed can hold files that never made it into
+`/Processed`. Adoption hardlinks those back into `/Processed` so the tree is
+reconcilable, without touching the library, the download, or any data.
+
+- `GET /api/requests/library-audit` — read-only report: per-show inode attribution,
+  which library files are missing from processed, and which are recoverable from download
+- `POST /api/requests/adopt-into-processed` — `planAdoption()` + `executeAdoption()`
+  in `src/services/adopt.ts`. **Dry run unless `apply: true`.**
+- Only creates new links under `/Processed`. Never modifies library/processed/download
+  contents, never overwrites, never copies.
+- **No copy fallback on `EXDEV`**, unlike `processor.ts:hardlinkFile` — a copy would
+  triple the disk usage of exactly the largest files, so it is reported as an error
+- A destination that already exists with a **different inode is a collision**: reported,
+  never overwritten. Same inode is a no-op (idempotent).
+- `requireDownloadOrigin` defaults true, so only files traceable to a download inode
+  are adopted. Pass `includeUnbacked: true` to include hand-placed library files.
+- Series land in `/Processed/serialy/<show title> (<year>)/Sxx/<basename>`, with
+  `S00` for specials. Movies are flat in `/Processed/filmy` under the library basename.
+  Multiple versions per movie are expected and are not deduplicated.
 
 ### Manual Preprocessing Flow (TorrentPanel UI)
 ```
@@ -116,7 +145,7 @@ Download (100% complete)
 ### Key Principles
 - **Download is immutable**: never modify, never delete while seeding
 - **Workspace is ephemeral**: cleaned up after each processing job
-- **Processed is the source of truth**: independent files, not linked to torrents
+- **Processed is the modifiable working set**: second source of truth the app owns; may hold hardlinks back-linked from the library (Adoption)
 - **Workspace outputs are MOVED** (renameSync) to Processed — not hardlinked — different inodes
 - **No-preprocess hardlinks** are treated as independent even though they share inodes with Download
 - **Library managed by Sonarr/Radarr**: they handle renaming and organization

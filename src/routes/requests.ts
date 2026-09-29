@@ -12,6 +12,7 @@ import {
   scanProcessed,
   type ScannedFile,
 } from "../services/libraryScan";
+import { executeAdoption, planAdoption } from "../services/adopt";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -2490,6 +2491,61 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           name_only_duplicate_sample: nameOnlyDuplicates.slice(0, SAMPLE),
         },
         errors: [...lib.errors, ...proc.errors].slice(0, SAMPLE),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * Hardlink library files that have no processed counterpart into processed.
+   *
+   * Dry run unless `apply: true`. Only creates new links under processed; never
+   * modifies the library, processed or download contents, and never copies.
+   */
+  router.post("/adopt-into-processed", (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as {
+        apply?: boolean;
+        includeUnbacked?: boolean;
+        onlyMovies?: boolean;
+        onlySeries?: boolean;
+        showDirs?: string[];
+        movieDirs?: string[];
+      };
+      const apply = body.apply === true;
+
+      const plan = planAdoption({
+        requireDownloadOrigin: body.includeUnbacked !== true,
+        onlyMovies: body.onlyMovies,
+        onlySeries: body.onlySeries,
+        showDirs: body.showDirs,
+        movieDirs: body.movieDirs,
+      });
+
+      if (!apply) {
+        res.json({
+          dry_run: true,
+          totals: plan.totals,
+          planned: plan.items.length,
+          already_present: plan.alreadyPresent,
+          conflicts: plan.conflicts,
+          items: plan.items.slice(0, 200),
+          truncated: plan.items.length > 200,
+          errors: plan.errors,
+        });
+        return;
+      }
+
+      const result = executeAdoption(plan);
+      res.json({
+        applied: true,
+        linked: result.linked.length,
+        failed: result.failed,
+        already_present: plan.alreadyPresent,
+        conflicts: plan.conflicts,
+        errors: plan.errors,
+        sample: result.linked.slice(0, 50),
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
