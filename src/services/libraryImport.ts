@@ -125,10 +125,13 @@ function distinctEpisodes(files: ScannedFile[]): number {
   return Math.max(eps.size, files.length);
 }
 
-/** A processed file, enriched with the parsed year of the show folder it lives in. */
+/** A processed file, enriched with the parsed year of the show folder it lives
+ * in and the season parsed from that processed structure, so identity can key
+ * off the (more reliable) processed layout. */
 interface ProcRef {
   path: string;
   showYear: number | null;
+  season: number | null;
 }
 
 /**
@@ -149,13 +152,13 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
   const procByIno = new Map<number, ProcRef[]>();
   for (const f of proc.movieFiles) {
     const arr = procByIno.get(f.ino) || [];
-    arr.push({ path: f.path, showYear: null });
+    arr.push({ path: f.path, showYear: null, season: null });
     procByIno.set(f.ino, arr);
   }
   for (const s of proc.shows) {
     for (const f of s.files) {
       const arr = procByIno.get(f.ino) || [];
-      arr.push({ path: f.path, showYear: s.year });
+      arr.push({ path: f.path, showYear: s.year, season: f.season ?? null });
       procByIno.set(f.ino, arr);
     }
   }
@@ -246,6 +249,24 @@ export function planLibraryImport(db: Database): LibraryImportPlan {
       if (years.size === 1) year = [...years][0];
     }
     const key = showKey(s.tvdbId, s.imdbId, s.title, year);
+
+    // Season attribution: episodes stored loose in the library show root are
+    // parsed as season 0 ("Specials"), even when the processed structure keeps
+    // them in a real season folder. The processed layout is the reliable source
+    // (per the folder-structure contract), so when a file that this library
+    // groups as Specials inode-links to a processed file with a positive season
+    // and an agreeing year, trust the processed season.
+    if (year != null) {
+      for (const f of s.files) {
+        if (f.season != null && f.season !== 0) continue;
+        for (const pr of procByIno.get(f.ino) || []) {
+          if (pr.season != null && pr.season > 0 && (pr.showYear == null || pr.showYear === year)) {
+            f.season = pr.season;
+            break;
+          }
+        }
+      }
+    }
 
     const bySeason = new Map<number, ScannedFile[]>();
     for (const f of s.files) {

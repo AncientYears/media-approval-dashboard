@@ -121,9 +121,11 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
     WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'
   `).all(req.id) as any[];
   const diskEps = new Set<number>();
+  let seasonFolderExists = false;
   const seasonFolder = findSeasonFolder(baseTitle, season, libraryKeyYear(req.library_key));
   try {
-    if (seasonFolder) {
+    if (seasonFolder && fs.existsSync(seasonFolder)) {
+      seasonFolderExists = true;
       for (const f of fs.readdirSync(seasonFolder)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
         const epNum = extractEpisodeFromFilename(f);
@@ -139,7 +141,12 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
     }
   }
 
-  if (diskEps.size > 0) {
+  // The season folder is authoritative even when it is empty: a folder that
+  // exists (yet holds nothing for that season) means the request's association
+  // is stale or mis-attributed (e.g. episodes that really live in another
+  // season folder). Downloads that haven't landed yet have no folder at all,
+  // so torrent-parsed coverage survives there.
+  if (seasonFolderExists) {
     for (const ep of coveredEps) if (!diskEps.has(ep)) coveredEps.delete(ep);
     for (const ep of diskEps) coveredEps.add(ep);
   }
@@ -419,19 +426,17 @@ function normalizeFolder(name: string): string {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-/** Locate a show's season folder under PROCESSED_TV, tolerating name variations
- * (localized titles, " (2007)" year suffixes, " - alt title" joiners). */
-function findSeasonFolder(baseTitle: string, season: number, year?: number | null): string | null {
-  const Sxx = `S${String(season).padStart(2, "0")}`;
-  const exact = path.join(PROCESSED_TV, baseTitle, Sxx);
-  if (fs.existsSync(exact)) return exact;
+/** Processed show folders that fuzzy-match a title, in resolution order
+ * (exact-year folder → lone year-less folder → first candidate, mirroring
+ * findSeasonFolder's pick). Empty when nothing matches. */
+function matchShowFolders(baseTitle: string, year?: number | null): string[] {
   const want = normalizeFolder(baseTitle);
-  if (!want) return null;
+  if (!want) return [];
   let dirs: string[];
   try {
     dirs = fs.readdirSync(PROCESSED_TV);
   } catch {
-    return null;
+    return [];
   }
   // Collect every folder that fuzzy-matches the title so same-named shows with
   // different years can be told apart (e.g. DuckTales (1987) vs (2017), where
@@ -444,31 +449,63 @@ function findSeasonFolder(baseTitle: string, season: number, year?: number | nul
     if (!match) continue;
     candidates.push({ dir: d, year: folderYear(d) });
   }
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return [];
   if (year != null) {
-    let chosen: string | null = null;
     const yearHit = candidates.find((c) => c.year === year);
-    if (yearHit) {
-      chosen = yearHit.dir;
-    } else {
-      // No folder carries the requested year: a lone year-less folder is the
-      // strongest signal that THIS show is stored without its year.
-      const yearless = candidates.filter((c) => c.year == null);
-      if (yearless.length === 1 && candidates.length > yearless.length) chosen = yearless[0].dir;
-    }
-    // Year matched (or resolved) folders are authoritative: never fall through
-    // to a different-year folder just because the Sxx subfolder is missing.
-    if (chosen) {
-      const cand = path.join(PROCESSED_TV, chosen, Sxx);
-      return fs.existsSync(cand) ? cand : null;
-    }
+    if (yearHit) return [yearHit.dir];
+    // No folder carries the requested year: a lone year-less folder is the
+    // strongest signal that THIS show is stored without its year.
+    const yearless = candidates.filter((c) => c.year == null);
+    if (yearless.length === 1 && candidates.length > yearless.length) return [yearless[0].dir];
   }
-  // No year disambiguation: keep the historical first-candidate-with-folder pick.
-  for (const c of candidates) {
-    const cand = path.join(PROCESSED_TV, c.dir, Sxx);
+  // Year matched (or resolved) folders are authoritative — never fall through
+  // to a different-year folder just because the Sxx subfolder is missing.
+  // Without a year to resolve against, keep the first-candidate-with-folder pick.
+  return candidates.map((c) => c.dir);
+}
+
+/** Locate a show's season folder under PROCESSED_TV, tolerating name variations
+ * (localized titles, " (2007)" year suffixes, " - alt title" joiners). */
+function findSeasonFolder(baseTitle: string, season: number, year?: number | null): string | null {
+  const Sxx = `S${String(season).padStart(2, "0")}`;
+  const exact = path.join(PROCESSED_TV, baseTitle, Sxx);
+  if (fs.existsSync(exact)) return exact;
+  for (const d of matchShowFolders(baseTitle, year)) {
+    const cand = path.join(PROCESSED_TV, d, Sxx);
     if (fs.existsSync(cand)) return cand;
   }
   return null;
+}
+
+/** Season folders physically present under a show's processed folder, mapped to
+ * the video file names inside them. Empty when the show has no processed
+ * folder. Lets seasons appear even without a request row (structure-first). */
+function diskSeasonFolders(baseTitle: string, year?: number | null): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  for (const showDir of matchShowFolders(baseTitle, year)) {
+    const full = path.join(PROCESSED_TV, showDir);
+    let ents: fs.Dirent[];
+    try {
+      ents = fs.readdirSync(full, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of ents) {
+      if (!e.isDirectory()) continue;
+      const sn = parseSeasonNumber(e.name);
+      if (sn == null) continue;
+      let files: string[];
+      try {
+        files = fs.readdirSync(path.join(full, e.name));
+      } catch {
+        continue;
+      }
+      const videos = files.filter((f) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+      if (videos.length === 0) continue;
+      out.set(sn, videos);
+    }
+  }
+  return out;
 }
 
 /** Year embedded in the library_key (`series:<id|slug>:<year>`), if any. */
@@ -1225,41 +1262,66 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
           mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         }
-        // Inject a Specials (S00) season for native series when content is on
-        // disk or cached TMDB season-0 episodes exist (mirrors the Sonarr
-        // unrequested-season injection for arr-free franchises).
-        if (sonarrId == null && !mappedSeasons.some((s: any) => s.season === 0)) {
+        // Inject seasons present on disk for native (arr-free) series — the
+        // processed structure is authoritative, so any season folder that has
+        // files but no media_request row shows as an independent, request-id-less
+        // season (fixes library files mis-attributed to Specials when the
+        // library stores episodes loose in the show root).
+        if (sonarrId == null) {
           const franchiseYear = libraryKeyYear(libraryKey);
-          const seasonFolder = findSeasonFolder(franchiseTitle, 0, franchiseYear);
-          let diskFiles: string[] = [];
-          try {
-            if (seasonFolder) diskFiles = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
-          } catch {}
-          let tmdbSpecials = 0;
-          try {
-            const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(libraryKey) as any;
-            if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
-          } catch {}
-          if (diskFiles.length > 0 || tmdbSpecials > 0) {
+          const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
+          const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear);
+          for (const [sn, files] of diskSeasons) {
+            if (existingSeasons.has(sn)) continue;
+            let tmdbCount = 0;
+            try {
+              const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?").get(libraryKey, sn) as any;
+              if (tc) tmdbCount = (JSON.parse(tc.payload)?.episodes || []).length || 0;
+            } catch {}
             const coveredEps = new Set<number>();
-            for (const f of diskFiles) {
+            let extras = 0;
+            for (const f of files) {
               const epNum = extractEpisodeFromFilename(f);
               if (epNum != null) coveredEps.add(epNum);
+              else extras++;
             }
-            const extras = unnumberedFilesInSeasonFolder(franchiseTitle, 0, franchiseYear);
             mappedSeasons.push({
-              season: 0,
+              season: sn,
               request_id: null,
               status: null,
               total_size_mb: 0,
               release_count: 0,
               title: franchiseTitle,
-              episode_count: Math.max(tmdbSpecials, coveredEps.size + extras),
+              episode_count: Math.max(tmdbCount, coveredEps.size + extras),
               covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
               extras,
             });
-            mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+            existingSeasons.add(sn);
           }
+          // Disk-less Specials still appear when cached TMDB season-0 episodes
+          // exist (mirrors the Sonarr unrequested-season injection).
+          if (!existingSeasons.has(0)) {
+            let tmdbSpecials = 0;
+            try {
+              const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(libraryKey) as any;
+              if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
+            } catch {}
+            if (tmdbSpecials > 0) {
+              mappedSeasons.push({
+                season: 0,
+                request_id: null,
+                status: null,
+                total_size_mb: 0,
+                release_count: 0,
+                title: franchiseTitle,
+                episode_count: tmdbSpecials,
+                covered_episodes: [],
+                extras: 0,
+              });
+              existingSeasons.add(0);
+            }
+          }
+          mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         }
         if (processedBytes === 0) {
           franchiseSize = mappedSeasons.reduce((sum: number, s: any) => sum + (s.total_size_mb || 0), 0);
@@ -4221,40 +4283,60 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           file_count: fileCount,
         };
       });
-      // Inject a Specials (S00) row when a disk folder or cached TMDB season 0
-      // exists but no media_request row does (specials added after import).
-      if (!seasons.some((s: any) => s.season === 0)) {
-        const franchiseYear = libraryKeyYear(seed.library_key);
-        const seasonFolder = findSeasonFolder(title, 0, franchiseYear);
-        let diskFiles: string[] = [];
+      // Inject seasons present on disk when no media_request row exists (the
+      // processed structure is authoritative; e.g. episodes loose in the library
+      // root got imported as Specials, or a season exists disk-first).
+      const franchiseYear = libraryKeyYear(seed.library_key);
+      const existingSeasons = new Set(seasons.map((s: any) => s.season));
+      const diskSeasons = diskSeasonFolders(title, franchiseYear);
+      for (const [sn, files] of diskSeasons) {
+        if (existingSeasons.has(sn)) continue;
+        let tmdbCount = 0;
         try {
-          if (seasonFolder) diskFiles = fs.readdirSync(seasonFolder).filter((f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f));
+          const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?").get(seed.library_key, sn) as any;
+          if (tc) tmdbCount = (JSON.parse(tc.payload)?.episodes || []).length || 0;
         } catch {}
+        const coveredEps = new Set<number>();
+        let extras = 0;
+        for (const f of files) {
+          const epNum = extractEpisodeFromFilename(f);
+          if (epNum != null) coveredEps.add(epNum);
+          else extras++;
+        }
+        seasons.push({
+          season: sn,
+          request_id: null,
+          status: null,
+          title,
+          episode_count: Math.max(tmdbCount, coveredEps.size + extras),
+          covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+          extras,
+          file_count: files.length,
+        });
+        existingSeasons.add(sn);
+      }
+      // Disk-less Specials still appear when cached TMDB season-0 episodes exist.
+      if (!existingSeasons.has(0)) {
         let tmdbSpecials = 0;
         try {
           const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(seed.library_key) as any;
           if (tc) tmdbSpecials = (JSON.parse(tc.payload)?.episodes || []).length || 0;
         } catch {}
-        if (diskFiles.length > 0 || tmdbSpecials > 0) {
-          const coveredEps = new Set<number>();
-          for (const f of diskFiles) {
-            const epNum = extractEpisodeFromFilename(f);
-            if (epNum != null) coveredEps.add(epNum);
-          }
-          const extras = unnumberedFilesInSeasonFolder(title, 0, franchiseYear);
+        if (tmdbSpecials > 0) {
           seasons.push({
             season: 0,
             request_id: null,
             status: null,
             title,
-            episode_count: Math.max(tmdbSpecials, coveredEps.size + extras),
-            covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-            extras,
-            file_count: diskFiles.length,
+            episode_count: tmdbSpecials,
+            covered_episodes: [],
+            extras: 0,
+            file_count: 0,
           });
-          seasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
+          existingSeasons.add(0);
         }
       }
+      seasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
       res.json({ library_key: seed.library_key, title, language: franchiseLanguage(db, seed.library_key), seasons });
     } catch (error) {
       console.error("Error fetching native franchise:", error);
