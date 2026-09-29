@@ -7,6 +7,7 @@ import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
 import {
+  scanDownload,
   scanLibrary,
   scanProcessed,
   type ScannedFile,
@@ -2275,6 +2276,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     try {
       const lib = scanLibrary();
       const proc = scanProcessed();
+      const dl = scanDownload();
 
       const libFiles: ScannedFile[] = [
         ...lib.movies.flatMap((m) => m.files),
@@ -2284,9 +2286,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         ...proc.movieFiles,
         ...proc.shows.flatMap((s) => s.files),
       ];
+      const dlFiles: ScannedFile[] = [
+        ...dl.movieFiles,
+        ...dl.shows.flatMap((s) => s.files),
+      ];
 
       // Hardlinked files share an inode, so that -- not the name -- is what
-      // identifies "the same file" across the two trees.
+      // identifies "the same file" across the trees.
       const procByIno = new Map<number, string[]>();
       for (const f of procFiles) {
         const list = procByIno.get(f.ino);
@@ -2294,6 +2300,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         else procByIno.set(f.ino, [f.path]);
       }
       const libByIno = new Set(libFiles.map((f) => f.ino));
+      const dlByIno = new Set(dlFiles.map((f) => f.ino));
 
       let libraryInProcessed = 0;
       let libraryOrphan = 0;
@@ -2422,11 +2429,56 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           series_files: proc.shows.reduce((n, s) => n + s.files.length, 0),
           season_sources: procSeasonSources,
         },
+        // Download is the source of truth but is read only (qBittorrent seeds
+        // from it). A library file absent from processed but present here is
+        // adoptable: hardlink it into processed and the chain is intact again.
+        download: {
+          movie_files: dl.movieFiles.length,
+          series_shows: dl.shows.length,
+          series_files: dl.shows.reduce((n, s) => n + s.files.length, 0),
+          files_already_in_processed: dlFiles.filter((f) => procByIno.has(f.ino)).length,
+          files_missing_from_processed: dlFiles.filter((f) => !procByIno.has(f.ino)).length,
+        },
         // Per-show attribution, worst match ratio first. A high ratio means the
         // library and processed trees describe the same show and can be joined
         // without relying on titles at all.
         show_attribution: showAttribution,
         movie_attribution: movieAttribution,
+        // The actionable set: library files that are not in processed yet. The
+        // first group can be adopted by hardlinking, the second has no
+        // processed or download origin at all and needs a human decision.
+        adoption: {
+          library_files_missing_from_processed: libraryOrphan,
+          adoptable_from_download: libFiles.filter((f) => !procByIno.has(f.ino) && dlByIno.has(f.ino))
+            .length,
+          with_no_download_origin: libFiles.filter((f) => !procByIno.has(f.ino) && !dlByIno.has(f.ino))
+            .length,
+          no_download_origin_sample: libFiles
+            .filter((f) => !procByIno.has(f.ino) && !dlByIno.has(f.ino))
+            .slice(0, SAMPLE)
+            .map((f) => f.path),
+          movies_needing_adoption: lib.movies
+            .filter((m) => m.files.some((f) => !procByIno.has(f.ino)))
+            .map((m) => ({
+              library_dir: m.dir,
+              title: m.title,
+              year: m.year,
+              imdb_id: m.imdbId,
+              versions: m.files.length,
+              missing: m.files.filter((f) => !procByIno.has(f.ino)).length,
+              available_in_download: m.files.filter((f) => dlByIno.has(f.ino)).length,
+            })),
+          shows_needing_adoption: lib.shows
+            .filter((s) => s.files.some((f) => !procByIno.has(f.ino)))
+            .map((s) => ({
+              library_dir: s.dir,
+              title: s.title,
+              tvdb_id: s.tvdbId,
+              files: s.files.length,
+              missing: s.files.filter((f) => !procByIno.has(f.ino)).length,
+              available_in_download: s.files.filter((f) => dlByIno.has(f.ino)).length,
+            })),
+        },
         overlap: {
           library_files_total: libFiles.length,
           processed_files_total: procFiles.length,

@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
 import {
+  DOWNLOADS_MOVIES,
+  DOWNLOADS_TV,
   MEDIA_MOVIES,
   MEDIA_TV,
   PROCESSED_MOVIES,
@@ -204,8 +206,11 @@ function listEntries(dir: string, errors: string[]): fs.Dirent[] {
 }
 
 /**
- * Collect video files under a root. `maxDepth` counts directory levels below the
- * root: 0 is files directly inside it, undefined means unlimited.
+ * Collect video files under a root. `maxDepth` is the deepest level at which
+ * files are collected: 0 means files sitting directly in the root, and
+ * undefined means unlimited. Directories are only entered while they can still
+ * contain collectable files, so a movie folder with an "Extras/" subtree yields
+ * only its own cuts.
  */
 function walkFiles(root: string, errors: string[], maxDepth?: number): string[] {
   const out: string[] = [];
@@ -215,7 +220,9 @@ function walkFiles(root: string, errors: string[], maxDepth?: number): string[] 
     for (const entry of listEntries(dir, errors)) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (maxDepth === undefined || depth + 1 <= maxDepth) stack.push({ dir: full, depth: depth + 1 });
+        if (maxDepth === undefined || depth + 1 <= maxDepth) {
+          stack.push({ dir: full, depth: depth + 1 });
+        }
       } else if (entry.isFile() && isVideoFile(full)) {
         out.push(full);
       }
@@ -313,7 +320,7 @@ export function scanLibrary(
     // Blu-ray extract also nests featurettes under "Extras/" -- Pitch Black
     // keeps its Director's Cut and Theatrical cuts here plus 56 extras deeper,
     // and recursing would report 58 versions for a movie that has two.
-    for (const f of walkFiles(full, errors, 1)) {
+    for (const f of walkFiles(full, errors, 0)) {
       const sf = toScannedFile(f, null);
       if (sf) {
         files.push(sf);
@@ -387,6 +394,62 @@ export function scanProcessed(
 
   for (const entry of listEntries(seriesDir, errors)) {
     const full = path.join(seriesDir, entry.name);
+    if (!entry.isDirectory()) continue;
+
+    const meta = parseDirName(entry.name);
+    const files: ScannedFile[] = [];
+    for (const f of walkFiles(full, errors)) {
+      const sf = toScannedFile(f, full);
+      if (!sf) continue;
+      filesScanned++;
+      files.push(sf);
+    }
+    if (files.length) shows.push({ ...meta, dir: full, files });
+  }
+
+  return { movieFiles, shows, filesScanned, errors };
+}
+
+/**
+ * Walk the download trees.
+ *
+ * Download is the source of truth: qBittorrent seeds from it, so it is read
+ * only. It is not organised the way the library is -- a movie may be a bare
+ * release-named file in the root or wrapped in its own release folder, and a
+ * series arrives as one multi-season release folder. Season and episode
+ * numbers are therefore taken from the file names wherever they appear, and the
+ * containing folder name is only a fallback.
+ *
+ * No title is derived for movie files: the library supplies movie identity and
+ * the join is by inode, so guessing here would only add noise.
+ */
+export function scanDownload(
+  moviesDir: string = DOWNLOADS_MOVIES,
+  seriesDir: string = DOWNLOADS_TV,
+): ProcessedScan {
+  const movieFiles: ScannedFile[] = [];
+  const shows: ScannedShow[] = [];
+  const errors: string[] = [];
+  let filesScanned = 0;
+
+  for (const f of walkFiles(moviesDir, errors)) {
+    const sf = toScannedFile(f, null);
+    if (sf) {
+      movieFiles.push(sf);
+      filesScanned++;
+    }
+  }
+
+  for (const entry of listEntries(seriesDir, errors)) {
+    const full = path.join(seriesDir, entry.name);
+    if (entry.isFile()) {
+      if (!isVideoFile(full)) continue;
+      const sf = toScannedFile(full, seriesDir);
+      if (!sf) continue;
+      filesScanned++;
+      movieFiles.push(sf);
+      continue;
+    }
     if (!entry.isDirectory()) continue;
 
     const meta = parseDirName(entry.name);
