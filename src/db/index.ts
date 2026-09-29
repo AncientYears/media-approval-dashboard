@@ -114,6 +114,11 @@ export function initializeDatabase(dbPath: string): DBInstance {
       PRIMARY KEY (library_key, season)
     );
 
+    CREATE TABLE IF NOT EXISTS tmdb_franchise_prefs (
+      library_key TEXT PRIMARY KEY,
+      language TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       torrent_name TEXT NOT NULL,

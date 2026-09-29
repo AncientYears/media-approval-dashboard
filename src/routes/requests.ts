@@ -141,6 +141,12 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   return coveredEps;
 }
 
+/** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset. */
+function franchiseLanguage(db: Database, libraryKey: string): string | null {
+  const row = db.prepare("SELECT language FROM tmdb_franchise_prefs WHERE library_key = ?").get(libraryKey) as any;
+  return row?.language ?? null;
+}
+
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
   if (torrentNorm.startsWith(lookupNorm)) {
@@ -3527,7 +3533,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       let meta: SeasonMeta | null = null;
       if (request.library_key) {
         try {
-          meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "");
+          meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "", {
+            language: franchiseLanguage(db, request.library_key),
+          });
         } catch (err: any) {
           console.error(`[TMDB] episode fetch failed for request ${id}: ${err.message}`);
         }
@@ -3589,7 +3597,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         episode_count: s.episode_count,
         covered_episodes: Array.from(coveredEpisodesForRequest(db, s)).sort((a, b) => a - b),
       }));
-      res.json({ library_key: seed.library_key, title, seasons });
+      res.json({ library_key: seed.library_key, title, language: franchiseLanguage(db, seed.library_key), seasons });
     } catch (error) {
       console.error("Error fetching native franchise:", error);
       res.status(500).json({ error: "Failed to fetch native franchise" });
@@ -3606,7 +3614,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.status(400).json({ error: "No library_key to refresh" });
       }
       const season = request.season ?? 0;
-      const meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "", true);
+      const meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "", {
+        language: franchiseLanguage(db, request.library_key),
+        force: true,
+      });
       if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
       res.json({
         refreshed: true,
@@ -3615,6 +3626,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     } catch (error) {
       console.error("Error refreshing metadata:", error);
       res.status(500).json({ error: "Failed to refresh metadata" });
+    }
+  });
+
+  // POST /api/requests/:id/set-language - set/clear per-franchise TMDB language.
+  // Language is stored per library_key so mixed-language libraries keep working.
+  router.post("/:id/set-language", (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const request = db.prepare("SELECT id, library_key FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (!request.library_key) return res.status(400).json({ error: "No library_key (sonarr-linked request)" });
+      const language = typeof req.body?.language === "string" && req.body.language.trim() ? req.body.language.trim() : null;
+      if (language) {
+        db.prepare("INSERT OR REPLACE INTO tmdb_franchise_prefs (library_key, language) VALUES (?, ?)").run(request.library_key, language);
+      } else {
+        db.prepare("DELETE FROM tmdb_franchise_prefs WHERE library_key = ?").run(request.library_key);
+      }
+      res.json({ ok: true, language });
+    } catch (error) {
+      console.error("Error setting franchise language:", error);
+      res.status(500).json({ error: "Failed to set language" });
     }
   });
 

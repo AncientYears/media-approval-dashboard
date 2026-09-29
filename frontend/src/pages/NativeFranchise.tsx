@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchRequestEpisodes, refreshRequestMetadata } from "../api";
+import { fetchNativeFranchise, fetchRequestEpisodes, refreshRequestMetadata, setFranchiseLanguage } from "../api";
 import { useToast } from "../components/Toast";
+
+const LANGUAGES = ["pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA", "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO", "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA"];
 
 export default function NativeFranchise() {
   const { id } = useParams<{ id: string }>();
@@ -13,6 +15,7 @@ export default function NativeFranchise() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [episodes, setEpisodes] = useState<Record<number, any>>({});
   const [refreshing, setRefreshing] = useState<number | null>(null);
+  const [language, setLanguage] = useState<string>("");
 
   const loadEpisodes = async (season: any) => {
     if (episodes[season.season]) return;
@@ -30,6 +33,7 @@ export default function NativeFranchise() {
     fetchNativeFranchise(Number(id))
       .then((data) => {
         setFranchise(data);
+        setLanguage(data.language || "");
         const open = searchParams.get("open");
         if (open != null) {
           const season = data.seasons?.find((s: any) => String(s.season) === open);
@@ -66,6 +70,28 @@ export default function NativeFranchise() {
     setRefreshing(null);
   };
 
+  const handleLanguage = async (value: string) => {
+    const seedId = franchise?.seasons?.[0]?.request_id;
+    if (!seedId) return;
+    const prev = language;
+    setLanguage(value);
+    try {
+      await setFranchiseLanguage(seedId, value || null);
+      for (const s of franchise.seasons) {
+        if (expanded.has(s.season) && episodes[s.season]) {
+          await refreshRequestMetadata(s.request_id);
+          const data = await fetchRequestEpisodes(s.request_id);
+          setEpisodes((ep) => ({ ...ep, [s.season]: data }));
+        }
+      }
+      setFranchise({ ...franchise, language: value || null });
+      toast(value ? `Language: ${value}` : "Using default language", "success");
+    } catch {
+      setLanguage(prev);
+      toast("Could not set language", "error");
+    }
+  };
+
   if (error) {
     return (
       <div className="detail-topbar">
@@ -88,6 +114,16 @@ export default function NativeFranchise() {
           <span className="type-suffix">- Series</span>
           <span className="rtag" style={{ marginLeft: 8 }}>{franchise.library_key}</span>
         </div>
+        <select
+          className="lang-select"
+          value={language}
+          onChange={(e) => handleLanguage(e.target.value)}
+          title="TMDB language for episode titles (per franchise; default = TMDB_LANGUAGE or en-US)"
+          style={{ marginLeft: "auto", fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+        >
+          <option value="">Default language</option>
+          {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
       </div>
 
       <div className="franchise-seasons-list">

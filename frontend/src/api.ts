@@ -54,6 +54,11 @@ export async function refreshRequestMetadata(requestId: number) {
   return response.data;
 }
 
+export async function setFranchiseLanguage(requestId: number, language: string | null) {
+  const response = await api.post(`/requests/${requestId}/set-language`, { language });
+  return response.data;
+}
+
 export async function approveRelease(requestId: number, releaseId: number, reason?: string) {
   const response = await api.post(`/requests/${requestId}/approve`, {
     releaseId,

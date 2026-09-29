@@ -13,15 +13,12 @@ export interface SeasonMeta {
   tmdb_show_id: number;
   show_name: string;
   resolvedVia: string;
+  language: string;
   episodes: EpisodeMeta[];
 }
 
 function apiKey(): string {
   return process.env.TMDB_API_KEY || "";
-}
-
-function lang(): string {
-  return process.env.TMDB_LANGUAGE || "en-US";
 }
 
 function extractExternalId(libraryKey: string): { source: "tvdb_id" | "imdb_id"; id: string } | null {
@@ -50,15 +47,15 @@ async function tmdbGet<T>(path: string): Promise<T | null> {
 }
 
 /** Resolve a library_key (+ fallback title) to a TMDB show id. */
-async function resolveShowId(libraryKey: string, title: string): Promise<{ id: number; via: string } | null> {
+async function resolveShowId(libraryKey: string, title: string, language: string): Promise<{ id: number; via: string } | null> {
   const ext = extractExternalId(libraryKey);
   if (ext) {
-    const data = await tmdbGet<any>(`/find/${encodeURIComponent(ext.id)}?external_source=${ext.source}&language=${lang()}`);
+    const data = await tmdbGet<any>(`/find/${encodeURIComponent(ext.id)}?external_source=${ext.source}&language=${language}`);
     const hit = data?.tv_results?.[0];
     if (hit?.id) return { id: hit.id, via: ext.source };
   }
   const year = libraryKeyYear(libraryKey);
-  const query = `/search/tv?query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ""}&language=${lang()}`;
+  const query = `/search/tv?query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ""}&language=${language}`;
   const data = await tmdbGet<any>(query);
   const hit = data?.results?.[0];
   if (hit?.id) return { id: hit.id, via: "search" };
@@ -75,31 +72,36 @@ export async function fetchTMDBSeason(
   libraryKey: string,
   season: number,
   title: string,
-  force = false,
+  opts: { language?: string | null; force?: boolean } = {},
 ): Promise<SeasonMeta | null> {
+  const language = opts.language || process.env.TMDB_LANGUAGE || "en-US";
+  const force = !!opts.force;
   const cacheRow = db
     .prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?")
     .get(libraryKey, season) as any;
+  let cached: SeasonMeta | null = null;
   if (cacheRow && !force) {
     try {
-      return JSON.parse(cacheRow.payload) as SeasonMeta;
+      cached = JSON.parse(cacheRow.payload) as SeasonMeta;
     } catch {}
   }
+  if (cached && cached.language === language) return cached;
 
   const key = apiKey();
-  if (!key) return null;
-  const show = await resolveShowId(libraryKey, title);
+  if (!key) return cached;
+  const show = await resolveShowId(libraryKey, title, language);
   if (!show) {
     if (!cacheRow) console.warn(`[TMDB] no show match for ${libraryKey} "${title}"`);
-    return null;
+    return cached;
   }
-  const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${lang()}`);
-  if (!data?.episodes) return null;
+  const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`);
+  if (!data?.episodes) return cached;
 
   const meta: SeasonMeta = {
     tmdb_show_id: show.id,
     show_name: typeof data.name === "string" ? data.name : title,
     resolvedVia: show.via,
+    language,
     episodes: data.episodes.map((e: any) => ({
       episode_number: e.episode_number,
       name: typeof e.name === "string" ? e.name : "",
