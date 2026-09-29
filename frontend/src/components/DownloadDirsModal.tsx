@@ -202,8 +202,12 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                         ) : (
                           <button className="btn btn-secondary btn-tiny" onClick={() => setAttachPath(entry.path)} disabled={busyPath !== null}>Attach</button>
                         )}
-                        <button className="btn btn-secondary btn-tiny" onClick={() => apply(entry.path, "hardlink-process")} disabled={busyPath !== null}>To Processed</button>
-                        <button className="btn btn-secondary btn-tiny" onClick={() => apply(entry.path, "move-process")} disabled={busyPath !== null}>Move</button>
+                        {!entry.existsInProcessed && (
+                          <>
+                            <button className="btn btn-secondary btn-tiny" onClick={() => apply(entry.path, "hardlink-process")} disabled={busyPath !== null}>To Processed</button>
+                            <button className="btn btn-secondary btn-tiny" onClick={() => apply(entry.path, "move-process")} disabled={busyPath !== null}>Move</button>
+                          </>
+                        )}
                         {confirmDelete === entry.path ? (
                           <button className="btn btn-danger btn-tiny" onClick={() => apply(entry.path, "delete", { force: !entry.existsInProcessed })} disabled={busyPath !== null}>
                             {entry.existsInProcessed ? "Confirm Delete" : "Force Delete (not in Processed)"}

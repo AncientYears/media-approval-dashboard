@@ -4455,6 +4455,30 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       }
 
+      // Is this torrent's content already captured under /Processed (hardlinked
+      // there via a prior move/adoption/import)? If so the Move controls are moot.
+      let inProcessed = false;
+      let processedPath = "";
+      try {
+        const baseProcTitle = (request?.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        const procDir = request?.type === "series"
+          ? findSeasonFolder(baseProcTitle, request?.season || 1)
+          : PROCESSED_MOVIES;
+        if (procDir && fs.existsSync(procDir)) {
+          for (const en of fs.readdirSync(procDir, { withFileTypes: true })) {
+            if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(en.name)) continue;
+            try {
+              const st = fs.statSync(path.join(procDir, en.name));
+              if (contentInodes.size > 0 && contentInodes.has(st.ino)) {
+                inProcessed = true;
+                processedPath = path.join(procDir, en.name);
+                break;
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+
       res.json({
         found: true,
         hash: torrent.hash,
@@ -4472,6 +4496,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         dest_path: destPath,
         library_path: destPath,
         in_library: inLibrary,
+        in_processed: inProcessed,
+        processed_path: processedPath,
         size: torrent.size,
         num_seeds: torrent.num_seeds,
         num_leechs: torrent.num_leechs,

@@ -255,7 +255,7 @@ export default function TorrentPanel({
                 </div>
               ) : (
                 <div className="torrent-path-row">
-                  <span className="path-label">{ts.in_library ? "Also:" : "Move:"}</span>
+                  <span className="path-label">{ts?.in_library || ts?.in_processed ? "Also:" : "Move:"}</span>
                   <label className="preprocessing-toggle">
                     <input
                       type="checkbox"
@@ -265,7 +265,7 @@ export default function TorrentPanel({
                     <span className="preprocessing-label">Needs preprocessing</span>
                   </label>
                   {contentBadge}
-                  <div style={{ display: "flex", gap: 4 }}>
+                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                     {preprocessing ? (
                       <button
                         className="btn btn-workspace btn-tiny"
@@ -274,7 +274,7 @@ export default function TorrentPanel({
                       >
                         {isMoving ? "Moving..." : "To Workspace"}
                       </button>
-                    ) : (
+                    ) : !ts?.in_processed && (
                       <button
                         className="btn btn-primary btn-tiny"
                         onClick={() => onMove(ar.id)}
@@ -283,10 +283,13 @@ export default function TorrentPanel({
                         {isMoving ? "Moving..." : "Move to Processed"}
                       </button>
                     )}
-                    {!ts.in_library && (
+                    {!ts?.in_library && (
                       <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
                         {isMoving ? "Moving..." : "Move to Library"}
                       </button>
+                    )}
+                    {ts?.in_processed && (
+                      <span className="badge" style={{ background: "#10b981" }} title={ts.processed_path}>already in /Processed</span>
                     )}
                   </div>
                 </div>
