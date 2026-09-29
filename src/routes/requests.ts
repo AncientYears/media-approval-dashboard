@@ -6,6 +6,11 @@ import { QBittorrentService } from "../services/qbittorrent";
 import { ProwlarrService, ProwlarrRelease } from "../services/prowlarr";
 import { RadarrSearchResult } from "../types/index";
 import { computeAppScore } from "../services/scoring";
+import {
+  scanLibrary,
+  scanProcessed,
+  type ScannedFile,
+} from "../services/libraryScan";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -2260,6 +2265,181 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   });
 
   // POST /api/requests/import-library - Scan Radarr/Sonarr library, hardlink files into processed dirs
+  // GET /api/requests/library-audit - read-only reconciliation report.
+  //
+  // Walks the library and processed trees and reports what the import needs to
+  // know before it writes anything. Deliberately writes nothing: the library
+  // has inconsistent naming and the two trees overlap heavily, so the parse
+  // has to be verified against real data before any rows are inserted.
+  router.get("/library-audit", (_req: Request, res: Response) => {
+    try {
+      const lib = scanLibrary();
+      const proc = scanProcessed();
+
+      const libFiles: ScannedFile[] = [
+        ...lib.movies.flatMap((m) => m.files),
+        ...lib.shows.flatMap((s) => s.files),
+      ];
+      const procFiles: ScannedFile[] = [
+        ...proc.movieFiles,
+        ...proc.shows.flatMap((s) => s.files),
+      ];
+
+      // Hardlinked files share an inode, so that -- not the name -- is what
+      // identifies "the same file" across the two trees.
+      const procByIno = new Map<number, string[]>();
+      for (const f of procFiles) {
+        const list = procByIno.get(f.ino);
+        if (list) list.push(f.path);
+        else procByIno.set(f.ino, [f.path]);
+      }
+      const libByIno = new Set(libFiles.map((f) => f.ino));
+
+      let libraryInProcessed = 0;
+      let libraryOrphan = 0;
+      for (const f of libFiles) {
+        if (procByIno.has(f.ino)) libraryInProcessed++;
+        else libraryOrphan++;
+      }
+      let processedInLibrary = 0;
+      let processedNotInLibrary = 0;
+      for (const f of procFiles) {
+        if (libByIno.has(f.ino)) processedInLibrary++;
+        else processedNotInLibrary++;
+      }
+
+      // Same basename but a different inode means two real copies on disk.
+      // These are the ones worth surfacing -- name matching alone would treat
+      // them as already imported and silently hide the duplication.
+      const procByName = new Map<string, ScannedFile[]>();
+      for (const f of procFiles) {
+        const key = path.basename(f.path).toLowerCase();
+        const list = procByName.get(key);
+        if (list) list.push(f);
+        else procByName.set(key, [f]);
+      }
+      const nameOnlyDuplicates: Array<{ name: string; library: string; processed: string[] }> = [];
+      for (const f of libFiles) {
+        const candidates = procByName.get(path.basename(f.path).toLowerCase());
+        if (!candidates) continue;
+        if (candidates.some((c) => c.ino === f.ino)) continue;
+        nameOnlyDuplicates.push({
+          name: path.basename(f.path),
+          library: f.path,
+          processed: candidates.map((c) => c.path),
+        });
+      }
+
+      // How reliably season numbers resolve decides whether the series import
+      // can be trusted.
+      const seasonSources = { name: 0, folder: 0, specials: 0, unknown: 0 };
+      for (const s of lib.shows) for (const f of s.files) seasonSources[f.seasonSource]++;
+
+      const procSeasonSources = { name: 0, folder: 0, specials: 0, unknown: 0 };
+      for (const s of proc.shows) for (const f of s.files) procSeasonSources[f.seasonSource]++;
+
+      // Attribute library shows to processed shows by shared inode, not title.
+      // The two trees use different naming: the library carries localized or
+      // bilingual names ("Kacze opowieści - DuckTales 2017-2021 [Sezon 01-03]")
+      // while processed keeps the original ("DuckTales"), and separators differ
+      // too ("Avatar - The Last Airbender" vs "Avatar: The Last Airbender").
+      // File overlap is immune to all of that.
+      const procShowByIno = new Map<number, string>();
+      for (const s of proc.shows) {
+        for (const f of s.files) procShowByIno.set(f.ino, s.dir);
+      }
+      const showAttribution = lib.shows
+        .map((s) => {
+          const counts = new Map<string, number>();
+          let matched = 0;
+          for (const f of s.files) {
+            const owner = procShowByIno.get(f.ino);
+            if (owner) {
+              matched++;
+              counts.set(owner, (counts.get(owner) || 0) + 1);
+            }
+          }
+          let best: string | null = null;
+          let bestN = 0;
+          for (const [dir, n] of counts) {
+            if (n > bestN) {
+              best = dir;
+              bestN = n;
+            }
+          }
+          return {
+            library_dir: s.dir,
+            library_title: s.title,
+            imdb_id: s.imdbId,
+            tvdb_id: s.tvdbId,
+            files: s.files.length,
+            matched_by_inode: matched,
+            match_ratio: s.files.length ? Number((matched / s.files.length).toFixed(2)) : 0,
+            best_processed_match: best,
+            best_match_files: bestN,
+          };
+        })
+        // Worst first: the shows that need attention are the unmatchable ones.
+        .sort((a, b) => a.match_ratio - b.match_ratio);
+
+      const movieAttribution = lib.movies
+        .map((m) => ({
+          library_dir: m.dir,
+          title: m.title,
+          year: m.year,
+          imdb_id: m.imdbId,
+          versions: m.files.length,
+          matched_by_inode: m.files.filter((f) => procByIno.has(f.ino)).length,
+        }))
+        .sort((a, b) => a.matched_by_inode - b.matched_by_inode);
+
+      const SAMPLE = 50;
+      const moviesWithoutImdb = lib.movies.filter((m) => !m.imdbId).map((m) => m.dir);
+
+      res.json({
+        generated_at: new Date().toISOString(),
+        library: {
+          movie_folders: lib.movies.length,
+          movie_files: lib.movies.reduce((n, m) => n + m.files.length, 0),
+          movies_with_imdb_id: lib.movies.filter((m) => m.imdbId).length,
+          movies_without_imdb_id: moviesWithoutImdb.length,
+          movies_without_imdb_sample: moviesWithoutImdb.slice(0, SAMPLE),
+          series_shows: lib.shows.length,
+          series_files: lib.shows.reduce((n, s) => n + s.files.length, 0),
+          series_with_imdb_id: lib.shows.filter((s) => s.imdbId).length,
+          series_with_tvdb_id: lib.shows.filter((s) => s.tvdbId).length,
+          season_sources: seasonSources,
+          unparsed_count: lib.unparsed.length,
+          unparsed_sample: lib.unparsed.slice(0, SAMPLE),
+        },
+        processed: {
+          movie_files: proc.movieFiles.length,
+          series_shows: proc.shows.length,
+          series_files: proc.shows.reduce((n, s) => n + s.files.length, 0),
+          season_sources: procSeasonSources,
+        },
+        // Per-show attribution, worst match ratio first. A high ratio means the
+        // library and processed trees describe the same show and can be joined
+        // without relying on titles at all.
+        show_attribution: showAttribution,
+        movie_attribution: movieAttribution,
+        overlap: {
+          library_files_total: libFiles.length,
+          processed_files_total: procFiles.length,
+          library_files_already_in_processed: libraryInProcessed,
+          library_files_not_in_processed: libraryOrphan,
+          processed_files_already_in_library: processedInLibrary,
+          processed_files_not_in_library: processedNotInLibrary,
+          name_only_duplicate_count: nameOnlyDuplicates.length,
+          name_only_duplicate_sample: nameOnlyDuplicates.slice(0, SAMPLE),
+        },
+        errors: [...lib.errors, ...proc.errors].slice(0, SAMPLE),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.post("/import-library", async (req: Request, res: Response) => {
     try {
       const results: Array<{ title: string; status: string; path?: string; error?: string }> = [];
