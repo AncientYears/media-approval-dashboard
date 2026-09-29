@@ -9,6 +9,8 @@ interface DirEntry {
   sizeMb: number;
   tracked: boolean;
   trackedName: string;
+  trackedHash: string;
+  linked: boolean;
   existsInProcessed: boolean;
   videoCount: number;
   matchedRequest?: { id: number; title: string; season: number | null } | null;
@@ -53,7 +55,7 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
     }
   }
 
-  async function apply(path: string, action: "attach" | "hardlink-process" | "move-process" | "delete", extra: { magnet?: string; torrentFileBase64?: string; torrentFilename?: string; force?: boolean } = {}) {
+  async function apply(path: string, action: "attach" | "link" | "hardlink-process" | "move-process" | "delete", extra: { magnet?: string; torrentFileBase64?: string; torrentFilename?: string; force?: boolean } = {}) {
     setBusyPath(path);
     try {
       const data = await applyDownloadDirsActions({
@@ -63,7 +65,10 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
       setResults((prev) => ({ ...prev, [path]: result }));
       const entry = items?.find((i) => i.path === path);
       if (result && result.ok) {
-        if (entry) entry.tracked = action === "attach";
+        if (entry) {
+          entry.tracked = action === "attach";
+          if (result.linked) entry.linked = true;
+        }
         if (action === "move-process" || action === "delete") {
           setItems((prev) => (prev ? prev.filter((i) => i.path !== path) : prev));
         }
@@ -75,6 +80,25 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
       }
     } catch (e: any) {
       setResults((prev) => ({ ...prev, [path]: { path, action, ok: false, error: e.response?.data?.error || e.message } }));
+    } finally {
+      setBusyPath(null);
+    }
+  }
+
+  async function unlinkEntries() {
+    const targets = items?.filter((i) => i.tracked && !i.linked && i.matchedRequest) || [];
+    if (targets.length === 0) return;
+    setBusyPath("__link_all__");
+    try {
+      const data = await applyDownloadDirsActions({
+        items: targets.map((t) => ({ path: t.path, action: "link" as const })),
+      });
+      const results = data.results || [];
+      const mark = { ...results };
+      setResults((prev) => ({ ...prev, ...mark }));
+      setItems((prev) => (prev ? prev.map((i) => (targets.some((t) => t.path === i.path) ? { ...i, linked: true } : i)) : prev));
+    } catch (e: any) {
+      setResults((prev) => ({ ...prev, __link_all__: { path: "__link_all__", action: "link", ok: false, error: e.response?.data?.error || e.message } }));
     } finally {
       setBusyPath(null);
     }
@@ -115,6 +139,13 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                 <span className="badge" style={{ background: "#f59e0b" }}>{items.filter((i) => !i.tracked).length} orphaned</span>
                 <span className="badge" style={{ background: "#475569" }}>{items.length} total</span>
                 <button className="btn btn-secondary btn-tiny" onClick={runScan} disabled={busyPath !== null}>Rescan</button>
+                <button
+                  className="btn btn-primary btn-tiny"
+                  onClick={unlinkEntries}
+                  disabled={busyPath !== null || items.filter((i) => i.tracked && !i.linked && i.matchedRequest).length === 0}
+                >
+                  Link {items.filter((i) => i.tracked && !i.linked && i.matchedRequest).length} unlinked
+                </button>
               </div>
               {(() => {
                 const orphaned = items.filter((i) => !i.tracked).sort((a, b) => a.name.localeCompare(b.name));
@@ -135,6 +166,11 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                       <span className="badge" style={{ background: "#6b7280" }}>{formatSize(entry.sizeMb)}</span>
                       {entry.tracked && <span className="badge" style={{ background: "#10b981" }} title={entry.trackedName}>tracked</span>}
                       {!entry.tracked && <span className="badge" style={{ background: entry.existsInProcessed ? "#3b82f6" : "#ef4444" }}>{entry.existsInProcessed ? "in Processed" : "orphan"}</span>}
+                      {entry.tracked && (
+                        <span className="badge" style={{ background: entry.linked ? "#10b981" : "#f59e0b" }} title={entry.trackedName}>
+                          {entry.linked ? "linked" : "unlinked"}
+                        </span>
+                      )}
                       {entry.matchedRequest && (
                         <span className="badge" style={{ background: "#0ea5e9" }} title="auto-matches this request">
                           → {entry.matchedRequest.title}{entry.matchedRequest.season != null ? ` S${String(entry.matchedRequest.season).padStart(2, "0")}` : ""}
@@ -176,6 +212,14 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                           <button className="btn btn-danger btn-tiny" onClick={() => setConfirmDelete(entry.path)} disabled={busyPath !== null}>Delete</button>
                         )}
                         {!entry.existsInProcessed && <span style={{ color: "#f59e0b", fontSize: 12 }}>⚠ not in Processed</span>}
+                      </div>
+                    )}
+                    {entry.tracked && !entry.linked && entry.matchedRequest && (
+                      <div className="download-dirs-actions">
+                        <button className="btn btn-primary btn-tiny" onClick={() => apply(entry.path, "link")} disabled={busyPath !== null}>
+                          Link to request
+                        </button>
+                        <span style={{ color: "#94a3b8", fontSize: 12 }}>torrent exists but isn't shown as a version yet</span>
                       </div>
                     )}
                     {r && (

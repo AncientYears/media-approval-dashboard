@@ -2450,15 +2450,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         torrents = await qbittorrent.getTorrents();
       } catch {}
 
-      const trackedContentPaths = new Set(
-        torrents
-          .map((t) => {
-            const p = t.content_path ? fromQBittorrentPath(t.content_path) : "";
-            return p;
-          })
-          .filter((p: string) => p)
-      );
-
       const movieProcInodes = fs.existsSync(PROCESSED_MOVIES)
         ? collectVideoInodes(PROCESSED_MOVIES)
         : new Set<number>();
@@ -2477,10 +2468,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
           let tracked = false;
           let trackedName = "";
-          for (const tp of trackedContentPaths) {
-            if (tp === full || tp.startsWith(full + path.sep)) {
+          let trackedHash = "";
+          for (const t of torrents) {
+            const cp = t.content_path ? fromQBittorrentPath(t.content_path) : "";
+            if (cp === full || cp.startsWith(full + path.sep)) {
               tracked = true;
-              trackedName = tp;
+              trackedName = t.name;
+              trackedHash = t.hash || "";
               break;
             }
           }
@@ -2491,6 +2485,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (tn && want && titlesMatch(want, tn)) {
                 tracked = true;
                 trackedName = t.name;
+                trackedHash = t.hash || "";
                 break;
               }
             }
@@ -2513,6 +2508,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             type === "series" && parsed.season != null ? parsed.season : null
           );
 
+          // A torrent that is already wired to a release_candidate (e.g. via
+          // attach/import/detect) counts as linked; the torrent panel shows.
+          const linked = trackedHash
+            ? !!db.prepare("SELECT 1 FROM release_candidates WHERE torrent_hash = ?").get(trackedHash)
+            : false;
+
           items.push({
             type,
             name: e.name,
@@ -2521,6 +2522,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             sizeMb: Math.round(dirSizeBytes(full) / (1024 * 1024)),
             tracked,
             trackedName,
+            trackedHash,
+            linked,
             existsInProcessed,
             videoCount: inodes.size,
             matchedRequest: matchedReq
@@ -2549,10 +2552,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
   // POST /api/requests/scan-download-dirs/apply - Apply per-item actions chosen
   // in the UI for orphaned download entries:
-  //   attach           - add magnet/.torrent to qBittorrent (saves into the download root)
-  //   hardlink-process - capture content into /Processed (no source deletion)
-  //   move-process     - rename content into /Processed (orphan becomes app-owned)
-  //   delete           - remove the download entry (requires exists-in-processed or force)
+//   attach            - add magnet/.torrent to qBittorrent (saves into the download root)
+//   link              - wire an already-tracked torrent to the best-matching request
+//   hardlink-process  - capture content into /Processed (no source deletion)
+//   move-process      - rename content into /Processed (orphan becomes app-owned)
+//   delete            - remove the download entry (requires exists-in-processed or force)
   router.post("/scan-download-dirs/apply", async (req: Request, res: Response) => {
     try {
       const bodyItems: any[] = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -2621,6 +2625,29 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               savePath: root,
               hash: newTorrent?.hash || "",
               linked: linked ? { requestId: linked.id, title: linked.title, existing: !!linked.existing } : null,
+            });
+          } else if (action === "link") {
+            const torrents = await qbittorrent.getTorrents();
+            let theTorrent: any = null;
+            for (const t of torrents) {
+              const cp = t.content_path ? fromQBittorrentPath(t.content_path) : "";
+              if (cp === entryPath || cp.startsWith(entryPath + path.sep)) {
+                theTorrent = t;
+                break;
+              }
+            }
+            if (!theTorrent) {
+              results.push({ path: entryPath, action, ok: false, error: "No live torrent found for this entry" });
+              continue;
+            }
+            const linked = linkTorrentToRequest(db, theTorrent, path.basename(entryPath), type, root);
+            results.push({
+              path: entryPath,
+              action,
+              ok: true,
+              detail: linked ? (linked.existing ? "already linked" : "linked torrent to request") : "no matching request found",
+              hash: theTorrent.hash || "",
+              linked,
             });
           } else if (action === "hardlink-process" || action === "move-process") {
             const { destDir, base } = processedDestForEntry(entryPath, type);

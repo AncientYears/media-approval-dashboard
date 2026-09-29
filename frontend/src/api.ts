@@ -255,7 +255,7 @@ export async function scanDownloadDirs() {
 }
 
 export async function applyDownloadDirsActions(payload: {
-  items: { path: string; action: "attach" | "hardlink-process" | "move-process" | "delete"; magnet?: string; torrentFileBase64?: string; torrentFilename?: string; force?: boolean }[];
+  items: { path: string; action: "attach" | "link" | "hardlink-process" | "move-process" | "delete"; magnet?: string; torrentFileBase64?: string; torrentFilename?: string; force?: boolean }[];
 }) {
   const response = await api.post("/requests/scan-download-dirs/apply", payload);
   return response.data;
