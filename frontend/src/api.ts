@@ -303,6 +303,16 @@ export async function fetchSeasonEpisodes(sonarrId: number, season: number) {
   return response.data;
 }
 
+export async function fetchLibraryAudit() {
+  const response = await api.get("/requests/library-audit");
+  return response.data;
+}
+
+export async function adoptIntoProcessed(opts?: { apply?: boolean; includeUnbacked?: boolean; onlyMovies?: boolean; onlySeries?: boolean }) {
+  const response = await api.post("/requests/adopt-into-processed", opts || {});
+  return response.data;
+}
+
 export async function fetchUnmatched() {
   const response = await api.get("/requests/unmatched");
   return response.data;

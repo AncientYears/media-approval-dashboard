@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces } from "../api";
+import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibrary, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed } from "../api";
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 
 function formatSize(mb: number): string {
@@ -25,7 +25,7 @@ const STATUS_ORDER: Record<string, number> = {
   DOWNLOADING: 3,
 };
 
-function Modal({ title, lines, onClose, onOk, onCleanup }: { title?: string; lines: string[]; onClose: () => void; onOk?: () => void; onCleanup?: () => void }) {
+function Modal({ title, lines, onClose, onOk, onCleanup, onApply }: { title?: string; lines: string[]; onClose: () => void; onOk?: () => void; onCleanup?: () => void; onApply?: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
@@ -41,6 +41,11 @@ function Modal({ title, lines, onClose, onOk, onCleanup }: { title?: string; lin
           <div className="modal-actions">
             <button className="btn btn-secondary" onClick={onClose}>Close</button>
             <button className="btn btn-danger" onClick={onCleanup}>Clean Up</button>
+          </div>
+        ) : onApply ? (
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" onClick={onApply}>Apply</button>
           </div>
         ) : onOk ? (
           <div className="modal-actions">
@@ -80,7 +85,7 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("status_asc");
-  const [modal, setModal] = useState<{ title?: string; lines: string[]; onCleanup?: () => void } | null>(null);
+  const [modal, setModal] = useState<{ title?: string; lines: string[]; onCleanup?: () => void; onApply?: () => void } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
@@ -352,6 +357,80 @@ export default function Dashboard() {
               setModal({ title: "Scan Workspaces", lines: [`Error: ${err.message}`] });
             }
           }}>Scan Workspaces</button>
+          <button className="btn btn-secondary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
+            setModal({ title: "Library Audit", lines: ["Scanning library..."] });
+            try {
+              const a = await fetchLibraryAudit();
+              const lines: string[] = [
+                `Library: ${a.library_movies_total} movies, ${a.library_series_total} shows`,
+                `Movies: ${a.library_movie_files_total} files / ${a.processed_movie_files_total} in processed`,
+                `Series: ${a.library_series_files_total} files / ${a.processed_series_files_total} in processed`,
+                `Download: ${a.download.movie_files} movie files, ${a.download.series_files} series files`,
+                "",
+                `Library files already in processed: ${a.library_files_already_in_processed}`,
+                `Library files NOT in processed: ${a.library_files_not_in_processed}`,
+                `  recoverable from download: ${a.adoption.recoverable_from_download ?? "n/a"}`,
+                `  no download origin: ${a.adoption.with_no_download_origin ?? "n/a"}`,
+                `Processed files not in library: ${a.processed_files_not_in_library}`,
+              ];
+              if (a.show_attribution && a.show_attribution.length > 0) {
+                lines.push("");
+                lines.push("Shows (library files → processed, per show):");
+                for (const s of a.show_attribution) {
+                  lines.push(`  ${s.title}: ${s.matched}/${s.total} matched, ratio ${s.ratio}`);
+                }
+              }
+              if (a.movies_needing_adoption && a.movies_needing_adoption.length > 0) {
+                lines.push("", "Movies needing adoption:");
+                for (const m of a.movies_needing_adoption) {
+                  lines.push(`  ${m.title} (${m.year}): ${m.versions} version(s), ${m.missing} missing`);
+                }
+              }
+              if (a.name_only_duplicate_count > 0) {
+                lines.push("", `Name-only duplicates detected: ${a.name_only_duplicate_count}`);
+              }
+              setModal({ title: "Library Audit", lines });
+            } catch (err: any) {
+              setModal({ title: "Library Audit", lines: [`Error: ${err.message}`] });
+            }
+          }}>Library Audit</button>
+          <button className="btn btn-primary" style={{ fontSize: "0.8rem", padding: "6px 12px" }} onClick={async () => {
+            setModal({ title: "Adopt into Processed", lines: ["Planning..."] });
+            try {
+              const plan = await adoptIntoProcessed();
+              if (plan.planned === 0) {
+                setModal({ title: "Adopt into Processed", lines: ["Nothing to adopt — library is fully linked into processed."] });
+                return;
+              }
+              const lines: string[] = [
+                `Planned: ${plan.planned} link(s).`,
+                `Movies: ${plan.totals.movies}, Series: ${plan.totals.series}.`,
+                `Already present: ${plan.already_present}.`,
+              ];
+              if (plan.conflicts && plan.conflicts.length > 0) {
+                lines.push("", `CONFLICTS (${plan.conflicts.length}) — will NOT overwrite:`);
+                for (const c of plan.conflicts) {
+                  lines.push(`  ${c.destination.replace(/.*processed\//, "processed/")}`);
+                }
+              }
+              lines.push("");
+              for (const item of plan.items) {
+                lines.push(`[${item.kind}] ${item.destination.replace(/.*processed\//, "processed/")}`);
+              }
+              setModal({ title: "Adopt into Processed", lines, onApply: async () => {
+                setModal({ title: "Adopt into Processed", lines: ["Linking..."] });
+                try {
+                  const result = await adoptIntoProcessed({ apply: true });
+                  setModal({ title: "Adopt into Processed", lines: [`Linked ${result.linked} file(s).${result.failed?.length ? `\n${result.failed.length} failed.` : ""}`] });
+                  loadData();
+                } catch (err: any) {
+                  setModal({ title: "Adopt into Processed", lines: [`Error: ${err.message}`] });
+                }
+              } });
+            } catch (err: any) {
+              setModal({ title: "Adopt into Processed", lines: [`Error: ${err.message}`] });
+            }
+          }}>Adopt into Processed</button>
         </div>
       </div>
 
