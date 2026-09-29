@@ -187,6 +187,23 @@ export interface AdoptionResult {
   failed: Array<{ destination: string; error: string }>;
 }
 
+function ownerSummary(filePath: string): string {
+  try {
+    const st = fs.lstatSync(filePath);
+    return `uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o7777).toString(8)}`;
+  } catch {
+    return "stat failed";
+  }
+}
+
+function protectedHardlinks(): number {
+  try {
+    return Number(fs.readFileSync("/proc/sys/fs/protected_hardlinks", "utf8").trim());
+  } catch {
+    return -1;
+  }
+}
+
 /** Carry out a plan. Only ever creates new hardlinks under processed. */
 export function executeAdoption(plan: AdoptionPlan): AdoptionResult {
   const linked: string[] = [];
@@ -211,7 +228,8 @@ export function executeAdoption(plan: AdoptionPlan): AdoptionResult {
             : `${err.code || "ERR"}: ${err.message}`,
       });
       console.error(
-        `[Adoption] link failed: ${item.destination} ← ${item.source} -> ${err.code || "ERR"}: ${err.message}`
+        `[Adoption] link failed: ${item.destination} <- ${item.source} -> ${err.code || "ERR"}: ${err.message}` +
+          ` [src ${ownerSummary(item.source)}, dstDir ${ownerSummary(path.dirname(item.destination))}, fs.protected_hardlinks=${protectedHardlinks()}]`
       );
     }
   }
