@@ -350,6 +350,11 @@ export function executeLibraryImport(db: Database, plan: LibraryImportPlan): Lib
   const adoptReq = db.prepare(
     "UPDATE media_requests SET library_key = ?, status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
   );
+  const findByKey = db.prepare("SELECT id, season FROM media_requests WHERE library_key = ? AND type = ?");
+  const findKeylessByTitle = db.prepare(
+    "SELECT id, title, status, episode_count FROM media_requests WHERE type = ? AND library_key IS NULL",
+  );
+  const setKey = db.prepare("UPDATE media_requests SET library_key = ?, status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
 
   const createdIds: number[] = [];
   const adoptedIds: number[] = [];
@@ -361,6 +366,33 @@ export function executeLibraryImport(db: Database, plan: LibraryImportPlan): Lib
     if (c.action === "skip") continue;
 
     if (c.action === "create") {
+      // Defensive: the planner may be stale relative to the DB. Never create a
+      // duplicate row — fold into whichever existing row shares the identity.
+      const byKey = (findByKey.all(c.libraryKey, c.kind) as any[]).filter(
+        (r: any) => r.season == c.season, // loose: null == null, 1 == 1
+      );
+      // A row from an older build may key off the folder slug (or nothing);
+      // reclaim it by normalized title instead of creating a duplicate.
+      const byTitle = !byKey.length
+        ? (findKeylessByTitle.all(c.kind) as any[]).find((r: any) => normTitle(r.title) === normTitle(c.title))
+        : null;
+      if (byKey.length || byTitle) {
+        const row = byTitle ?? byKey[0];
+        console.warn(
+          `[ImportLibrary] plan${c.kind === "series" ? ` ${c.libraryKey} S${c.season}` : ` ${c.libraryKey}`} will not create — row #${row.id} already holds this identity; merging instead`,
+        );
+        totals.create--;
+        totals.update++;
+        if (c.kind === "series" && c.episodeCount != null && c.episodeCount !== c.existingEpisodeCount) {
+          db.prepare("UPDATE media_requests SET episode_count = ? WHERE id = ?").run(c.episodeCount, row.id);
+        }
+        if (byTitle) {
+          setKey.run(c.libraryKey, row.id);
+          console.warn(`[ImportLibrary]   reclaimed old row #${row.id} (${row.status}) → ${c.libraryKey}`);
+        }
+        attachProcessed(db, row.id, c.processedRelPaths);
+        continue;
+      }
       const res = insertReq.run(c.title, c.kind, c.season, c.episodeCount, c.libraryKey);
       const id = Number(res.lastInsertRowid);
       createdIds.push(id);
