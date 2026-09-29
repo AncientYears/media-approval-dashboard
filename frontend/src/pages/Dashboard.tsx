@@ -361,33 +361,47 @@ export default function Dashboard() {
             setModal({ title: "Library Audit", lines: ["Scanning library..."] });
             try {
               const a = await fetchLibraryAudit();
+              const lib = a.library || {};
+              const proc = a.processed || {};
+              const dl = a.download || {};
+              const adoption = a.adoption || {};
+              const overlap = a.overlap || {};
               const lines: string[] = [
-                `Library: ${a.library_movies_total} movies, ${a.library_series_total} shows`,
-                `Movies: ${a.library_movie_files_total} files / ${a.processed_movie_files_total} in processed`,
-                `Series: ${a.library_series_files_total} files / ${a.processed_series_files_total} in processed`,
-                `Download: ${a.download.movie_files} movie files, ${a.download.series_files} series files`,
+                `Library: ${lib.movie_folders} movies, ${lib.series_shows} shows (${lib.movie_files} movie files, ${lib.series_files} series files)`,
+                `Processed: ${proc.movie_files} movie files, ${proc.series_files} series files across ${proc.series_shows} shows`,
+                `Download: ${dl.movie_files} movie files, ${dl.series_files} series files across ${dl.series_shows} shows`,
                 "",
-                `Library files already in processed: ${a.library_files_already_in_processed}`,
-                `Library files NOT in processed: ${a.library_files_not_in_processed}`,
-                `  recoverable from download: ${a.adoption.recoverable_from_download ?? "n/a"}`,
-                `  no download origin: ${a.adoption.with_no_download_origin ?? "n/a"}`,
-                `Processed files not in library: ${a.processed_files_not_in_library}`,
+                `Library files already in processed: ${overlap.library_files_already_in_processed}`,
+                `Library files NOT in processed: ${overlap.library_files_not_in_processed}`,
+                `  recoverable from download: ${adoption.adoptable_from_download}`,
+                `  no download origin: ${adoption.with_no_download_origin}`,
+                `Processed files not in library: ${overlap.processed_files_not_in_library}`,
               ];
               if (a.show_attribution && a.show_attribution.length > 0) {
                 lines.push("");
                 lines.push("Shows (library files → processed, per show):");
                 for (const s of a.show_attribution) {
-                  lines.push(`  ${s.title}: ${s.matched}/${s.total} matched, ratio ${s.ratio}`);
+                  lines.push(`  ${s.library_title}: ${s.matched_by_inode}/${s.files} matched, ratio ${s.match_ratio}${s.best_processed_match ? ` → ${s.best_processed_match.replace(/.*processed\/series\//, "series/")}` : " (untracked)"}`);
                 }
               }
-              if (a.movies_needing_adoption && a.movies_needing_adoption.length > 0) {
+              if (adoption.movies_needing_adoption && adoption.movies_needing_adoption.length > 0) {
                 lines.push("", "Movies needing adoption:");
-                for (const m of a.movies_needing_adoption) {
-                  lines.push(`  ${m.title} (${m.year}): ${m.versions} version(s), ${m.missing} missing`);
+                for (const m of adoption.movies_needing_adoption) {
+                  lines.push(`  ${m.title} (${m.year}): ${m.versions} version(s), ${m.missing} missing, ${m.available_in_download} in download`);
                 }
               }
-              if (a.name_only_duplicate_count > 0) {
-                lines.push("", `Name-only duplicates detected: ${a.name_only_duplicate_count}`);
+              if (adoption.shows_needing_adoption && adoption.shows_needing_adoption.length > 0) {
+                lines.push("", "Shows needing adoption:");
+                for (const s of adoption.shows_needing_adoption) {
+                  lines.push(`  ${s.title}: ${s.files} file(s), ${s.missing} missing, ${s.available_in_download} in download`);
+                }
+              }
+              if (overlap.name_only_duplicate_count > 0) {
+                lines.push("", `Name-only duplicates detected: ${overlap.name_only_duplicate_count}`);
+              }
+              if (a.errors && a.errors.length > 0) {
+                lines.push("", "Scan errors:");
+                for (const e of a.errors) lines.push(`  ${e}`);
               }
               setModal({ title: "Library Audit", lines });
             } catch (err: any) {
