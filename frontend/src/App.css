@@ -1970,7 +1970,7 @@ body {
 }
 
 .download-dirs-modal {
-  max-width: 720px;
+  max-width: 780px;
 }
 
 .download-dirs-summary {
@@ -1978,12 +1978,13 @@ body {
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .download-dirs-item {
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   margin-bottom: 8px;
   background: #0f172a;
 }
@@ -2009,10 +2010,12 @@ body {
 }
 
 .download-dirs-name {
-  flex: 1;
-  min-width: 120px;
+  flex: 1 1 180px;
+  min-width: 180px;
   font-weight: 600;
   font-size: 13px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .download-dirs-actions {

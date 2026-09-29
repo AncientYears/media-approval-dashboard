@@ -288,9 +288,6 @@ export default function TorrentPanel({
                         {isMoving ? "Moving..." : "Move to Library"}
                       </button>
                     )}
-                    {ts?.in_processed && (
-                      <span className="badge" style={{ background: "#10b981" }} title={ts.processed_path}>already in /Processed</span>
-                    )}
                   </div>
                 </div>
               )}
