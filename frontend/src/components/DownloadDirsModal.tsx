@@ -113,9 +113,19 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
               <div className="download-dirs-summary">
                 <span className="badge" style={{ background: "#10b981" }}>{items.filter((i) => i.tracked).length} tracked</span>
                 <span className="badge" style={{ background: "#f59e0b" }}>{items.filter((i) => !i.tracked).length} orphaned</span>
+                <span className="badge" style={{ background: "#475569" }}>{items.length} total</span>
                 <button className="btn btn-secondary btn-tiny" onClick={runScan} disabled={busyPath !== null}>Rescan</button>
               </div>
-              {items.map((entry) => {
+              {(() => {
+                const orphaned = items.filter((i) => !i.tracked).sort((a, b) => a.name.localeCompare(b.name));
+                const tracked = items.filter((i) => i.tracked).sort((a, b) => a.name.localeCompare(b.name));
+                return ([] as Array<{ label: string; list: DirEntry[] }>)
+                  .concat(orphaned.length > 0 ? [{ label: `Orphaned — no torrent (${orphaned.length})`, list: orphaned }] : [])
+                  .concat(tracked.length > 0 ? [{ label: `Tracked by qBittorrent (${tracked.length})`, list: tracked }] : []);
+              })().map(({ label, list }) => (
+                <div key={label} className="download-dirs-group">
+                  <div className="download-dirs-group-title">{label}</div>
+                  {list.map((entry) => {
                 const r = results[entry.path];
                 return (
                   <div key={entry.path} className="download-dirs-item">
@@ -178,6 +188,8 @@ export default function DownloadDirsModal({ onClose }: { onClose: () => void }) 
                   </div>
                 );
               })}
+                </div>
+              ))}
             </>
           )}
         </div>

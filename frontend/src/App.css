@@ -1988,6 +1988,19 @@ body {
   background: #0f172a;
 }
 
+.download-dirs-group {
+  margin-bottom: 14px;
+}
+
+.download-dirs-group-title {
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
 .download-dirs-item-row {
   display: flex;
   align-items: center;
