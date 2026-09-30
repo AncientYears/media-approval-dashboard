@@ -1,8 +1,16 @@
 ﻿import { useEffect, useState } from "react";
-import { testConnections } from "../api";
+import { testConnections, fetchSettingsEnv } from "../api";
+
+interface EnvEntry {
+  key: string;
+  label: string;
+  value: string;
+  set: boolean;
+}
 
 export default function Settings() {
   const [connectionStatus, setConnectionStatus] = useState<Record<string, any>>({});
+  const [envEntries, setEnvEntries] = useState<EnvEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleTestConnections = async () => {
@@ -19,6 +27,9 @@ export default function Settings() {
 
   useEffect(() => {
     handleTestConnections();
+    fetchSettingsEnv()
+      .then((data) => setEnvEntries(data.entries || []))
+      .catch((error) => console.error("Failed to load environment settings", error));
   }, []);
 
   return (
@@ -26,32 +37,41 @@ export default function Settings() {
       <h2>Settings</h2>
 
       <section className="settings-section">
-        <h3>API Configuration</h3>
+        <h3>Configuration (.env)</h3>
         <p className="section-description">
-          Configure connections to Prowlarr, Seerr, qBittorrent, and ntfy in your .env file.
+          Current environment configuration, read straight from the server. Secrets
+          (API keys, passwords) are masked. Edit these in your .env file and restart.
         </p>
 
-        <div className="settings-form">
-          <div className="form-group">
-            <label>Prowlarr Configuration</label>
-            <p className="help-text">URL: (configured in .env) | API Key: (configured in .env)</p>
-          </div>
-
-          <div className="form-group">
-            <label>qBittorrent Configuration</label>
-            <p className="help-text">URL: (configured in .env) | User/Pass: (configured in .env)</p>
-          </div>
-
-          <div className="form-group">
-            <label>Seerr Configuration</label>
-            <p className="help-text">URL: (configured in .env) | Syncs Seerr requests into the dashboard</p>
-          </div>
-
-          <div className="form-group">
-            <label>ntfy Configuration</label>
-            <p className="help-text">URL and Topic: (configured in .env)</p>
-          </div>
-        </div>
+        {envEntries.length > 0 && (
+          <table className="env-table">
+            <thead>
+              <tr>
+                <th>Setting</th>
+                <th>Variable</th>
+                <th>Value</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {envEntries.map((entry) => (
+                <tr key={entry.key}>
+                  <td>{entry.label}</td>
+                  <td>
+                    <code>{entry.key}</code>
+                  </td>
+                  <td className={entry.value ? "env-value" : "env-empty"}>
+                    {entry.value || "—"}
+                  </td>
+                  <td>
+                    <span className={`status-indicator ${entry.set ? "success" : "error"}`} />
+                    <span className="status-text">{entry.set ? "Set" : "Unset"}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section className="settings-section">

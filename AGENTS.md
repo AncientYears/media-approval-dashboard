@@ -454,6 +454,7 @@ resolution inherits the pref through every call site.
 | `src/services/scoring.ts` | Release scoring engine |
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
+| `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |

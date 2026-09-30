@@ -119,7 +119,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
       language TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS unmatched_torrents (
+CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       torrent_name TEXT NOT NULL,
       torrent_hash TEXT NOT NULL UNIQUE,
@@ -135,11 +135,28 @@ export function initializeDatabase(dbPath: string): DBInstance {
       skipped INTEGER DEFAULT 0
     );
 
+    -- Identity layer: every processed/library/workspace inode gets registered
+    -- here on each write path so reads (coverage, pills, grids, panels) can
+    -- resolve by inode instead of filename. Names are a backup, not the source.
+    CREATE TABLE IF NOT EXISTS media_files (
+      dev INTEGER NOT NULL,
+      inode INTEGER NOT NULL,
+      library_key TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      season INTEGER NOT NULL DEFAULT 0,
+      episode_nums TEXT NOT NULL DEFAULT '[]',
+      role TEXT NOT NULL DEFAULT 'extra' CHECK(role IN ('numbered', 'special', 'extra')),
+      release_name TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (dev, inode)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_media_requests_status ON media_requests(status);
     CREATE INDEX IF NOT EXISTS idx_release_candidates_request ON release_candidates(request_id);
     CREATE INDEX IF NOT EXISTS idx_approval_history_request ON approval_history(request_id);
     CREATE INDEX IF NOT EXISTS idx_search_history_request ON search_history(request_id);
     CREATE INDEX IF NOT EXISTS idx_release_candidates_torrent_hash ON release_candidates(torrent_hash);
+    CREATE INDEX IF NOT EXISTS idx_media_files_library_key ON media_files(library_key, season);
   `);
 
     // Repair: if media_requests_new exists but media_requests does not,

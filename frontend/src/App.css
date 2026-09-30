@@ -1156,6 +1156,49 @@ body {
   font-weight: 500;
 }
 
+.env-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.env-table th,
+.env-table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+
+.env-table th {
+  background: var(--card-bg);
+  font-weight: 600;
+}
+
+.env-table code {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+.env-table .env-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.env-table .env-empty {
+  opacity: 0.4;
+  font-style: italic;
+}
+
+.env-table .status-indicator,
+.env-table .status-text {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.env-table .status-indicator {
+  margin-right: 0.35rem;
+}
+
 .status-text {
   font-size: 0.875rem;
   color: var(--text-secondary);

@@ -14,6 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
+import { registerVideoTree, identifyByPath, autodetectIdentity } from "../services/identity";
 import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
 import { seerrRemoveRequest } from "../services/seerr";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
@@ -124,13 +125,32 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   const diskEps = new Set<number>();
   let seasonFolderExists = false;
   const seasonFolder = seasonFolderForLibraryKey(db, req.library_key, baseTitle, season);
+  // processed_files entries are stored relative to the processed root: series
+  // as show/Sxx/name, movies as a flat basename. Resolve that root so inode
+  // lookups work; null when we cannot be sure of the layout for this request.
+  const processedRoot = seasonFolder
+    ? path.dirname(path.dirname(seasonFolder))
+    : req.type === "movie"
+      ? PROCESSED_MOVIES
+      : null;
   try {
     if (seasonFolder && fs.existsSync(seasonFolder)) {
       seasonFolderExists = true;
       for (const f of fs.readdirSync(seasonFolder)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
         const epNum = extractEpisodeFromFilename(f);
-        if (epNum != null) diskEps.add(epNum);
+        if (epNum != null) {
+          diskEps.add(epNum);
+          continue;
+        }
+        // Identity-first fallback: the name tells us nothing (renamed or
+        // unparseable) but the inode's registered identity holds the episode
+        // numbers. Only numbered rows count toward coverage — S0X specials stay
+        // presentation-only like the filename parser treats them.
+        const row = identifyByPath(db, path.join(seasonFolder, f));
+        if (row && row.role === "numbered" && row.season === season) {
+          for (const n of JSON.parse(row.episode_nums || "[]")) diskEps.add(Number(n));
+        }
       }
     }
   } catch {}
@@ -138,7 +158,14 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
     const files: string[] = JSON.parse(pa.processed_files || "[]");
     for (const pf of files) {
       const epNum = extractEpisodeFromFilename(pf);
-      if (epNum != null) coveredEps.add(epNum);
+      if (epNum != null) {
+        coveredEps.add(epNum);
+        continue;
+      }
+      const row = processedRoot ? identifyByPath(db, path.join(processedRoot, pf)) : null;
+      if (row && row.role === "numbered" && row.season === season) {
+        for (const n of JSON.parse(row.episode_nums || "[]")) coveredEps.add(Number(n));
+      }
     }
   }
 
@@ -3894,6 +3921,16 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       const result = executeAdoption(plan);
+      // Register identity for the newly adopted processed links. Adoption
+      // targets pre-app library files, so there's no request row in hand — the
+      // identity is recovered from the processed path (title + Sxx) matched
+      // against media_requests. Best-effort; adoption never fails on a miss.
+      let registered = 0;
+      for (const destPath of result.linked) {
+        const id = autodetectIdentity(db, destPath);
+        if (id) registered += registerVideoTree(db, destPath, id);
+      }
+      console.log(`[Identity] adopt-into-processed registered ${registered} file(s)`);
       res.json({
         applied: true,
         linked: result.linked.length,
@@ -3921,6 +3958,18 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return res.json({ dryRun: true, ...plan });
       }
       const result = executeLibraryImport(db, plan);
+      // Register identity for created/adopted candidates: the library tree and
+      // any associated processed links. Dormant-system reconciliation, so these
+      // inodes are the ones every future read (and the Fix Names tool) resolves.
+      for (const c of plan.candidates) {
+        if (c.action !== "create" && c.action !== "adopt") continue;
+        const id = { library_key: c.libraryKey, title: c.title, season: c.season ?? 0 };
+        if (c.libraryDir) registerVideoTree(db, c.libraryDir, id);
+        for (const rel of c.processedRelPaths || []) {
+          const root = c.kind === "series" ? PROCESSED_TV : PROCESSED_MOVIES;
+          registerVideoTree(db, path.join(root, rel), id);
+        }
+      }
       console.log(
         `[ImportLibrary] Reconcile done: ${result.totals.create} created, ${result.totals.adopt} adopted, ${result.totals.update} updated, ${result.totals.skip} skipped, ${result.filesAssociated} files associated`,
       );
@@ -5248,6 +5297,11 @@ let episodes: any[];
             const stat = fs.statSync(srcPath);
             fs.renameSync(srcPath, dest);
             console.log(`[Destroy] Moved kept files ${srcPath} → ${dest}`);
+            registerVideoTree(db, dest, {
+              library_key: request.library_key || "",
+              title: request.title || "",
+              season: request.season ?? 0,
+            });
             const names: string[] = stat.isDirectory()
               ? fs.readdirSync(dest)
               : [path.basename(dest)];
@@ -6135,6 +6189,17 @@ const type = request.type === "series" ? "series" : "movie";
       const result = moveToProcessedSync(contentPath, type);
       if (!result.success) return res.status(500).json({ error: result.error });
 
+      // Register identity for the processed inodes (same inode as the download
+      // copy — hardlinked — so this single row also identifies the download twin).
+      if (result.destination) {
+        const registered = registerVideoTree(db, result.destination, {
+          library_key: request.library_key || "",
+          title: request.title || "",
+          season: request.season ?? 0,
+        });
+        console.log(`[Identity] move-to-processed registered ${registered} file(s) under ${result.destination}`);
+      }
+
       // Link the processed files in the DB so the processed panel shows them
       const processedDir = getProcessedDir(type);
       const linkedFiles: string[] = [];
@@ -6849,6 +6914,16 @@ const type = request.type === "series" ? "series" : "movie";
 
       const outputBasenames = result.processedPaths.map((p) => path.basename(p));
 
+      // Workspace outputs were MOVED (renameSync) — these are brand-new inodes,
+      // so they MUST be registered here or identity is lost forever.
+      if (result.processedPaths.length > 0) {
+        registerVideoTree(db, path.dirname(result.processedPaths[0]), {
+          library_key: request.library_key || "",
+          title: request.title || "",
+          season: request.season ?? 0,
+        });
+      }
+
       const approval = db.prepare(
         "SELECT ah.id FROM approval_history ah WHERE ah.request_id = ? ORDER BY ah.approved_at DESC LIMIT 1"
       ).get(id) as any;
@@ -7165,6 +7240,16 @@ const type = request.type === "series" ? "series" : "movie";
       const finalDest = importResult.success ? sourcePath : destPath;
       const method = importResult.success ? "imported via Radarr/Sonarr" : (fs.existsSync(destPath) && fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied");
       console.log(`[MoveToLibrary] ${method} ${sourcePath}`);
+
+      // Register identity on both trees — source (processed) and dest (library);
+      // copy fallbacks create a new inode, so both sides are recorded.
+      const identity = {
+        library_key: request.library_key || "",
+        title: request.title || "",
+        season: request.season ?? 0,
+      };
+      registerVideoTree(db, sourcePath, identity);
+      registerVideoTree(db, destPath, identity);
 
       markCompleted();
       if (fileName) {

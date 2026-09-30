@@ -255,15 +255,12 @@ app.post("/api/test-connections", async (_req, res) => {
     qbittorrent.testConnection(),
     prowlarr.testConnection(),
   ]);
-  const result: Record<string, any> = {
+  res.json({
     qbittorrent: qbitResult,
     prowlarr: prowlarrResult,
     seerr: await testSeerr(),
     ntfy: await testNtfy(),
-  };
-  if (radarrConfigured) result.radarr = await radarr.testConnection();
-  if (sonarrConfigured) result.sonarr = await sonarr.testConnection();
-  res.json(result);
+  });
 });
 
 async function testSeerr(): Promise<{ success: boolean; message: string }> {
@@ -281,6 +278,50 @@ async function testSeerr(): Promise<{ success: boolean; message: string }> {
     return { success: false, message: errorSummary(e) };
   }
 }
+
+// Read-only view of the configured environment for the Settings page.
+// Secrets (keys/tokens/passwords) are masked before leaving the server.
+// Radarr/Sonarr vars are the legacy path and intentionally excluded.
+const SETTINGS_ENV_KEYS: { key: string; label: string }[] = [
+  { key: "MEDIA_ROOT", label: "Media root" },
+  { key: "DOWNLOADS_MOVIES", label: "Downloads — movies" },
+  { key: "DOWNLOADS_TV", label: "Downloads — TV" },
+  { key: "PROCESSED_MOVIES", label: "Processed — movies" },
+  { key: "PROCESSED_TV", label: "Processed — TV" },
+  { key: "PROCESSING_WORKSPACE", label: "Processing workspace" },
+  { key: "TRACKERS_DIR", label: "Trackers dir" },
+  { key: "MEDIA_MOVIES", label: "Library — movies" },
+  { key: "MEDIA_TV", label: "Library — TV" },
+  { key: "QBIT_URL", label: "qBittorrent URL" },
+  { key: "QBIT_USER", label: "qBittorrent user" },
+  { key: "QBIT_PASS", label: "qBittorrent password" },
+  { key: "PROWLARR_URL", label: "Prowlarr URL" },
+  { key: "PROWLARR_API_KEY", label: "Prowlarr API key" },
+  { key: "SEERR_URL", label: "Seerr URL" },
+  { key: "SEERR_API_KEY", label: "Seerr API key" },
+  { key: "TMDB_API_KEY", label: "TMDB API key" },
+  { key: "TMDB_LANGUAGE", label: "TMDB language" },
+  { key: "NTFY_URL", label: "ntfy URL" },
+  { key: "NTFY_TOPIC", label: "ntfy topic" },
+  { key: "POLL_INTERVAL_STATUS", label: "Status poll (s)" },
+  { key: "POLL_INTERVAL_SEERR", label: "Seerr poll (s)" },
+  { key: "QBIT_PATH_PREFIX", label: "qBittorrent path prefix" },
+  { key: "QBIT_HOST_PREFIX", label: "App path prefix" },
+];
+
+function maskSecret(value: string): string {
+  if (value.length <= 6) return "••••••";
+  return `${value.slice(0, 4)}••••${value.slice(-2)}`;
+}
+
+app.get("/api/settings/env", (_req, res) => {
+  const entries = SETTINGS_ENV_KEYS.map(({ key, label }) => {
+    const raw = process.env[key] || "";
+    const secret = /(KEY|PASS|TOKEN|SECRET)$/i.test(key);
+    return { key, label, value: raw ? (secret ? maskSecret(raw) : raw) : "", set: !!raw };
+  });
+  res.json({ entries });
+});
 
 // Serve frontend static files
 const publicPath = path.join(__dirname, "../public");

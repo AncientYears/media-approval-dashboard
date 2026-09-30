@@ -335,6 +335,11 @@ export async function testConnections() {
   return response.data;
 }
 
+export async function fetchSettingsEnv() {
+  const response = await api.get("/settings/env");
+  return response.data;
+}
+
 export async function searchAllSeasons(sonarrId: number, searchTerm?: string) {
   const response = await api.post(`/requests/managed/${sonarrId}/search-all`, { searchTerm });
   return response.data;
