@@ -427,11 +427,11 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   const hdr = Array.from(new Set([...t.hdr, ...(v?.hdr || [])]));
   const resolution = t.resolution ?? probeResolution(v?.height);
 
-  // A Polish dub carries no language in its file NAME — the only evidence is the
-  // audio stream tag ffprobe already returns. Fill the language in from the
-  // primary audio track, but never override a language the title stated, and only
-  // for a track we recognise (so an "und"/empty tag cannot invent a tag).
-  const language = t.language ?? probeLanguageLabel(probe);
+  // A Polish dub says nothing in its file NAME — the audio stream tag is the only
+  // evidence, and it outranks the name: a file tagged [PL] with no Polish audio
+  // is not a Polish dub. Streams with no usable code abstain, leaving the title.
+  const probed = probeLanguage(probe);
+  const language = probed ? probed.lang : (t.language ?? null);
 
   return {
     ...t,
@@ -444,22 +444,28 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   };
 }
 
-/** Language tag from the audio streams' container tags, or null.
- *  A Polish dub carries nothing in its file NAME — the stream tag is the only
- *  evidence — but tagging every plain English original "[EN]" is just noise. So:
- *  fire when the file has more than one audio track, or when a single track is
- *  not English. Tracks in DIFFERENT languages are ambiguous, so stay silent. */
-function probeLanguageLabel(probe: ProbeInfo | null): string | null {
+/** What the audio streams say about the release language.
+ *  - `null`  → the streams carry no usable code, so the title is left to decide.
+ *  - `{ lang: null }` → the evidence contradicts a language claim: a single
+ *    English track is not a distinguishing tag AND not a Polish dub, whatever
+ *    the file name claims. Ground truth beats the name.
+ *  - `{ lang }` → use it.
+ *
+ *  A Polish dub carries nothing in its file NAME, so the stream tag is the only
+ *  evidence. When tracks disagree the release is a dub, and the dub is what
+ *  identifies it — "pol + eng" is a Polish release, so it is [PL], not [EN]. */
+function probeLanguage(probe: ProbeInfo | null): { lang: string | null } | null {
   const streams = probe?.audio || [];
   const codes = streams.map((a) => String(a.language || "").trim().toLowerCase()).filter((c) => c && c !== "und" && c !== "unknown");
   if (!codes.length) return null;
-  if (new Set(codes).size > 1) return null;
-  if (streams.length < 2 && isEnglishCode(codes[0])) return null;
-  const raw = codes[0];
-  if (raw.length === 3) {
-    return ISO3_TO_2[raw.toUpperCase()] || (/^[a-z]{3}$/.test(raw) ? raw.toUpperCase() : null);
-  }
-  return /^[a-z]{2}$/.test(raw) ? raw.toUpperCase() : null;
+  const label = (code: string): string | null => {
+    if (code.length === 3) return ISO3_TO_2[code.toUpperCase()] || (/^[a-z]{3}$/.test(code) ? code.toUpperCase() : null);
+    return /^[a-z]{2}$/.test(code) ? code.toUpperCase() : null;
+  };
+  const distinct = Array.from(new Set(codes));
+  if (distinct.length > 1) return { lang: label(distinct.find((c) => !isEnglishCode(c)) || distinct[0]) };
+  if (isEnglishCode(distinct[0])) return { lang: null };
+  return { lang: label(distinct[0]) };
 }
 
 const isEnglishCode = (code: string): boolean => code === "en" || code === "eng";
