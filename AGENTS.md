@@ -133,9 +133,17 @@ session can start with P0 without re-deriving the design.
   reuses the naming kernel + `assembleCanonicalTags`, one ffprobe per `(dev,ino)` (pool of
   4). Names are recomputed server-side on apply (client sends only paths); renames are
   collision-safe (`uniqueDestPath`), inode-verified (`renameSync` + pre/post `stat`),
-  refresh `media_files.release_name` + AH `processed_files` basenames. File-level only;
-  library-only files and movie/series/season dir creation deferred (kernel's
-  `canonicalMovieDir`/`canonicalSeriesDir`/`canonicalSeasonDir` already exist).
+  refresh `media_files.release_name` + AH `processed_files` basenames. **Folder renames
+  added alongside (files first, then dirs deepest-first)**: processed-tree only (show/season
+  dirs under `PROCESSED_TV`, movie dirs under `PROCESSED_MOVIES`), candidates discovered on
+  the same scan that matched the files; each folder must be owned outright
+  (`folderOwnedExclusively` — no registered file inside maps to a DIFFERENT `library_key`),
+  canonical dir recomputed server-side from `canonicalSeriesDir`/`canonicalMovieDir`/
+  `canonicalSeasonDir`, `isDirectChildOfRoot` position checks, destination collisions abort
+  (never merge), `renameSync` + post-stat verification, and `rewriteProcessedFilesPrefix`
+  relocates AH `processed_files` prefixes for ALL requests living under the moved folder
+  (multi-season franchises share the show dir). File-level too; library files remain optional
+  (user-selected); library dirs and movie/series/season NEW dir creation deferred.
 - Verify with `npm run type-check` + deployed coverage counts unchanged for a
   sample franchise before/after.
 
