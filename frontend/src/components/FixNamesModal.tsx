@@ -39,6 +39,8 @@ interface NameRow {
   badge: "processed" | "library" | "dir" | "libdir";
 }
 
+type FixMode = "all" | "top" | "season" | "files";
+
 export default function FixNamesModal({
   requestId,
   title,
@@ -52,6 +54,7 @@ export default function FixNamesModal({
 }) {
   const [groups, setGroups] = useState<FixNameGroup[]>([]);
   const [dirs, setDirs] = useState<FixNameDirRow[]>([]);
+  const [mode, setMode] = useState<FixMode>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -92,39 +95,50 @@ export default function FixNamesModal({
   }, [load]);
 
   // Flatten everything into rows the selection map can address uniformly.
-  const allRows: NameRow[] = [
-    ...dirs.map((d): NameRow => ({
-      id: d.id,
-      path: d.path,
-      currentName: d.currentName,
-      proposedName: d.proposedName,
-      note: d.note,
-      label: `${d.kind} dir`,
-      badge: d.tree === "library" ? "libdir" : "dir",
-    })),
-    ...groups.flatMap((g) => {
-      const rows: NameRow[] = [];
-      if (g.processed) rows.push({
-        id: g.processed.id,
-        path: g.processed.path,
-        currentName: g.processed.currentName,
-        proposedName: g.processed.proposedName,
-        note: g.processed.note,
-        label: "file",
-        badge: "processed",
-      });
-      if (g.library) rows.push({
-        id: g.library.id,
-        path: g.library.path,
-        currentName: g.library.currentName,
-        proposedName: g.library.proposedName,
-        note: g.library.note,
-        label: "library twin",
-        badge: "library",
-      });
-      return rows;
-    }),
-  ];
+  const dirRows: NameRow[] = dirs.map((d): NameRow => ({
+    id: d.id,
+    path: d.path,
+    currentName: d.currentName,
+    proposedName: d.proposedName,
+    note: d.note,
+    label: `${d.kind} dir`,
+    badge: d.tree === "library" ? "libdir" : "dir",
+  }));
+  const fileRows: NameRow[] = groups.flatMap((g) => {
+    const rows: NameRow[] = [];
+    if (g.processed) rows.push({
+      id: g.processed.id,
+      path: g.processed.path,
+      currentName: g.processed.currentName,
+      proposedName: g.processed.proposedName,
+      note: g.processed.note,
+      label: "file",
+      badge: "processed",
+    });
+    if (g.library) rows.push({
+      id: g.library.id,
+      path: g.library.path,
+      currentName: g.library.currentName,
+      proposedName: g.library.proposedName,
+      note: g.library.note,
+      label: "library twin",
+      badge: "library",
+    });
+    return rows;
+  });
+  // Per-layer mode: top = top-level folders (show/movie), season = season
+  // folders, files = the per-file rows. Hidden layers keep their selection but
+  // are excluded from Select-all and Apply so switching modes is always safe.
+  const showDirs = mode !== "files";
+  const topOnly = mode === "top";
+  const seasonOnly = mode === "season";
+  const visibleDirs = showDirs && !topOnly && !seasonOnly ? dirRows
+    : showDirs && topOnly ? dirRows.filter((r) => r.label === "show dir" || r.label === "movie dir")
+    : showDirs && seasonOnly ? dirRows.filter((r) => r.label === "season dir")
+    : [];
+  const visibleFiles = mode === "all" || mode === "files" ? fileRows : [];
+  const visibleGroups = mode === "all" || mode === "files" ? groups : [];
+  const visibleRows = [...visibleDirs, ...visibleFiles];
 
   function toggle(id: string) {
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -132,18 +146,22 @@ export default function FixNamesModal({
 
   function selectAll() {
     const sel: Record<string, boolean> = {};
-    for (const r of allRows) {
+    for (const r of visibleRows) {
       if (r.proposedName) sel[r.id] = true;
     }
     setSelected(sel);
   }
 
   function deselectAll() {
-    setSelected({});
+    const sel: Record<string, boolean> = {};
+    for (const id of Object.keys(selected)) {
+      if (!visibleRows.some((r) => r.id === id)) sel[id] = selected[id];
+    }
+    setSelected(sel);
   }
 
-  const selectedPaths = allRows.filter((r) => selected[r.id]).map((r) => r.path);
-  const selectableCount = allRows.filter((r) => r.proposedName).length;
+  const selectedPaths = visibleRows.filter((r) => selected[r.id]).map((r) => r.path);
+  const selectableCount = visibleRows.filter((r) => r.proposedName).length;
 
   async function apply() {
     if (selectedPaths.length === 0) return;
@@ -214,16 +232,6 @@ export default function FixNamesModal({
     );
   }
 
-  const dirRows = dirs.map((d): NameRow => ({
-    id: d.id,
-    path: d.path,
-    currentName: d.currentName,
-    proposedName: d.proposedName,
-    note: d.note,
-    label: `${d.kind} dir`,
-    badge: d.tree === "library" ? "libdir" : "dir",
-  }));
-
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box fixnames-modal" onClick={(e) => e.stopPropagation()}>
@@ -235,22 +243,40 @@ export default function FixNamesModal({
             (hardlinked library copies stay intact). Folder renames cover both the processed
             and library trees, only for folders this request owns outright — a folder that
             holds files of another franchise is never proposed. Rename top-down (show folder
-            first), then re-open to finish each layer.
-          </p>{error && <div className="modal-line" style={{ color: "#f87171", marginBottom: 8 }}>{error}</div>}
+            first), then switch layers to finish each.
+          </p>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            {([
+              ["all", "All"],
+              ["top", "Top dirs"],
+              ["season", "Season dirs"],
+              ["files", "Files"],
+            ] as [FixMode, string][]).map(([m, label]) => (
+              <button
+                key={m}
+                className="btn btn-secondary btn-tiny"
+                onClick={() => setMode(m)}
+                style={mode === m ? { background: "#2563eb", color: "#fff", borderColor: "#2563eb" } : undefined}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {error && <div className="modal-line" style={{ color: "#f87171", marginBottom: 8 }}>{error}</div>}
           {loading ? (
             <div className="modal-line" style={{ color: "#94a3b8" }}>Scanning processed + library files…</div>
-          ) : allRows.length === 0 ? (
-            <div className="modal-line" style={{ color: "#94a3b8" }}>Nothing to rename.</div>
+          ) : visibleRows.length === 0 ? (
+            <div className="modal-line" style={{ color: "#94a3b8" }}>Nothing to rename in this layer.</div>
           ) : (
             <div className="fixname-list" style={{ maxHeight: "46vh", overflowY: "auto", border: "1px solid #334155", borderRadius: 8, padding: 6 }}>
-              {dirRows.length > 0 && (
+              {visibleDirs.length > 0 && (
                 <div style={{ fontSize: 11, color: "#64748b", padding: "4px 8px", fontWeight: 600 }}>FOLDERS</div>
               )}
-              {dirRows.map((d) => <Row key={d.id} row={d} />)}
-              {dirRows.length > 0 && groups.length > 0 && (
+              {visibleDirs.map((d) => <Row key={d.id} row={d} />)}
+              {visibleDirs.length > 0 && visibleFiles.length > 0 && (
                 <div style={{ fontSize: 11, color: "#64748b", padding: "4px 8px 4px 8px", fontWeight: 600, marginTop: 6 }}>FILES</div>
               )}
-              {groups.map((g) => (
+              {visibleGroups && visibleGroups.map((g) => (
                 <div key={g.id} style={{ marginBottom: 2 }}>
                   {g.processed && (
                     <Row row={{
