@@ -102,7 +102,7 @@ export async function fetchTMDBSeason(
   libraryKey: string,
   season: number,
   title: string,
-  opts: { language?: string | null; force?: boolean } = {},
+  opts: { language?: string | null; force?: boolean; altTitle?: string | null } = {},
 ): Promise<SeasonMeta | null> {
   const language = opts.language || process.env.TMDB_LANGUAGE || "en-US";
   const force = !!opts.force;
@@ -119,9 +119,15 @@ export async function fetchTMDBSeason(
 
   const key = apiKey();
   if (!key) return cached;
-  const show = await resolveShowId(libraryKey, title, language);
+  let show = await resolveShowId(libraryKey, title, language);
+  // Locally-mangled row titles ("Ninjago: Dragon Rising") fail TMDB search
+  // while the on-disk processed folder holds the real name ("LEGO Ninjago:
+  // Dragons Rising") — retry with that alt title before giving up.
+  if (!show && opts.altTitle && opts.altTitle.trim() && opts.altTitle !== title) {
+    show = await resolveShowId(libraryKey, opts.altTitle.trim(), language);
+  }
   if (!show) {
-    if (!cacheRow) console.warn(`[TMDB] no show match for ${libraryKey} "${title}"`);
+    if (!cacheRow) console.warn(`[TMDB] no show match for ${libraryKey} "${title}"${opts.altTitle ? ` (alt: "${opts.altTitle}")` : ""}`);
     return cached;
   }
   const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`);

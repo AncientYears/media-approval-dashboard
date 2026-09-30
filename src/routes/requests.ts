@@ -1476,6 +1476,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               try {
                 const meta = await fetchTMDBSeason(db, libraryKey, 0, franchiseTitle, {
                   language: franchiseLanguage(db, libraryKey),
+                  altTitle: fallbackShowDir ? path.basename(fallbackShowDir) : null,
                 });
                 if (meta) tmdbSpecials = namedSpecialCount(JSON.stringify(meta));
               } catch {}
@@ -4368,10 +4369,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // file is there and should show as FILLED.
       const baseTitle = cleanFranchiseTitle(request.title || "");
       const extras: { name: string }[] = [];
+      let seasonFolder: string | null = null;
       try {
-        const folder = seasonFolderForLibraryKey(db, request.library_key, baseTitle, season);
-        if (folder) {
-          for (const f of fs.readdirSync(folder)) {
+        seasonFolder = seasonFolderForLibraryKey(db, request.library_key, baseTitle, season);
+        if (seasonFolder) {
+          for (const f of fs.readdirSync(seasonFolder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
             if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
           }
@@ -4382,6 +4384,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         try {
           meta = await fetchTMDBSeason(db, request.library_key, season, baseTitle, {
             language: franchiseLanguage(db, request.library_key),
+            altTitle: seasonFolder ? path.basename(path.dirname(seasonFolder)) : null,
           });
         } catch (err: any) {
           console.error(`[TMDB] episode fetch failed for request ${id}: ${err.message}`);
@@ -4511,6 +4514,7 @@ let episodes: any[];
           try {
             const meta = await fetchTMDBSeason(db, seed.library_key, 0, title, {
               language: franchiseLanguage(db, seed.library_key),
+              altTitle: fallbackShowDir ? path.basename(fallbackShowDir) : null,
             });
             if (meta) tmdbSpecials = namedSpecialCount(JSON.stringify(meta));
           } catch {}
@@ -4552,10 +4556,11 @@ let episodes: any[];
       const baseTitle = cleanFranchiseTitle(seed.title || "");
       const covered = coveredEpisodesForRequest(db, { id: -1, title: baseTitle, season: sNum, episode_count: null, library_key: seed.library_key } as any);
       const extras: { name: string }[] = [];
+      let seasonFolder: string | null = null;
       try {
-        const folder = seasonFolderForLibraryKey(db, seed.library_key, baseTitle, sNum);
-        if (folder) {
-          for (const f of fs.readdirSync(folder)) {
+        seasonFolder = seasonFolderForLibraryKey(db, seed.library_key, baseTitle, sNum);
+        if (seasonFolder) {
+          for (const f of fs.readdirSync(seasonFolder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
             if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
           }
@@ -4563,7 +4568,10 @@ let episodes: any[];
       } catch {}
       let meta: SeasonMeta | null = null;
       try {
-        meta = await fetchTMDBSeason(db, seed.library_key, sNum, baseTitle, { language: franchiseLanguage(db, seed.library_key) });
+        meta = await fetchTMDBSeason(db, seed.library_key, sNum, baseTitle, {
+          language: franchiseLanguage(db, seed.library_key),
+          altTitle: seasonFolder ? path.basename(path.dirname(seasonFolder)) : null,
+        });
       } catch (err: any) {
         console.error(`[TMDB] native season episode fetch failed for ${seed.library_key} S${sNum}: ${err.message}`);
       }
@@ -4617,9 +4625,15 @@ let episodes: any[];
         return res.status(400).json({ error: "No library_key to refresh" });
       }
       const season = request.season ?? 0;
-      const meta = await fetchTMDBSeason(db, request.library_key, season, cleanFranchiseTitle(request.title || ""), {
+      const cleanTitle = cleanFranchiseTitle(request.title || "");
+      let seasonFolder: string | null = null;
+      try {
+        seasonFolder = seasonFolderForLibraryKey(db, request.library_key, cleanTitle, season);
+      } catch {}
+      const meta = await fetchTMDBSeason(db, request.library_key, season, cleanTitle, {
         language: franchiseLanguage(db, request.library_key),
         force: true,
+        altTitle: seasonFolder ? path.basename(path.dirname(seasonFolder)) : null,
       });
       if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
       res.json({
@@ -4644,9 +4658,17 @@ let episodes: any[];
       const season = parseInt(req.query.season as string, 10);
       const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
       const baseTitle = cleanFranchiseTitle(seed.title || "");
+      const seedRows = db.prepare("SELECT id, season FROM media_requests WHERE type = 'series' AND library_key = ?").all(seed.library_key) as any[];
+      const seedYear = libraryKeyYear(seed.library_key);
+      const seedShowDir = processedShowDirFromFiles(db, seedRows.map((r: any) => r.id)) ?? showDirByStructure(seedRows.map((r: any) => r.season ?? 0));
+      let seedSeasonFolder: string | null = null;
+      try {
+        seedSeasonFolder = findSeasonFolder(baseTitle, sNum, seedYear) ?? (seedShowDir && fs.existsSync(path.join(PROCESSED_TV, seedShowDir, `S${String(sNum).padStart(2, "0")}`)) ? path.join(PROCESSED_TV, seedShowDir, `S${String(sNum).padStart(2, "0")}`) : null);
+      } catch {}
       const meta = await fetchTMDBSeason(db, seed.library_key, sNum, baseTitle, {
         language: franchiseLanguage(db, seed.library_key),
         force: true,
+        altTitle: seedShowDir ? path.basename(seedShowDir) : seedSeasonFolder ? path.basename(path.dirname(seedSeasonFolder)) : null,
       });
       if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
       res.json({ refreshed: true, season: sNum });
@@ -4672,12 +4694,21 @@ let episodes: any[];
       }
       const oldKey = seed.library_key;
       const cleaned = cleanFranchiseTitle(seed.title || "");
-      const resolved = await resolveShowIdentity(oldKey, cleaned, franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US");
+      let resolved = await resolveShowIdentity(oldKey, cleaned, franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US");
+      let usedDiskTitle = false;
+      if (!resolved) {
+        const rows = db.prepare("SELECT id, season FROM media_requests WHERE library_key = ? AND type = 'series'").all(oldKey) as any[];
+        const showDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id)) ?? showDirByStructure(rows.map((r: any) => r.season ?? 0));
+        if (showDir) {
+          resolved = await resolveShowIdentity(oldKey, path.basename(showDir), franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US");
+          usedDiskTitle = true;
+        }
+      }
       if (!resolved) {
         return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "unresolved on TMDB" });
       }
-      let slug = slugForKeyTitle(cleaned);
-      if (!slug || slug.length < 3) slug = slugForKeyTitle(resolved.name);
+      let slug = usedDiskTitle ? slugForKeyTitle(resolved.name) : slugForKeyTitle(cleaned);
+      if (!slug || slug.length < 3) slug = slugForKeyTitle(resolved.name) || slugForKeyTitle(cleaned);
       const newKey = `series:${slug}:${resolved.year ?? 0}`;
       if (newKey === oldKey) {
         return res.json({ fixed: false, old_key: oldKey, new_key: newKey, reason: "already canonical" });
