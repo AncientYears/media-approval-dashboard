@@ -84,9 +84,14 @@ session can start with P0 without re-deriving the design.
 
 ### Build order
 
-- **P0 — identity layer (start here)**: `media_files` table + registration on
-  all write paths + switch coverage/pills/grids/panels reads to inode-first,
-  processed_files self-heal. No renames. Deployable alone.
+- **P0 — identity layer (DONE, pending VM verification)**: `media_files` table +
+  registration on all write paths + inode-first coverage/pills/grids/panels reads
+  (`coveredEpisodesForRequest`, `unnumberedFilesInSeasonFolder`, episode-grid
+  extras) + `processed_files` self-heal on access (`healProcessedFilesForRequest`
+  in `src/routes/requests.ts`, wired into `GET /:id/processed` and every coverage
+  read). No renames performed. Verify with the deployed coverage counts unchanged
+  for a sample franchise before/after. Optional leftover: `user.nad.identity`
+  xattr mirror (best-effort, skip `download/`).
 - **P1 — canonical writes**: path-kernel helpers (`src/config` naming) producing
   canonical names for NEW files only; naming template honoured from settings.
 - **P2 — standardize tool**: "Fix Names" modal + optional batch renamer for

@@ -121,17 +121,21 @@ settings                - Key-value config storage
 
 **Primary — Processed ⇄ Library standardization (P0–P2)** — see the full
 "ROADMAP — Processed ⇄ Library standardization" section in AGENTS.md:
-- **P0 (in progress)** — DONE: `media_files` table keyed by `(dev,inode)`;
+- **P0 (implemented)**: `media_files` table keyed by `(dev,inode)`;
   `src/services/identity.ts` (`registerFileIdentity`, `registerVideoTree`,
   `identifyByPath`, `autodetectIdentity`, `deriveIdentityFromFilename`);
-  registration wired into move-to-processed, move-to-library, workspace
-  Complete & Import, destroy's renameSync, adopt-into-processed, and
-  import-library/native; inode-first fallback in `coveredEpisodesForRequest`
-  (numbered role recovered for unparseable files). REMAINING: `processed_files`
-  self-heal on access (missing stored path → resolve by inode → rewrite), and
-  pushing inode-first resolution into the remaining read sites (special pills,
-  episode grids, processed panels, /processed endpoint). No renames yet;
-  deployable on its own.
+  registration on move-to-processed, move-to-library, workspace Complete &
+  Import, destroy's renameSync, adopt-into-processed, import-library/native;
+  inode-first reads in `coveredEpisodesForRequest` (numbered recovered for
+  unparseable/renamed files) + `unnumberedFilesInSeasonFolder`/episode-grid
+  extras guards (inode-numbered files are covered, never extras);
+  `processed_files` self-heal on access (`healProcessedFilesForRequest` —
+  stale path → identity lookup → rewrite AH row), wired into `GET /:id/processed`
+  and every coverage read. Verified end-to-end: simulated rename → panel shows
+  the renamed file and AH rows rewritten. No renames performed by the app;
+  deployable alone. REMAINING: verify on the VM (coverage counts unchanged for
+  a sample franchise before/after), optional `user.nad.identity` xattr mirror,
+  P1/P2 below.
 - **P1**: canonical naming for new writes only —
   `Title (YYYY) [tvdbid-####]` series dirs / `Title (YYYY) [imdbid-tt####]`
   movie dirs, `Sxx` season dirs, ID-anchored file names with loader tags

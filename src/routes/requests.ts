@@ -14,7 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { registerVideoTree, identifyByPath, autodetectIdentity } from "../services/identity";
+import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
 import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
 import { seerrRemoveRequest } from "../services/seerr";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
@@ -100,6 +100,12 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   const baseTitle = (req.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
   const season = req.season ?? 0;
 
+  // Self-heal stored processed_files paths on access: any entry whose on-disk
+  // path is missing is relocated by registered inode identity (hardlinks share
+  // the inode, so a moved/renamed file is found in the request's season folder)
+  // and the AH row is rewritten. Read-time repair — names are never trusted.
+  if (req.id && Number(req.id) > 0) healProcessedFilesForRequest(db, req);
+
   const coveredRows = db.prepare(`
     SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
     JOIN approval_history ah ON ah.release_id = rc.id
@@ -183,17 +189,127 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
 
 // Count unnumbered presentation files in a season folder (e.g. S00 movies like
 // "Across the 2nd Dimension"). These render as always-FILLED SPECIAL rows in the
-// episode grid and should count as covered in summary pills too.
-function unnumberedFilesInSeasonFolder(baseTitle: string, season: number, year?: number | null): number {
+// episode grid and should count as covered in summary pills too. A file whose
+// name won't parse but whose registered inode is a NUMBERED episode is covered,
+// not an extra — identity beats guessing twice.
+function unnumberedFilesInSeasonFolder(db: Database, baseTitle: string, season: number, year?: number | null): number {
   try {
     const folder = findSeasonFolder(baseTitle, season, year);
     if (!folder) return 0;
-    return fs.readdirSync(folder).filter(
-      (f: string) => /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f) && extractEpisodeFromFilename(f) == null
-    ).length;
+    let count = 0;
+    for (const f of fs.readdirSync(folder)) {
+      if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+      if (extractEpisodeFromFilename(f) != null) continue;
+      const row = identifyByPath(db, path.join(folder, f));
+      if (row && row.role === "numbered") continue;
+      count++;
+    }
+    return count;
   } catch {
     return 0;
   }
+}
+
+/** Whether a stored name could describe the file whose identity is `row`. */
+function storedNameMatchesRow(row: any, baseName: string): boolean {
+  if (row.role === "numbered") {
+    const nums: number[] = (() => {
+      try {
+        return JSON.parse(row.episode_nums || "[]");
+      } catch {
+        return [];
+      }
+    })();
+    const derived = deriveIdentityFromFilename(baseName);
+    if (nums.some((n) => derived.episodeNumbers.includes(n))) return true;
+  }
+  const rb = normalizeTitleForMatch(row.release_name || "");
+  const nb = normalizeTitleForMatch(baseName);
+  return !!(rb && nb && (rb === nb || nb.includes(rb) || rb.includes(nb)));
+}
+
+/**
+ * Locate the current on-disk path of a stored processed_files entry whose path
+ * is stale (manual mv/rename). Strategy: for each video in the request's likely
+ * folders (season folder for series, processed root for movies), look up the
+ * registered inode identity and accept a file whose identity agrees with the
+ * stored name (episode numbers or normalized release name) AND matches the
+ * request's library_key+season. Returns the processed-relative path or null.
+ */
+function findCurrentPathByIdentity(db: Database, request: any, baseName: string): string | null {
+  const type = request.type === "series" ? "series" : "movie";
+  const processedDir = getProcessedDir(type);
+  const key = request.library_key || "";
+  const season = request.season ?? 0;
+  const folders: string[] = [];
+  if (request.type === "series") {
+    const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+    const sf = seasonFolderForLibraryKey(db, request.library_key, baseTitle, season);
+    if (sf) folders.push(sf);
+  } else {
+    folders.push(processedDir);
+  }
+  for (const folder of folders) {
+    if (!folder || !fs.existsSync(folder)) continue;
+    for (const f of fs.readdirSync(folder)) {
+      if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+      const row = identifyByPath(db, path.join(folder, f));
+      if (!row) continue;
+      if (row.season !== season) continue;
+      if (key && row.library_key && row.library_key !== key) continue;
+      if (!storedNameMatchesRow(row, baseName)) continue;
+      const rel = path.relative(processedDir, path.join(folder, f));
+      if (rel && !rel.startsWith("..")) return rel;
+    }
+  }
+  return null;
+}
+
+/**
+ * Self-heal all processed_files rows for a request: rewrite stale paths to the
+ * file's current location (by inode identity) when one is found. Returns the
+ * merged list of kept+healed relative paths across every AH row.
+ */
+function healProcessedFilesForRequest(db: Database, request: any): string[] {
+  const type = request.type === "series" ? "series" : "movie";
+  const processedDir = getProcessedDir(type);
+  const rows = db
+    .prepare(
+      "SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'",
+    )
+    .all(request.id) as any[];
+  const out: string[] = [];
+  for (const ah of rows) {
+    let list: string[];
+    try {
+      list = JSON.parse(ah.processed_files);
+    } catch {
+      continue;
+    }
+    let changed = false;
+    const next: string[] = [];
+    for (const f of list) {
+      if (fs.existsSync(path.join(processedDir, f))) {
+        next.push(f);
+        out.push(f);
+        continue;
+      }
+      const rel = findCurrentPathByIdentity(db, request, path.basename(f));
+      if (rel && rel !== f) {
+        next.push(rel);
+        out.push(rel);
+        changed = true;
+        console.log(`[Identity] self-healed processed_files AH#${ah.id}: "${f}" → "${rel}"`);
+      } else {
+        next.push(f);
+        out.push(f);
+      }
+    }
+    if (changed) {
+      db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(next), ah.id);
+    }
+  }
+  return out;
 }
 
 // Resolve the library folder for a native (arr-free) request — mirrors the
@@ -1498,7 +1614,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // processed_files rows (including torrent-linked ones), unlike the old
           // inline version which only counted release_id IS NULL rows.
           const coveredEps = coveredEpisodesForRequest(db, s);
-          const extras = unnumberedFilesInSeasonFolder(franchiseTitle, s.season, libraryKeyYear(libraryKey));
+          const extras = unnumberedFilesInSeasonFolder(db, franchiseTitle, s.season, libraryKeyYear(libraryKey));
           // Compute folder size from the season folder (source of truth)
           let folderSizeBytes = 0;
           try {
@@ -1559,7 +1675,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               title: franchiseTitle,
               episode_count: actualEpCount,
               covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-              extras: unnumberedFilesInSeasonFolder(franchiseTitle, sn.seasonNumber),
+              extras: unnumberedFilesInSeasonFolder(db, franchiseTitle, sn.seasonNumber),
             });
             existingSeasons.add(sn.seasonNumber);
           }
@@ -4869,7 +4985,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (seasonFolder) {
           for (const f of fs.readdirSync(seasonFolder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-            if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
+            if (extractEpisodeFromFilename(f) == null) {
+              const row = identifyByPath(db, path.join(seasonFolder, f));
+              if (row && row.role === "numbered") continue;
+              extras.push({ name: f.replace(/\.[^.]+$/, "") });
+            }
           }
         }
       } catch {}
@@ -4943,7 +5063,7 @@ let episodes: any[];
       const seasons = rows.map((s: any) => {
         const baseTitle = cleanFranchiseTitle(s.title || "");
         const covered = coveredEpisodesForRequest(db, s);
-        const extras = unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, libraryKeyYear(s.library_key));
+        const extras = unnumberedFilesInSeasonFolder(db, baseTitle, s.season ?? 0, libraryKeyYear(s.library_key));
         let fileCount = 0;
         try {
           const folder = seasonFolderForLibraryKey(db, s.library_key, baseTitle, s.season ?? 0);
@@ -5056,7 +5176,11 @@ let episodes: any[];
         if (seasonFolder) {
           for (const f of fs.readdirSync(seasonFolder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-            if (extractEpisodeFromFilename(f) == null) extras.push({ name: f.replace(/\.[^.]+$/, "") });
+            if (extractEpisodeFromFilename(f) == null) {
+              const row = identifyByPath(db, path.join(seasonFolder, f));
+              if (row && row.role === "numbered") continue;
+              extras.push({ name: f.replace(/\.[^.]+$/, "") });
+            }
           }
         }
       } catch {}
@@ -6383,6 +6507,10 @@ const type = request.type === "series" ? "series" : "movie";
       const processedDir = getProcessedDir(type);
 
       if (!fs.existsSync(processedDir)) return res.json({ files: [] });
+
+      // Self-heal stale processed_files entries (manual mv/rename) before they
+      // seed matchedNames — otherwise the panel silently drops renamed files.
+      healProcessedFilesForRequest(db, request);
 
       // Get approved releases for this request to match by content basename
       const releases = db.prepare(
