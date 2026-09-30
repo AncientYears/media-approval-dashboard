@@ -484,7 +484,7 @@ SEERR_API_KEY=
 - Poller `pollStatus.ts` uses `torrentMatchesTitle()` for fuzzy matching when hash fails
 - Season regex: `\bS(\d{1,2})(?:E\d|\b)` — plain `\b` after digits fails on `S02E12` format
 - Startup stale RC cleanup: check each RC individually (not per-hash) to avoid deleting valid RCs
-- Managed media: series show always if DOWNLOADING/SEEDING; movies require `release_count > 0`
+- Managed media: series show always if DOWNLOADING/SEEDING; movies require `release_count > 0`. **Group-based split**: a content-less requested season of a series joins the managed card (as a `requested-empty` amber-pending pill) once *any* sibling season under the same `library_key` has content, and disappears from the Requests list — the Requests section only holds franchises with zero content anywhere.
 - `franchise-season-row` uses flex layout with expandable inner content (click row header to toggle)
 - Hardlinks cannot cross filesystem boundaries — Download, Workspace, Processed, and Library must all be on the same volume
 - Cross-owner hardlinks (EPERM): library files owned by root (Radarr imports as root) fail adoption's `linkSync` with EPERM when the app runs as a normal uid and `fs.protected_hardlinks=1` (Debian default). `setup.sh` writes `fs.protected_hardlinks=0` to `/etc/sysctl.d/99-media-hardlinks.conf`. If adoption suddenly EPERMs again, check `/proc/sys/fs/protected_hardlinks` and the app user's uid vs the source file's owner.

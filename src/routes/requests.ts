@@ -863,6 +863,25 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           WHERE ah.request_id = mr.id AND ah.release_id IS NULL
           AND ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
         )
+        AND NOT (
+          mr.type = 'series' AND mr.library_key IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM media_requests sib
+            WHERE sib.type = 'series' AND sib.library_key = mr.library_key
+            AND (
+              sib.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+              OR EXISTS (
+                SELECT 1 FROM release_candidates rc6 JOIN approval_history ah6 ON ah6.release_id = rc6.id
+                WHERE ah6.request_id = sib.id AND rc6.torrent_hash != ''
+              )
+              OR EXISTS (
+                SELECT 1 FROM approval_history ah7
+                WHERE ah7.request_id = sib.id AND ah7.release_id IS NULL
+                AND ah7.processed_files IS NOT NULL AND ah7.processed_files != '[]'
+              )
+            )
+          )
+        )
         ORDER BY mr.created_at DESC
       `);
       const rows = stmt.all();
@@ -1325,6 +1344,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         WHERE (sub.type = 'series' AND sub.sonarr_id IS NOT NULL)
            OR sub.release_count > 0 OR sub.processed_count > 0
            OR sub.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+           OR (sub.type = 'series' AND sub.library_key IS NOT NULL AND EXISTS (
+             SELECT 1 FROM media_requests sib
+             WHERE sib.type = 'series' AND sib.library_key = sub.library_key
+             AND (
+               sib.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+               OR EXISTS (
+                 SELECT 1 FROM release_candidates rc6 JOIN approval_history ah6 ON ah6.release_id = rc6.id
+                 WHERE ah6.request_id = sib.id AND rc6.torrent_hash != ''
+               )
+               OR EXISTS (
+                 SELECT 1 FROM approval_history ah7
+                 WHERE ah7.request_id = sib.id AND ah7.release_id IS NULL
+                 AND ah7.processed_files IS NOT NULL AND ah7.processed_files != '[]'
+               )
+             )
+           ))
         ORDER BY sub.title
       `).all() as any[];
 

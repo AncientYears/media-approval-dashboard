@@ -602,8 +602,9 @@ export default function Dashboard() {
                       const nav = item.sonarr_id
                         ? (s.request_id ? () => navigate(`/requests/${s.request_id}`, { state: { back: `/managed/${item.sonarr_id}` } }) : undefined)
                         : () => navigate(`/native/${item.first_request_id}?open=${s.season}`);
+                      const requestedEmpty = !!s.request_id && shown === 0;
                       return (
-                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""}`} onClick={nav} style={{ opacity: s.request_id || shown > 0 ? 1 : 0.4, cursor: nav ? "pointer" : "default" }}>
+                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""} ${requestedEmpty ? "requested-empty" : ""}`} onClick={nav} style={{ opacity: s.request_id || shown > 0 ? 1 : 0.4, cursor: nav ? "pointer" : "default" }}>
                           <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${shown > 0 ? "has-content" : "empty"}`}>
                             {label}

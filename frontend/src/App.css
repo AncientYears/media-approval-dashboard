@@ -1617,6 +1617,26 @@ body {
   color: var(--text-secondary);
 }
 
+/* Requested but nothing on disk yet — sits on the managed card once a sibling
+   season has content. Highlighted so it reads as "wanted", not "done". */
+.managed-season.requested-empty {
+  background: rgba(245, 158, 11, 0.12);
+  outline: 1px dashed rgba(245, 158, 11, 0.5);
+  outline-offset: -1px;
+}
+
+.managed-season.requested-empty:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+.managed-season.requested-empty .season-label {
+  color: #fbbf24;
+}
+
+.managed-season.requested-empty .season-status {
+  color: #fcd34d;
+}
+
 .managed-footer {
   display: flex;
   justify-content: space-between;
