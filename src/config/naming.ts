@@ -193,6 +193,19 @@ function editionLabel(word: string): string {
 /** Multi-word release phrases that must survive as ONE tag. Everything else in
  *  a bracket is split on whitespace so "[DV HDR10Plus]" classifies piece by
  *  piece, which would otherwise shred "[Dual Audio]" into "[Dual][Audio]". */
+const DUB_MARKERS = new Set(["DUB", "DUBBED", "DUBBING"]);
+
+/** Words that mean a language without naming it. Polish scene releases say
+ *  "Lektor" or "Polski", never "PL". */
+const LANG_ALIASES: Record<string, string> = {
+  LEKTOR: "PL",
+  LEKTORSKI: "PL",
+  LEKTORSKIE: "PL",
+  POLSKI: "PL",
+  POLSKIE: "PL",
+  POLISH: "PL",
+};
+
 const MISC_PHRASES: Record<string, string> = {
   "dual audio": "Dual Audio",
   "multi audio": "Multi Audio",
@@ -528,8 +541,20 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     const at = tok.trim();
     if (!at) return;
     if (EDITION_SINGLE.has(at.toLowerCase())) return;
+    // Polish releases are marked "Lektor"/"Polski" rather than by a country
+    // code, so those words ARE the language. Resolved before LANG_TAGS so they
+    // are not also left behind in the trailing misc tags.
+    const alias = LANG_ALIASES[at.toUpperCase()];
+    if (alias) {
+      out.language = alias;
+      return;
+    }
     if (LANG_TAGS.has(at.toUpperCase()) && at.length <= 12) {
-      out.language = at.toUpperCase();
+      const up = at.toUpperCase();
+      // "Dubbing" says a track was dubbed, not WHICH language, so it must not
+      // overwrite a real one: "[Lektor PL] [DUBBING]" is still PL.
+      if (DUB_MARKERS.has(up) && out.language && !DUB_MARKERS.has(out.language)) return;
+      out.language = up;
       return;
     }
     // A bare channel number ("7.1", "2.0") right after an audio token appends
