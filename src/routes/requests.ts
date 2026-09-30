@@ -4710,19 +4710,21 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // GET /api/requests/db/:table - View raw table data for debugging
+  // GET /api/requests/db/:table - View raw table data for debugging.
+  // All non-sqlite_ tables are browsable (validated against sqlite_master so
+  // the name can never reach the query raw); read-only.
   router.get("/db/:table", (req: Request, res: Response) => {
     const table = req.params.table;
-    const allowed = ["media_requests", "release_candidates", "approval_history", "tmdb_season_cache"];
-    if (!allowed.includes(table)) {
-      return res.status(400).json({ error: `Invalid table. Allowed: ${allowed.join(", ")}` });
+    const realTables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[]).map((r: any) => r.name);
+    if (!realTables.includes(table)) {
+      return res.status(400).json({ error: `Invalid table. Available: ${realTables.join(", ")}` });
     }
     try {
       const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
       const offset = parseInt(req.query.offset as string) || 0;
-      let query = `SELECT * FROM ${table} ORDER BY id DESC LIMIT ? OFFSET ?`;
+      const query = `SELECT * FROM "${table}" ORDER BY id DESC LIMIT ? OFFSET ?`;
       const rows = db.prepare(query).all(limit, offset) as any[];
-      const total = db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as any;
+      const total = db.prepare(`SELECT COUNT(*) as c FROM "${table}"`).get() as any;
       const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
       res.json({ table, columns, rows, total: total.c, limit, offset });
     } catch (err: any) {
