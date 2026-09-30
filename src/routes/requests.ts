@@ -5305,6 +5305,31 @@ let episodes: any[];
         destroyArrFailures++;
       }
 
+      // Delete from Seerr (best-effort — a Seerr request left alive re-creates
+      // this row on the next sync poll). Only linked rows propagate; anything
+      // without a seerr_request_id is purely local.
+      if (request.seerr_request_id) {
+        const seerrDeleteUrl = (process.env.SEERR_URL || "").replace(/\/+$/, "");
+        const seerrDeleteKey = process.env.SEERR_API_KEY || "";
+        if (!seerrDeleteUrl || !seerrDeleteKey) {
+          console.warn(`[Delete] Seerr request ${request.seerr_request_id} not deleted — SEERR_URL/SEERR_API_KEY unset (will re-sync)`);
+        } else {
+          try {
+            const r = await fetch(`${seerrDeleteUrl}/api/v1/request/${request.seerr_request_id}`, {
+              method: "DELETE",
+              headers: { "X-Api-Key": seerrDeleteKey },
+            });
+            if (!r.ok) {
+              console.warn(`[Delete] Seerr DELETE request ${request.seerr_request_id} failed: HTTP ${r.status}`);
+            } else {
+              console.log(`[Delete] Deleted Seerr request ${request.seerr_request_id} (dashboard delete propagated)`);
+            }
+          } catch (e: any) {
+            console.warn(`[Delete] Seerr DELETE request ${request.seerr_request_id} failed: ${e.message}`);
+          }
+        }
+      }
+
       db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
