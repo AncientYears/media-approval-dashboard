@@ -49,6 +49,50 @@ export function isSeerrConfigured(): boolean {
   return !!(process.env.SEERR_URL && process.env.SEERR_API_KEY);
 }
 
+export interface SeerrRemoveResult {
+  ok: boolean;
+  method: string;
+  status?: number;
+  body?: string;
+  error?: string;
+}
+
+/** Remove a Seerr request so the sync won't re-create its local row.
+ * Tries DELETE first; when Seerr refuses (e.g. `canRemove: false` for
+ * fulfilled/available media) it falls back to DECLINE — declined requests are
+ * inactive in `isActive()`, so the sync treats them as absent and never
+ * re-creates the row. */
+export async function seerrRemoveRequest(seerrRequestId: number): Promise<SeerrRemoveResult> {
+  const url = String(process.env.SEERR_URL || "").replace(/\/+$/, "");
+  const key = String(process.env.SEERR_API_KEY || "");
+  if (!url || !key) {
+    return { ok: false, method: "none", error: "SEERR_URL/SEERR_API_KEY unset" };
+  }
+  try {
+    const del = await axios.delete(`${url}/api/v1/request/${seerrRequestId}`, {
+      headers: { "X-Api-Key": key },
+      timeout: 15000,
+    });
+    return { ok: true, method: "delete", status: del.status };
+  } catch (err: any) {
+    const delStatus = err?.response?.status;
+    const delBody = typeof err?.response?.data === "string" ? err.response.data : JSON.stringify(err?.response?.data ?? "");
+    console.warn(`[Seerr] DELETE request ${seerrRequestId} refused (HTTP ${delStatus}) — falling back to decline: ${String(delBody).slice(0, 300)}`);
+    try {
+      const decl = await axios.post(
+        `${url}/api/v1/request/${seerrRequestId}/decline`,
+        { requestId: seerrRequestId },
+        { headers: { "X-Api-Key": key, "Content-Type": "application/json" }, timeout: 15000 }
+      );
+      return { ok: true, method: "decline", status: decl.status };
+    } catch (err2: any) {
+      const declStatus = err2?.response?.status;
+      const declBody = typeof err2?.response?.data === "string" ? err2.response.data : JSON.stringify(err2?.response?.data ?? "");
+      return { ok: false, method: "decline", status: declStatus, body: String(declBody).slice(0, 300), error: err2?.message };
+    }
+  }
+}
+
 export async function fetchSeerrRequests(): Promise<SeerrRequest[]> {
   const url = String(process.env.SEERR_URL || "").replace(/\/+$/, "");
   const key = String(process.env.SEERR_API_KEY || "");

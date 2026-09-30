@@ -15,6 +15,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
+import { seerrRemoveRequest } from "../services/seerr";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -5308,25 +5309,13 @@ let episodes: any[];
       // Delete from Seerr (best-effort — a Seerr request left alive re-creates
       // this row on the next sync poll). Only linked rows propagate; anything
       // without a seerr_request_id is purely local.
+      let seerrDelete = null;
       if (request.seerr_request_id) {
-        const seerrDeleteUrl = (process.env.SEERR_URL || "").replace(/\/+$/, "");
-        const seerrDeleteKey = process.env.SEERR_API_KEY || "";
-        if (!seerrDeleteUrl || !seerrDeleteKey) {
-          console.warn(`[Delete] Seerr request ${request.seerr_request_id} not deleted — SEERR_URL/SEERR_API_KEY unset (will re-sync)`);
+        seerrDelete = await seerrRemoveRequest(Number(request.seerr_request_id));
+        if (seerrDelete.ok) {
+          console.log(`[Delete] Removed Seerr request ${request.seerr_request_id} (${seerrDelete.method})`);
         } else {
-          try {
-            const r = await fetch(`${seerrDeleteUrl}/api/v1/request/${request.seerr_request_id}`, {
-              method: "DELETE",
-              headers: { "X-Api-Key": seerrDeleteKey },
-            });
-            if (!r.ok) {
-              console.warn(`[Delete] Seerr DELETE request ${request.seerr_request_id} failed: HTTP ${r.status}`);
-            } else {
-              console.log(`[Delete] Deleted Seerr request ${request.seerr_request_id} (dashboard delete propagated)`);
-            }
-          } catch (e: any) {
-            console.warn(`[Delete] Seerr DELETE request ${request.seerr_request_id} failed: ${e.message}`);
-          }
+          console.warn(`[Delete] Seerr request ${request.seerr_request_id} NOT removed (${seerrDelete.method}: ${seerrDelete.error || seerrDelete.body || `HTTP ${seerrDelete.status}`}) — will re-sync`);
         }
       }
 
@@ -5334,7 +5323,7 @@ let episodes: any[];
       db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
       console.log(`[Delete] Deleted request #${id}: ${request.title} (deleteFiles=${deleteFiles}, arrDeleteFailures=${destroyArrFailures})`);
-      res.json({ success: true, arrDeleteFailures: destroyArrFailures });
+      res.json({ success: true, arrDeleteFailures: destroyArrFailures, seerrDelete });
     } catch (error) {
       console.error("Error deleting request:", error);
       res.status(500).json({ error: "Failed to delete request" });
@@ -5786,6 +5775,8 @@ let episodes: any[];
         return res.status(400).json({ error: "Cannot dismiss request with active downloads. Remove files first." });
       }
 
+      let seerrDelete: any = null;
+
       if (releaseId) {
         // Delete a single approved release's torrent
         const release = db.prepare(
@@ -5856,9 +5847,20 @@ let episodes: any[];
         // Permanently delete from DB (CASCADE removes release_candidates, approval_history)
         db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
         console.log(`[Dismiss] Deleted request #${id}: ${request?.title}`);
+
+        // Remove from Seerr too — a surviving Seerr request makes the next sync
+        // poll re-create this row within a minute.
+        if (request?.seerr_request_id) {
+          seerrDelete = await seerrRemoveRequest(Number(request.seerr_request_id));
+          if (seerrDelete.ok) {
+            console.log(`[Dismiss] Removed Seerr request ${request.seerr_request_id} (${seerrDelete.method})`);
+          } else {
+            console.warn(`[Dismiss] Seerr request ${request.seerr_request_id} NOT removed (${seerrDelete.method}: ${seerrDelete.error || seerrDelete.body || `HTTP ${seerrDelete.status}`}) — will re-sync`);
+          }
+        }
       }
 
-      res.json({ success: true });
+      res.json({ success: true, seerrDelete });
     } catch (error) {
       console.error("Error dismissing request:", error);
       res.status(500).json({ error: "Failed to dismiss request" });

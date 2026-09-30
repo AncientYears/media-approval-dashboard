@@ -187,8 +187,17 @@ export default function Dashboard() {
         <ConfirmModal
           message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
           onConfirm={async () => {
-            await dismissRequest(confirmDelete.id);
+            const res = await dismissRequest(confirmDelete.id).catch(() => null);
             setConfirmDelete(null);
+            if (res?.seerrDelete && !res.seerrDelete.ok) {
+              setModal({
+                title: "Seerr delete failed",
+                lines: [
+                  `"${confirmDelete.title}" was deleted locally, but Seerr refused the delete (${res.seerrDelete.method}: ${res.seerrDelete.error || res.seerrDelete.body || "HTTP " + res.seerrDelete.status}).`,
+                  "Seerr still holds the request, so the next sync will bring it back. Decline/delete it in Seerr's UI to stop re-appearing.",
+                ],
+              });
+            }
             loadData();
           }}
           onCancel={() => setConfirmDelete(null)}
@@ -633,7 +642,18 @@ export default function Dashboard() {
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
                     <button className="btn btn-danger btn-tiny" onClick={() => {
                       if (window.confirm(`Delete "${item.title}" from DB + Radarr?`)) {
-                        deleteRequest(item.request_id).then(() => loadData());
+                        deleteRequest(item.request_id).then((res) => {
+                          if (res?.seerrDelete && !res.seerrDelete.ok) {
+                            setModal({
+                              title: "Seerr delete failed",
+                              lines: [
+                                `"${item.title}" was deleted locally, but Seerr refused the delete (${res.seerrDelete.method}: ${res.seerrDelete.error || res.seerrDelete.body || "HTTP " + res.seerrDelete.status}).`,
+                                "Seerr still holds the request, so the next sync will bring it back. Decline/delete it in Seerr's UI to stop re-appearing.",
+                              ],
+                            });
+                          }
+                          loadData();
+                        });
                       }
                     }}>Delete</button>
                   </div>
