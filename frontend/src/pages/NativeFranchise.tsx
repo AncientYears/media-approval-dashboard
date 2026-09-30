@@ -80,7 +80,7 @@ export default function NativeFranchise() {
   };
 
   const handleLanguage = async (value: string) => {
-    const seedId = franchise?.seasons?.[0]?.request_id;
+    const seedId = franchise?.seasons?.find((s: any) => s.request_id != null)?.request_id;
     if (!seedId) return;
     const prev = language;
     setLanguage(value);
