@@ -1030,6 +1030,23 @@ async function namingPiecesWithDiskFallback(db: Database, request: any, hintFold
   return { pieces: null, reason: diag.reason || "no IMDb/TVDB id found" };
 }
 
+/** Ensure this request's season row exists in tmdb_season_cache for its
+ *  franchise language, using the on-disk show folder as the altTitle. Every read
+ *  of episode metadata (title, air date) goes through here first, so those reads
+ *  can never see a cold cache. Best effort: a TMDB failure just leaves the cache
+ *  cold and the callers fall back to on-disk names. */
+async function warmSeasonCache(db: Database, request: any, hintFolders: string[] = []): Promise<void> {
+  if (request.type !== "series" || !request.library_key || request.season === 0) return;
+  try {
+    const lang = franchiseLanguage(db, request.library_key);
+    const altTitle = hintFolders.map((d) => path.basename(d || "")).find((n) => n && n.length > 2) || null;
+    await fetchTMDBSeason(db, request.library_key, request.season ?? 1, cleanFranchiseTitle(request.title || ""), {
+      language: lang,
+      altTitle,
+    });
+  } catch {}
+}
+
 /** Warm this request's season cache, then resolve identity pieces. Shared by the
  * preview and the apply path so a proposal can never be un-appliable: both must
  * agree on the pieces or the modal would show a rename the apply then refuses. */
@@ -1038,16 +1055,7 @@ async function fixNamesPieces(
   request: any,
   hintFolders: string[],
 ): Promise<{ pieces: NamingPieces | null; reason: string | null }> {
-  if (request.type === "series" && request.library_key && request.season !== 0) {
-    try {
-      const lang = franchiseLanguage(db, request.library_key);
-      const altTitle = hintFolders.map((d) => path.basename(d)).find((n) => n && n.length > 2) || null;
-      await fetchTMDBSeason(db, request.library_key, request.season ?? 1, cleanFranchiseTitle(request.title || ""), {
-        language: lang,
-        altTitle,
-      });
-    } catch {}
-  }
+  await warmSeasonCache(db, request, hintFolders);
   return namingPiecesWithDiskFallback(db, request, hintFolders);
 }
 
@@ -1059,6 +1067,9 @@ async function fixNamesPieces(
 async function canonicalFileBase(db: Database, request: any, sourceBase: string, idHintFolder?: string, probe?: ProbeInfo | null): Promise<string | null> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return null;
+  // The episode title/air date below come from the season cache, so warm it first
+  // instead of inheriting whatever the last reader happened to leave behind.
+  await warmSeasonCache(db, request, idHintFolder ? [idHintFolder] : []);
   const pieces = await namingPiecesForRequest(db, request, idHintFolder);
   const tags = assembleCanonicalTags(parseReleaseTags(sourceBase), probe || null);
   if (request.type === "movie") {
@@ -1226,6 +1237,9 @@ async function proposeCanonicalName(
 ): Promise<{ name: string | null; role: FixNameRow["role"] | null; note: string | null }> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return { name: null, role: null, note: "Naming disabled in Settings" };
+  // Called per file, and the cache read is keyed by season+language — so make
+  // the warm-up idempotent and cheap rather than assuming a prior preview ran.
+  if (cachedPieces === undefined) await warmSeasonCache(db, request);
   const pieces = cachedPieces !== undefined ? cachedPieces : await namingPiecesForRequest(db, request);
   const ext = path.extname(sourceBase);
   const base = ext ? sourceBase.slice(0, -ext.length) : sourceBase;
@@ -7432,6 +7446,11 @@ const type = request.type === "series" ? "series" : "movie";
       }
       const paths: string[] = Array.isArray(req.body?.paths) ? req.body.paths.filter((p: unknown) => typeof p === "string") : [];
       if (paths.length === 0) return res.status(400).json({ error: "No file paths provided" });
+
+      // Apply normally rides on the preview the UI just made, but it can be
+      // called cold. Warm the season cache here too so a proposal can never be
+      // un-appliable because the title/air date went missing between the two.
+      await warmSeasonCache(db, request);
 
       // Split files vs directories. Files rename first (their folders are still
       // at today's paths); directory renames run last, deepest-first, so a
