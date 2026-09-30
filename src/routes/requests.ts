@@ -1298,13 +1298,18 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     } catch {}
 
     const pb = await proposeCanonicalName(db, request, path.basename(a.fullPath), probe, cachedPieces);
+    const withExt = (name: string | null, p: string) => {
+      if (!name) return null;
+      const ext = path.extname(p);
+      return ext && !path.extname(name) ? `${name}${ext}` : name;
+    };
     const processed: FixNameRow = {
       id: `p-${gid}`,
       ino,
       path: a.fullPath,
       tree: "processed",
       currentName: path.basename(a.fullPath),
-      proposedName: pb.name,
+      proposedName: withExt(pb.name, a.fullPath),
       role: pb.role,
       note: pb.note,
     };
@@ -1319,7 +1324,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         path: libPath,
         tree: "library",
         currentName: path.basename(libPath),
-        proposedName: lb.name,
+        proposedName: withExt(lb.name, libPath),
         role: lb.role,
         note: lb.note,
       };
@@ -1439,7 +1444,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
 /** Rename a single picked file to its canonical name. Inode-verified: a rename
  * keeps the inode, so hardlinked twins elsewhere stay linked and identity rows
  * survive. Only the submitted path is renamed (twins rename independently). */
-function applyFixNameRename(db: Database, request: any, oldPath: string, newName: string): { ok: boolean; skipped?: boolean; error?: string; old?: string; new?: string } {
+function applyFixNameRename(db: Database, request: any, oldPath: string, newNameArg: string): { ok: boolean; skipped?: boolean; error?: string; old?: string; new?: string } {
   let st: fs.Stats;
   try {
     st = fs.statSync(oldPath);
@@ -1451,6 +1456,10 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
 
   const parent = path.dirname(oldPath);
   const oldBasename = path.basename(oldPath);
+  // Proposals arrive without an extension (the canonical base name); re-attach
+  // the original one so a rename never strips ".mkv".
+  const ext = path.extname(oldPath);
+  const newName = ext && !path.extname(newNameArg) ? `${newNameArg}${ext}` : newNameArg;
   const dest = uniqueDestPath(path.join(parent, newName), st.ino);
 
   if (fs.existsSync(dest)) {
