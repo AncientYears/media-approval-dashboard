@@ -313,18 +313,25 @@ export async function resolveExternalIds(
   mediaType: "movie" | "series",
   title: string,
   language: string,
+  opts?: { ignoreCache?: boolean },
 ): Promise<ExternalIds | null> {
   try {
     const cached = db.prepare("SELECT * FROM tmdb_external_ids WHERE library_key = ?").get(libraryKey) as any;
     if (cached) {
-      if (!cached.imdb_id && !cached.tvdb_id) return null;
-      return {
-        tmdbId: cached.tmdb_id || 0,
-        imdbId: cached.imdb_id || null,
-        tvdbId: cached.tvdb_id ? String(cached.tvdb_id) : null,
-        title: cached.title || title,
-        year: cached.year ?? null,
-      };
+      // An all-null row is a negative cache (see below) — `ignoreCache` lets a
+      // caller retry the same key with a better title (on-disk folder name).
+      if (opts?.ignoreCache && !cached.imdb_id && !cached.tvdb_id) {
+        // fall through to a live lookup
+      } else {
+        if (!cached.imdb_id && !cached.tvdb_id) return null;
+        return {
+          tmdbId: cached.tmdb_id || 0,
+          imdbId: cached.imdb_id || null,
+          tvdbId: cached.tvdb_id ? String(cached.tvdb_id) : null,
+          title: cached.title || title,
+          year: cached.year ?? null,
+        };
+      }
     }
   } catch {}
   const show =

@@ -964,28 +964,44 @@ async function namingPiecesForRequest(db: Database, request: any, idHintFolder?:
   const conf = loadNamingConf(db);
   if (!conf.enabled) return null;
   let pieces: NamingPieces | null = null;
+  const isSeries = request.type === "series";
+  const kind = isSeries ? "series" : "movie";
+  let parsed: { title: string; year: number | null; imdbId: string | null; tvdbId: string | null } | null = null;
+  if (idHintFolder) {
+    try {
+      parsed = parseDirName(path.basename(idHintFolder) || "");
+    } catch {}
+  }
   try {
     const lang = franchiseLanguage(db, request.library_key) || process.env.TMDB_LANGUAGE || "en-US";
     const ids = await resolveExternalIds(
       db,
       request.library_key,
-      request.type === "series" ? "series" : "movie",
+      kind,
       cleanFranchiseTitle(request.title || ""),
       lang,
     );
     if (ids) pieces = { title: ids.title, year: ids.year ?? libraryKeyYear(request.library_key), imdbId: ids.imdbId, tvdbId: ids.tvdbId };
   } catch {}
-  if (!pieces && idHintFolder) {
+  // Mangled stored titles ("Ninjago: Dragon Rising") fail TMDB search while the
+  // on-disk show/movie folder holds the real name ("LEGO Ninjago: Dragons
+  // Rising") — retry with that before falling back to id parsing. `ignoreCache`
+  // bypasses a negative cache row written by the first (failed) attempt.
+  if (!pieces && parsed && parsed.title && parsed.title !== cleanFranchiseTitle(request.title || "")) {
     try {
-      const parsed = parseDirName(path.basename(idHintFolder) || "");
-      const year = parsed.year ?? libraryKeyYear(request.library_key);
-      const fallbackTitle = cleanFranchiseTitle(request.title || "");
-      if (request.type === "movie" && parsed.imdbId) {
-        pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: null };
-      } else if (request.type === "series" && (parsed.tvdbId || parsed.imdbId)) {
-        pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: parsed.tvdbId };
-      }
+      const lang = franchiseLanguage(db, request.library_key) || process.env.TMDB_LANGUAGE || "en-US";
+      const ids = await resolveExternalIds(db, request.library_key, kind, parsed.title, lang, { ignoreCache: true });
+      if (ids) pieces = { title: ids.title, year: ids.year ?? parsed.year ?? libraryKeyYear(request.library_key), imdbId: ids.imdbId, tvdbId: ids.tvdbId };
     } catch {}
+  }
+  if (!pieces && parsed) {
+    const year = parsed.year ?? libraryKeyYear(request.library_key);
+    const fallbackTitle = cleanFranchiseTitle(request.title || "");
+    if (!isSeries && parsed.imdbId) {
+      pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: null };
+    } else if (isSeries && (parsed.tvdbId || parsed.imdbId)) {
+      pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: parsed.tvdbId };
+    }
   }
   return pieces;
 }
@@ -1022,7 +1038,7 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
     if (!pieces) return null;
     return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
   }
-  const ep = parseEpisodeCode(sourceBase);
+  const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return null;
   if (ep.season === 0) {
     if (pieces?.imdbId) {
@@ -1169,8 +1185,8 @@ async function proposeCanonicalName(
     if (!name) return { name: null, role: "special", note: "Missing pivot pieces" };
     return { name: name === base ? null : name, role: "special", note: null };
   }
-  const ep = parseEpisodeCode(sourceBase);
-  if (!ep) return { name: null, role: "episode", note: "No SxxExx code in name" };
+  const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
+  if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
   if (ep.season !== (request.season ?? ep.season)) return { name: null, role: "episode", note: `S${ep.season} does not match request season` };
   const episodeTitle = request.library_key ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode) : null;
   const name = canonicalEpisodeFile(conf, {

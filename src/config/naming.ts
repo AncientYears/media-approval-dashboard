@@ -520,14 +520,45 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   return out;
 }
 
-/** Parse the first SxxExx code from a file base (E01E02 → first episode). */
-export function parseEpisodeCode(fileBase: string): { season: number; episode: number } | null {
+/**
+ * Parse the first SxxExx code from a file base (E01E02 → first episode).
+ * Also accepts the spelled-out "Season 1 Episode 12" form (Kids' shows, Jellyfin
+ * hand-placed files), plus plain "- E12" / "_E12_" episode numbers when the
+ * season is known. Returns a zero-based `forcedSeason` when a Season word was
+ * present, so callers can reject a file whose season contradicts the folder.
+ */
+export function parseEpisodeCode(
+  fileBase: string,
+  opts?: { knownSeason?: number | null },
+): { season: number; episode: number; forcedSeason?: boolean } | null {
   const m = fileBase.match(/\b[sS](\d{1,2})\s*[eE](\d{1,3})\b/);
-  if (!m) return null;
-  const season = parseInt(m[1], 10);
-  const episode = parseInt(m[2], 10);
-  if (!Number.isFinite(season) || !Number.isFinite(episode)) return null;
-  return { season, episode };
+  if (m) {
+    const season = parseInt(m[1], 10);
+    const episode = parseInt(m[2], 10);
+    if (!Number.isFinite(season) || !Number.isFinite(episode)) return null;
+    return { season, episode };
+  }
+  const spelled = fileBase.match(/\b(?:Season|Seasons)\s*(\d{1,2})\s*[-_. ]\s*(?:Episode|Ep\.?)\s*(\d{1,3})\b/i);
+  if (spelled) {
+    const season = parseInt(spelled[1], 10);
+    const episode = parseInt(spelled[2], 10);
+    if (Number.isFinite(season) && Number.isFinite(episode)) return { season, episode, forcedSeason: true };
+  }
+  // Episode-only number ("Show - E12.mkv", "Show 012.mkv") — only when the
+  // caller knows the season, so we never invent a season from a stray digit.
+  if (typeof opts?.knownSeason === "number") {
+    const eOnly = fileBase.match(/(?:^|[\s._-])[eE](\d{1,3})(?=[\s._-]|$)/);
+    if (eOnly) {
+      const episode = parseInt(eOnly[1], 10);
+      if (Number.isFinite(episode) && episode > 0) return { season: opts.knownSeason, episode };
+    }
+    const padded = fileBase.match(/(?:^|[\s._-])(\d{2,3})(?=[\s._-]|$)/);
+    if (padded) {
+      const episode = parseInt(padded[1], 10);
+      if (Number.isFinite(episode) && episode > 0) return { season: opts.knownSeason, episode };
+    }
+  }
+  return null;
 }
 
 export interface CanonicalFilePieces {
