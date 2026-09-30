@@ -425,6 +425,28 @@ export function initializeDatabase(dbPath: string): DBInstance {
       } catch {}
     }
 
+    // Cleanup degenerate request rows: empty/NULL status ghosts left by old
+    // import paths (e.g. a batch of native series rows at S00/S01 with no real
+    // state). They carry no arr link, no Seerr link and no content — pure
+    // display junk that the managed-card group-split would otherwise resurrect
+    // as amber "requested" pills for seasons that were never requested.
+    const ghostRows = db.prepare(`
+      SELECT mr.id, mr.title, mr.type, mr.season, mr.status, mr.library_key FROM media_requests mr
+      WHERE (mr.status IS NULL OR mr.status = '')
+      AND mr.sonarr_id IS NULL AND mr.radarr_id IS NULL
+      AND mr.seerr_request_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM approval_history ah
+        WHERE ah.request_id = mr.id
+        AND (ah.release_id IS NOT NULL OR (ah.processed_files IS NOT NULL AND ah.processed_files != '[]'))
+      )
+    `).all() as any[];
+    for (const g of ghostRows) {
+      db.prepare("DELETE FROM media_requests WHERE id = ?").run(g.id);
+      console.log(`[DB] Removed degenerate request #${g.id} "${g.title}" (${g.type}, season=${g.season}, status="${g.status}", key=${g.library_key}) — no content, no links`);
+    }
+    if (ghostRows.length > 0) console.log(`[DB] Cleaned up ${ghostRows.length} degenerate request row(s).`);
+
     // Migration: create unmatched_torrents table if not exists
     db.exec(`CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

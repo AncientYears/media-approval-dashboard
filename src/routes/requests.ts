@@ -1345,7 +1345,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         WHERE (sub.type = 'series' AND sub.sonarr_id IS NOT NULL)
            OR sub.release_count > 0 OR sub.processed_count > 0
            OR sub.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
-           OR (sub.type = 'series' AND sub.library_key IS NOT NULL AND EXISTS (
+           OR (sub.type = 'series' AND sub.library_key IS NOT NULL
+               AND sub.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED')
+               AND EXISTS (
              SELECT 1 FROM media_requests sib
              WHERE sib.type = 'series' AND sib.library_key = sub.library_key
              AND (
