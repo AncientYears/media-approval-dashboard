@@ -5717,9 +5717,9 @@ let episodes: any[];
 
       // If fileName is provided, find the processed file and match by inode to library
       if (fileName) {
-        const type = request.type === "series" ? "series" : "movie";
-        const processedDir = getProcessedDir(type);
-        const processedFile = path.join(processedDir, fileName);
+const type = request.type === "series" ? "series" : "movie";
+      const processedDir = getProcessedDir(type);
+      const processedFile = path.join(processedDir, fileName);
 
         if (!fs.existsSync(processedFile)) {
           return res.status(404).json({ error: "Processed file not found" });
@@ -6800,6 +6800,15 @@ let episodes: any[];
       let sourcePath = "";
       let destFolder = "";
 
+      // A request whose content has reached the library is complete. Only
+      // DOWNLOADING/SEEDING rows are eligible — earlier states still need their
+      // release fetched, later ones are already final.
+      const markCompleted = () => {
+        if (request.status === "DOWNLOADING" || request.status === "SEEDING") {
+          db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(request.id);
+        }
+      };
+
       if (fileName) {
         // Direct file lookup in processed dir — used by processed panel
         sourcePath = path.join(processedDir, fileName);
@@ -6892,6 +6901,7 @@ let episodes: any[];
       const destPath = path.join(destFolder, destFileName);
 
       if (fs.existsSync(destPath)) {
+        markCompleted();
         return res.json({ success: true, message: "File already exists in library", source: sourcePath, destination: destPath, alreadyExists: true });
       }
 
@@ -6904,6 +6914,7 @@ let episodes: any[];
             try {
               const lfStat = fs.statSync(path.join(destFolder, lf));
               if (lfStat.ino === srcStat.ino && lfStat.ino > 0) {
+                markCompleted();
                 return res.json({ success: true, message: "File already in library", source: sourcePath, destination: path.join(destFolder, lf), alreadyExists: true });
               }
             } catch {}
@@ -6915,6 +6926,7 @@ let episodes: any[];
                 const bdPath = path.join(destFolder, lf);
                 const bdStat = fs.statSync(bdPath);
                 if (bdStat.ino === srcStat.ino && bdStat.ino > 0) {
+                  markCompleted();
                   return res.json({ success: true, message: "File already in library", source: sourcePath, destination: path.join(destFolder, lf), alreadyExists: true });
                 }
               } catch {}
@@ -6956,6 +6968,21 @@ let episodes: any[];
       const finalDest = importResult.success ? sourcePath : destPath;
       const method = importResult.success ? "imported via Radarr/Sonarr" : (fs.existsSync(destPath) && fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied");
       console.log(`[MoveToLibrary] ${method} ${sourcePath}`);
+
+      markCompleted();
+      if (fileName) {
+        const ah = db.prepare(
+          "SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1"
+        ).get(request.id) as any;
+        const list: string[] = ah ? (JSON.parse(ah.processed_files || "[]") as string[]) : [];
+        const base = path.basename(destPath);
+        if (!list.includes(base)) list.push(base);
+        if (ah) {
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(list), ah.id);
+        } else {
+          db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(request.id, JSON.stringify(list));
+        }
+      }
 
       res.json({ success: true, message: `Files ${method} to library`, source: sourcePath, destination: finalDest });
     } catch (error: any) {

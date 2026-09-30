@@ -200,6 +200,11 @@ Download (100% complete)
 - **TMDB candidate pre-fill**: when profiles are unavailable (`!radarrProfileId` / `!sonarrProfileId`) and no native match, scan-downloads fills `candidate_results` straight from `searchTMDB(cleanFranchiseTitle(lookupTitle), …)` so the unmatched panel still offers pick buttons. Candidate `id` is the TMDB id.
 - `searchTMDB(query, mediaType)` lives in `src/services/tmdb.ts`; returns `{id,title,year,overview}` capped at 10. Requires `TMDB_API_KEY`; returns `[]` when unset.
 
+### Disk COMPLETED (Phase C)
+- `POST /:id/move-to-library` promotes a DOWNLOADING/SEEDING request to COMPLETED when its content is placed into the library (native AND arr-linked, since the "To Library" action is the user's explicit completion signal). The three "already exists" short-circuits (same path, inode match, BDMV inode) also mark COMPLETED — heals requests whose files reached the library through an earlier flow.
+- Per-file moves (processed panel `fileName`) append the moved basename to the request's `release_id IS NULL` approval_history `processed_files`.
+- `markCompleted()` helper is scoped to the move-to-library route; guard is `status IN ('DOWNLOADING','SEEDING')`. SEARCHING/APPROVED/REJECTED/DISMISSED are never touched.
+
 ### Startup Cleanup
 - Startup iterates all RCs with torrent hashes
 - **Skips title check** for RCs where request has `sonarr_id`/`radarr_id` (ID link trusted)
@@ -546,4 +551,5 @@ NTFY_TOPIC=
 - [ ] Unmatched match returns 400 with a clear "Could not resolve on TMDB" when TMDB_API_KEY unset and arrs are down
 - [ ] Scan Downloads pre-fills TMDB candidates when arr profiles unavailable (panel still shows pick buttons)
 - [ ] Scan Downloads attaches torrents to existing native `library_key` rows (Step 1b) without calling arrs
+- [ ] Move to Library marks DOWNLOADING/SEEDING requests COMPLETED (all three already-exists short-circuits included)
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
