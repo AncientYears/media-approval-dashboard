@@ -28,23 +28,23 @@ export default function Settings() {
       <section className="settings-section">
         <h3>API Configuration</h3>
         <p className="section-description">
-          Configure connections to Radarr, Sonarr, Jellyseerr, and ntfy in your .env file.
+          Configure connections to Prowlarr, Seerr, qBittorrent, and ntfy in your .env file.
         </p>
 
         <div className="settings-form">
           <div className="form-group">
-            <label>Radarr Configuration</label>
-            <p className="help-text">URL: http://192.168.1.100:7878 | API Key: (configured in .env)</p>
+            <label>Prowlarr Configuration</label>
+            <p className="help-text">URL: (configured in .env) | API Key: (configured in .env)</p>
           </div>
 
           <div className="form-group">
-            <label>Sonarr Configuration</label>
-            <p className="help-text">URL: http://192.168.1.100:8989 | API Key: (configured in .env)</p>
+            <label>qBittorrent Configuration</label>
+            <p className="help-text">URL: (configured in .env) | User/Pass: (configured in .env)</p>
           </div>
 
           <div className="form-group">
-            <label>Jellyseerr Configuration</label>
-            <p className="help-text">URL: http://192.168.1.100:5055 | (Reference only)</p>
+            <label>Seerr Configuration</label>
+            <p className="help-text">URL: (configured in .env) | Syncs Seerr requests into the dashboard</p>
           </div>
 
           <div className="form-group">
@@ -80,7 +80,7 @@ export default function Settings() {
         <h3>About</h3>
         <p>Media Approval Dashboard v0.1.0</p>
         <p className="help-text">
-          A human-friendly approval gateway for Radarr/Sonarr. Review, compare, and approve media releases before download.
+          A human-friendly approval gateway for Prowlarr + qBittorrent. Review, compare, and approve media releases before download.
         </p>
       </section>
     </div>

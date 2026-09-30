@@ -159,7 +159,7 @@ export default function WorkspaceManagerModal({ open, requestId, workspaceIndex,
               disabled={ws.outputCount === 0 || meta.status === "completed"}
               title={ws.outputCount === 0 ? "Add output files to enable" : ""}
               onClick={async () => {
-                if (!confirm(`Complete "${meta.name || `Job ${ws.index}`}"? Inputs will be deleted, outputs moved to /Processed. Radarr/Sonarr will scan and import.`)) return;
+                if (!confirm(`Complete "${meta.name || `Job ${ws.index}`}"? Inputs will be deleted, outputs moved to /Processed for library import.`)) return;
                 await completeWorkspace(requestId, ws.index);
                 refreshAndReload();
                 onClose();

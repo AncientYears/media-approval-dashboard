@@ -344,7 +344,8 @@ export default function TorrentPanel({
               Processed (renamed/trimmed) files already in /Processed will be kept either way.
             </div>
             <div className="modal-line" style={{ fontSize: "0.85em", color: "#94a3b8" }}>
-              Sonarr/Radarr are not affected — if the media is still wanted, it will be re-discovered on next poll.
+              This removes the request locally only — if it is still active in Seerr, the next sync will bring it back.
+              Delete it in Seerr as well to keep it gone.
             </div>
           </div>
           <div className="modal-actions">

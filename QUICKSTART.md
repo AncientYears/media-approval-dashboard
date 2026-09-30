@@ -1,5 +1,9 @@
 ﻿# 🚀 Quick Start Guide
 
+This app is **fully arr-free** — no Sonarr or Radarr needed. The supported stack
+is Prowlarr (search), Seerr (request portal), qBittorrent (downloads), TMDB
+(episode metadata), and Jellyfin (library).
+
 ## Step 1: Set Up Environment Variables
 
 ```bash
@@ -8,13 +12,19 @@ cp .env.example .env
 
 Edit `.env` and fill in your values:
 ```
-RADARR_URL=http://192.168.1.100:7878
-RADARR_API_KEY=your_api_key_here
-SONARR_URL=http://192.168.1.100:8989
-SONARR_API_KEY=your_api_key_here
+PROWLARR_URL=http://192.168.1.100:9696
+PROWLARR_API_KEY=your_api_key_here
+SEERR_URL=http://192.168.1.100:5055
+SEERR_API_KEY=your_api_key_here
+TMDB_API_KEY=your_tmdb_api_key_here
+QBIT_URL=http://127.0.0.1:8080
+QBIT_USER=kronos
+QBIT_PASS=your_password_here
 NTFY_URL=https://ntfy.sh
 NTFY_TOPIC=your_topic_here
 ```
+
+Radarr/Sonarr keys are **optional** (legacy mode only) — leave them blank.
 
 ## Step 2: Run Backend
 
@@ -40,18 +50,14 @@ Frontend will start on **http://localhost:5173**
 3. Click **Test Connections** button
 4. You should see status indicators for each service
 
-## Docker Deployment
+## Production Deployment
 
-```bash
-docker-compose build
-docker-compose up -d
-```
-
-Access the app at http://localhost:3000
+Bare VM with systemd units and an NFS export — see **DEPLOYMENT.md**.
+The Docker path is not the supported deployment.
 
 ## Project Files
 
-- **PROGRESS.md** - Detailed implementation summary
+- **PROGRESS.md** - Implementation summary and requirements status
 - **DEPLOYMENT.md** - Production deployment guide
 - **README.md** - Project overview
 - **.env.example** - Configuration template
@@ -61,17 +67,20 @@ Access the app at http://localhost:3000
 ✅ Database initialization
 ✅ API server with routes
 ✅ Frontend dashboard layout
+✅ Prowlarr search (custom queries, per-season, search-all)
+✅ Seerr request sync + delete propagation
+✅ TMDB Discover (arr-free requesting)
+✅ Native franchise metadata (TMDB episodes, specials, fix-identity, language pref)
+✅ Scan Downloads (arr-free native matching, TMDB candidate pre-fill)
+✅ Workspaces + hardlink processing
+✅ Library Audit / Adoption / native import reconcile
 ✅ Settings page with connection testing
-✅ Docker containerization
 
-## What's Next (Phase 3)
+## What's Next (Phase E)
 
-🔄 Polling jobs for Radarr/Sonarr
-🔄 Release candidate UI
-🔄 Approval flow with grab trigger
-🔄 Release comparison component
-🔄 Search tweaking UI
-🔄 Notifications integration
+🔄 "Search All Seasons" for native (arr-free) franchises
+🔄 Auto-search on new `NEW` requests
+🔄 Remove leftover internal "arr" field names in the UI code
 
 ## Troubleshooting
 
@@ -83,6 +92,10 @@ Access the app at http://localhost:3000
 **Frontend can''t reach backend?**
 - Make sure backend is running
 - Check Vite proxy in `frontend/vite.config.ts`
+
+**Seerr requests not showing up?**
+- Make sure `SEERR_URL` and `SEERR_API_KEY` are set (Settings → Main → API Key)
+- Check the manual trigger `POST /api/requests/seerr/sync`
 
 **Database error?**
 - Check `./data/` is writable

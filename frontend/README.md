@@ -1,32 +1,31 @@
-# React + TypeScript + Vite
+# Frontend — Media Approval Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Vite SPA for the Media Approval Dashboard. Talks to the
+backend (Express, `:3000`) through the Vite dev proxy (`localhost:5173`).
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev      # dev server on :5173, proxies /api to :3000
+npm run build    # production build → dist/
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The app is **arr-free**: Prowlarr search, Seerr request sync, TMDB Discover and
+native franchise metadata, qBittorrent downloads. Sonarr/Radarr are optional
+legacy and never required by the UI.
+
+## Layout
+
+- `src/App.tsx` — router + nav + ToastProvider
+- `src/api.ts` — Axios client + all API functions
+- `src/pages/` — Dashboard, RequestDetail, FranchiseDetail (legacy sonarr-id
+  grouping), NativeFranchise (TMDB-backed), Settings, DatabaseViewer
+- `src/components/` — TorrentPanel, WorkspacePickerModal, WorkspaceManagerModal,
+  ScriptDropdown, DiscoverModal
+
+## Notes
+
+- Internal identifiers (`sonarrId` route params, `radarr_quality`, `sonarr_id`
+  fields) are legacy DB column names and are cosmetic — they do not imply a
+  Sonarr/Radarr dependency.
+- Formatting/lint: `npm run lint` (oxlint). Type-check: `npm run build`
+  (runs `tsc -b` before `vite build`).

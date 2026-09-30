@@ -18,13 +18,20 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 │   (React)    │     │   (Express)  │     │  (search)     │
 └─────────────┘     └──────┬───────┘     └───────────────┘
                            │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-         ┌─────────┐ ┌─────────┐ ┌──────────┐
-         │ Radarr  │ │ Sonarr  │ │qBittorrent│
-         │ (movies)│ │ (series)│ │ (torrents)│
-         └─────────┘ └─────────┘ └──────────┘
+              ┌────────────┼───────────┬────────────┐
+              ▼            ▼           ▼            ▼
+         ┌─────────┐ ┌────────────┐ ┌─────────┐ ┌──────────┐
+         │  TMDB   │ │   Seerr    │ │qBittorrent│ │ Jellyfin │
+         │(metadata)│ │(requests) │ │(torrents)│ │ (library)│
+         └─────────┘ └────────────┘ └─────────┘ └──────────┘
 ```
+
+> **The deployed mode is fully arr-free.** Radarr/Sonarr appear throughout this
+> doc as optional legacy: they boot only when `RADARR_URL`+`RADARR_API_KEY` /
+> `SONARR_URL`+`SONARR_API_KEY` are both set. Requests originate in **Seerr**
+> (synced into `media_requests`) or **TMDB Discover**; search is Prowlarr;
+> grabs go straight to qBittorrent via magnet; COMPLETED is a manual
+> move-to-library signal.
 
 ## Folder Structure
 

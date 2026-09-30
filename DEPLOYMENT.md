@@ -27,7 +27,8 @@ systemctl enable --now qbittorrent-nox
 systemctl enable --now media-approval-app
 ```
 
-Dashboard on `:3000`, qBittorrent WebUI on `:8080`.
+Dashboard on `:3000`, qBittorrent WebUI on `:8080`, Seerr (request portal) on
+`:5055`. No Radarr or Sonarr — the app is fully arr-free.
 
 Re-running `setup.sh` after a `git pull` rebuilds and reinstalls. It preserves
 `.env`, `data/` and `node_modules`.
@@ -38,6 +39,26 @@ Re-running `setup.sh` after a `git pull` rebuilds and reinstalls. It preserves
 - Debian/Ubuntu; `ffmpeg`, `mkvtoolnix` (mkvmerge), `mediainfo` from apt
 - `qbittorrent-nox` from apt — note the **nox build still serves the full WebUI**
   on port 8080, it only drops the desktop tray icon
+
+## Services (arr-free stack)
+
+No Sonarr/Radarr anywhere. The pieces the app talks to:
+
+- **Prowlarr** — search indexers directly, custom queries, season filters.
+  Configured in `.env` (`PROWLARR_URL` / `PROWLARR_API_KEY`).
+- **Seerr** — the request portal. The app syncs its request list into
+  `media_requests` (`SEERR_URL` / `SEERR_API_KEY`; key from Seerr
+  Settings → Main → API Key). Seerr itself needs **zero** arr connections — it
+  only tracks requests; downloading/searching is the dashboard's job.
+- **TMDB** — episode metadata for native franchises and Discover
+  (`TMDB_API_KEY`). Optional but recommended; without it episode grids fall
+  back to gap detection from filenames.
+- **qBittorrent** — downloads, magnets grabbed directly by the app
+  (`QBIT_URL` / `QBIT_USER` / `QBIT_PASS`).
+- **ntfy** — optional change notifications (`NTFY_URL` / `NTFY_TOPIC`).
+
+Radarr/Sonarr env vars are **optional legacy** — leave unset for arr-free mode
+(the pollers and fallback search paths stay dormant).
 
 ## Hardlinks
 

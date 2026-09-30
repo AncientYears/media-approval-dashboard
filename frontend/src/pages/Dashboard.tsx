@@ -145,7 +145,7 @@ export default function Dashboard() {
     }
   }
 
-  // Fetch full season lists from Sonarr for franchise groups
+  // Fetch full season lists for franchise groups
   useEffect(() => {
     const ids = Object.keys(groupedFranchises).map(Number);
     for (const id of ids) {
@@ -281,7 +281,7 @@ export default function Dashboard() {
             const result = await scanDownloads();
             const lines = [
               `Scanned ${result.total} torrent(s).`,
-              `Imported ${result.imported} into Radarr/Sonarr.`,
+              `Tracked ${result.imported} into the dashboard.`,
               `Skipped ${result.skipped} (already in DB).`,
               `No match: ${result.noMatch}.`,
               `Errors: ${result.errors}.`,
@@ -548,7 +548,7 @@ export default function Dashboard() {
                   <div className="request-actions">
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${franchise.sonarr_id}`)}>View Franchise</button>
                     <button className="btn btn-danger btn-tiny" onClick={() => {
-                      if (window.confirm(`Delete "${franchise.title}" from DB + Sonarr?`)) {
+                      if (window.confirm(`Delete "${franchise.title}" from the dashboard?`)) {
                         deleteFranchise(franchise.sonarr_id).then(() => loadData());
                       }
                     }}>Delete</button>
@@ -604,8 +604,8 @@ export default function Dashboard() {
                       const isNativeSpecials = !item.sonarr_id && s.season === 0;
                       // Native S00 episode_count is a file snapshot that already
                       // includes the unnumbered extras — adding extras would double
-                      // count. TMDB/Sonarr-backed totals are real episode lists,
-                      // so extras are additive there.
+// count. TMDB-backed totals are real episode lists,
+                        // so extras are additive there.
                       const denom = isNativeSpecials ? Math.max(shown, total || 0) : total ? total + extra : shown;
                       const label = s.request_id ? (denom ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : s.status === "COMPLETED" ? "in library" : "pending") : (denom > 0 ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : "—");
                       const nav = item.sonarr_id
@@ -628,7 +628,7 @@ export default function Dashboard() {
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(item.sonarr_id ? `/managed/${item.sonarr_id}` : `/native/${item.first_request_id}`)}>Manage</button>
                     {item.sonarr_id ? (
                     <button className="btn btn-danger btn-tiny" onClick={() => {
-                      if (window.confirm(`Delete "${item.title}" from DB + Sonarr?`)) {
+                      if (window.confirm(`Delete "${item.title}" from the dashboard?`)) {
                         deleteFranchise(item.sonarr_id).then(() => loadData());
                       }
                     }}>Delete</button>
@@ -642,7 +642,7 @@ export default function Dashboard() {
                     <span className="rtag">{(() => { const vc = item.release_count + (item.processed_count || 0); if (vc > 0) return `${vc} version${vc !== 1 ? "s" : ""}${item.total_size_mb > 0 ? " · " + formatSize(item.total_size_mb) : ""}`; if (item.status === 'COMPLETED') return 'In Library'; return `· ${item.status}`; })()}</span>
                     <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/requests/${item.request_id}`)}>Manage</button>
                     <button className="btn btn-danger btn-tiny" onClick={() => {
-                      if (window.confirm(`Delete "${item.title}" from DB + Radarr?`)) {
+                      if (window.confirm(`Delete "${item.title}" from the dashboard?`)) {
                         deleteRequest(item.request_id).then((res) => {
                           if (res?.seerrDelete && !res.seerrDelete.ok) {
                             setModal({

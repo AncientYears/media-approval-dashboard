@@ -129,11 +129,11 @@ export default function NativeFranchise() {
           <span
             className="rtag"
             style={{ marginLeft: 8, cursor: "pointer" }}
-            title="library_key — stable franchise identity used to group seasons without Sonarr. Click to copy."
+            title="library_key — stable franchise identity used to group seasons. Click to copy."
             onClick={(e) => {
               e.stopPropagation();
               navigator.clipboard?.writeText(franchise.library_key).catch(() => {});
-              toast("library_key: stable identity grouping this franchise's seasons (no Sonarr needed). Copied to clipboard.", "info");
+              toast("library_key: stable identity grouping this franchise's seasons. Copied to clipboard.", "info");
             }}
           >{franchise.library_key}</span>
         </div>
