@@ -69,6 +69,20 @@ export default function FixNamesModal({
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
+  function selectAll() {
+    const sel: Record<string, boolean> = {};
+    for (const g of groups) {
+      for (const row of [g.processed, g.library]) {
+        if (row && row.proposedName) sel[row.id] = true;
+      }
+    }
+    setSelected(sel);
+  }
+
+  function deselectAll() {
+    setSelected({});
+  }
+
   const selectedPaths = Object.entries(selected)
     .filter(([, v]) => v)
     .map(([id]) => {
@@ -182,8 +196,14 @@ export default function FixNamesModal({
             </div>
           )}
           {!loading && (
-            <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>
-              {selectedPaths.length} of {selectableCount} renamable file{selectableCount === 1 ? "" : "s"} selected.
+            <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8, display: "flex", alignItems: "center", gap: 8 }}>
+              <span>{selectedPaths.length} of {selectableCount} renamable file{selectableCount === 1 ? "" : "s"} selected.</span>
+              {selectableCount > 0 && (
+                <>
+                  <button className="btn btn-secondary btn-tiny" onClick={selectAll}>Select all</button>
+                  <button className="btn btn-secondary btn-tiny" onClick={deselectAll}>Deselect all</button>
+                </>
+              )}
             </div>
           )}
           {applySummary && (
