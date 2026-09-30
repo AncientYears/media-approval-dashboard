@@ -15,6 +15,9 @@ import { errorSummary } from "../utils/errorSummary";
  *     removed from the app — but ONLY when they are content-less, so a
  *     request that already has a torrent, processed files or a completed
  *     library entry is never destroyed by a Seerr-side delete.
+ *   - Seerr knows when media is actually available (it scans Jellyfin):
+ *     rows whose media is flagged AVAILABLE / season AVAILABLE are promoted
+ *     to COMPLETED automatically, so nobody has to manually "fill" requests.
  *
  * Requires SEERR_URL + SEERR_API_KEY (Seerr Settings → Main → API Key).
  */
@@ -37,11 +40,26 @@ interface SeerrRequest {
     tmdbId?: number;
     tvdbId?: number;
     seasonNumber?: number | null;
+    /** 1 UNKNOWN, 2 PENDING, 3 PROCESSING, 4 PARTIALLY_AVAILABLE, 5 AVAILABLE */
+    status?: number | string | null;
   };
 }
 
 export function isSeerrConfigured(): boolean {
   return !!(process.env.SEERR_URL && process.env.SEERR_API_KEY);
+}
+
+/** True when Seerr reports the media (or the given season of a series) as
+ * actually available to watch. Seerr derives this from its own Jellyfin
+ * library scans, so the app can auto-complete rows instead of requiring a
+ * manual "moved to library" step. Season status: 1 PENDING, 2 APPROVED,
+ * 3 DECLINED, 4 AVAILABLE. */
+export function seerrSeasonAvailable(req: SeerrRequest, sn: number): boolean {
+  const mediaStatus = Number(req.media?.status);
+  if (mediaStatus === 5) return true;
+  if (mediaStatus !== 4) return false; // movies can't be "partially" available
+  if (!Array.isArray(req.seasons)) return false;
+  return req.seasons.some((s) => Number(s.seasonNumber) === sn && Number(s.status) === 4);
 }
 
 export async function fetchSeerrRequests(): Promise<SeerrRequest[]> {
@@ -86,10 +104,11 @@ export interface SeerrSyncResult {
   backfilled: number;
   removed: number;
   contentKept: number;
+  completed: number;
 }
 
 export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
-  const base: SeerrSyncResult = { enabled: isSeerrConfigured(), fetched: 0, active: 0, added: 0, backfilled: 0, removed: 0, contentKept: 0 };
+  const base: SeerrSyncResult = { enabled: isSeerrConfigured(), fetched: 0, active: 0, added: 0, backfilled: 0, removed: 0, contentKept: 0, completed: 0 };
   if (!base.enabled) return base;
 
   let requests: SeerrRequest[];
@@ -142,13 +161,15 @@ export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
 
     for (const sn of seasonNumbers) {
       let existing: any;
+      let rowId: number;
       if (mediaType === "movie") {
-        existing = db.prepare("SELECT id, seerr_request_id, requested_by FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+        existing = db.prepare("SELECT id, seerr_request_id, requested_by, status FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
       } else {
-        existing = db.prepare("SELECT id, seerr_request_id, requested_by FROM media_requests WHERE library_key = ? AND season = ?").get(key, sn) as any;
+        existing = db.prepare("SELECT id, seerr_request_id, requested_by, status FROM media_requests WHERE library_key = ? AND season = ?").get(key, sn) as any;
       }
 
       if (existing) {
+        rowId = existing.id;
         // Row exists — link it back to Seerr if it wasn't created via Seerr,
         // and refresh the requested-by label when it was placeholder "Seerr".
         const needsLink = !existing.seerr_request_id;
@@ -162,22 +183,36 @@ export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
             db.prepare("UPDATE media_requests SET requested_by = ? WHERE id = ?").run(JSON.stringify([user]), existing.id);
           }
         } catch {}
-        continue;
+      } else {
+        const requestedBy = JSON.stringify([user]);
+        if (mediaType === "movie") {
+          const result = db.prepare(
+            "INSERT INTO media_requests (title, type, library_key, status, requested_by, seerr_request_id) VALUES (?, 'movie', ?, 'NEW', ?, ?)"
+          ).run(cleaned, key, requestedBy, req.id);
+          rowId = Number(result.lastInsertRowid);
+          base.added++;
+          console.log(`[Seerr] Created movie request ${rowId}: ${cleaned} (key=${key} by ${user})`);
+        } else {
+          const result = db.prepare(
+            "INSERT INTO media_requests (title, type, library_key, season, status, requested_by, seerr_request_id) VALUES (?, 'series', ?, ?, 'NEW', ?, ?)"
+          ).run(cleaned, key, sn, requestedBy, req.id);
+          rowId = Number(result.lastInsertRowid);
+          base.added++;
+          console.log(`[Seerr] Created series request ${rowId}: ${cleaned} (key=${key}, season=${sn} by ${user})`);
+        }
       }
 
-      const requestedBy = JSON.stringify([user]);
-      if (mediaType === "movie") {
-        const result = db.prepare(
-          "INSERT INTO media_requests (title, type, library_key, status, requested_by, seerr_request_id) VALUES (?, 'movie', ?, 'NEW', ?, ?)"
-        ).run(cleaned, key, requestedBy, req.id);
-        console.log(`[Seerr] Created movie request ${result.lastInsertRowid as number}: ${cleaned} (key=${key} by ${user})`);
-      } else {
-        const result = db.prepare(
-          "INSERT INTO media_requests (title, type, library_key, season, status, requested_by, seerr_request_id) VALUES (?, 'series', ?, ?, 'NEW', ?, ?)"
-        ).run(cleaned, key, sn, requestedBy, req.id);
-        console.log(`[Seerr] Created series request ${result.lastInsertRowid as number}: ${cleaned} (key=${key}, season=${sn} by ${user})`);
+      // Seerr's Jellyfin scan trumps the manual "moved to library" signal:
+      // when it reports the media/season available, promote the row to
+      // COMPLETED (never touch rejected/dismissed rows).
+      if (seerrSeasonAvailable(req, sn)) {
+        const row = db.prepare("SELECT status FROM media_requests WHERE id = ?").get(rowId) as any;
+        if (row && !["REJECTED", "DISMISSED", "COMPLETED"].includes(row.status)) {
+          db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(rowId);
+          base.completed++;
+          console.log(`[Seerr] Request ${rowId} (${cleaned}, S${sn}) auto-completed — Seerr reports media available`);
+        }
       }
-      base.added++;
     }
   }
 
