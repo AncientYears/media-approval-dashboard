@@ -284,6 +284,70 @@ Download (100% complete)
 - Title shows "X/Y requested" count
 - Clicking a requested season navigates to its request detail
 
+## Native Franchise Metadata (Specials, Identity, Language)
+
+Native (arr-free) franchises get their season list and episode names from TMDB. A
+few rules that matter when touching this code:
+
+### Clean titles before TMDB lookups
+`cleanFranchiseTitle` (`src/routes/requests.ts` ~594) strips release-name tails
+(` S01E01 PL 768p WEB-DL H.264-AL3X`, `-AL3X`-style junk) from the stored request
+title to get a searchable base title. Use it for **every** title passed to TMDB
+(display, S00 injection, episode grids, refresh, fix-identity). It preserves
+`Mufasa: The Lion King (2024)` / `Station 19` / `Death in Paradise (2011)`.
+
+### Disk-title fallback (`altTitle`)
+Row titles are user/import-time mangled (e.g. stored `Ninjago: Dragon Rising` vs
+the real `LEGO Ninjago: Dragons Rising` on disk), so TMDB search alone misses.
+`fetchTMDBSeason(db, key, season, title, { altTitle })` retries resolution with
+`altTitle` before giving up. Call sites pass the on-disk processed folder name:
+- S00 injection in `/managed` + `/native-franchise`: `fallbackShowDir` basename
+- Episode grids (`/:id/episodes`, `/native-franchise/:id/episodes`) and
+  `refresh` endpoints: `path.basename(path.dirname(seasonFolder))`
+`resolveShowIdentity` also strips a bracketed year from the query and retries a
+yearless search when the slug's year is best-effort/wrong.
+
+### Show-dir resolution order
+When title-matching the `Sxx` folder fails (localized/mangled titles),
+`fallbackShowDir` is derived from: `processedShowDirFromFiles` (now scans ALL
+`approval_history` rows, not just `release_id IS NULL`) → `showDirByStructure`
+(last resort: scan `PROCESSED_TV` for a folder containing the requested `Sxx`
+subdirs). Both are wired into `/managed` and `/native-franchise`.
+
+### Specials injection
+- Disk-season injection (folders **with video files**) runs for **all**
+  franchises (sonarr-linked and native).
+- A TMDB-only `S00` pill is injected for **native** franchises when the show has
+  an `S00` folder on disk (`seasonFolderOnDisk`) even if it's an empty grip
+  (Death in Paradise, The Smurfs, Ninjago), actively `fetchTMDBSeason(...S00...)`
+  and counting `namedSpecialCount`. Sonarr-linked groups get the disk injection
+  but NOT this TMDB-only path (no library_key).
+- The Specials pill is honest: numerator = counted files/coverage, denominator =
+  TMDB named specials exposed as `nativeSpecialDenominator`. Never hide a pill
+  just because it has no fill (no ghost rows).
+- Injected seasons have `request_id: null` — consumers must skip those (e.g. the
+  language select uses the first season **with** a `request_id`, not `seasons[0]`,
+  since injected `S00` sorts first).
+
+### Fix Identity repair
+`POST /api/requests/native-franchise/:id/fix-identity` (frontend: "Fix identity"
+button in `NativeFranchise.tsx`) rewrites a polluted
+`library_key` (`series:tajemnica-sagali-264-al3x:0` → `series:tajemnica-sagali:2016`):
+1. Resolves on TMDB from `cleanFranchiseTitle`; if that misses, retries with the
+   disk-derived show folder name and prefers the matched TMDB name for the slug.
+2. Builds `series:<slug>:<year>`; refuses (`409`) if another franchise owns the
+   target key; no-ops when already canonical.
+3. Migrates `media_requests`, `tmdb_season_cache`, and `tmdb_franchise_prefs`
+   (language pref) rows to the new key in a transaction.
+Keys carry a fragile `:0` year when the slug lookup didn't produce one — the
+yearless-search retry and disk-title fallback exist precisely to fix those.
+
+### Language pref
+`tmdb_franchise_prefs` is keyed by `library_key` (post-fix-identity key, i.e.
+the message handles both row data and cache/prefs migration). `set-language`
+uses `request.library_key` and returns 400 for sonarr-linked rows. `altTitle`/
+resolution inherits the pref through every call site.
+
 ## Key Files
 
 | File | Purpose |
@@ -296,7 +360,8 @@ Download (100% complete)
 | `src/services/scoring.ts` | Release scoring engine |
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
-| `src/routes/requests.ts` | All API endpoints (~5420 lines) |
+| `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
+| `src/routes/requests.ts` | All API endpoints (~7200 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
 | `src/jobs/pollSonarr.ts` | Discovers wanted series (no auto-search) |
 | `src/jobs/pollStatus.ts` | Tracks torrent status, state transitions |
@@ -309,6 +374,7 @@ Download (100% complete)
 | `frontend/src/pages/FranchiseDetail.tsx` | Franchise overview + SeasonDetail |
 | `frontend/src/pages/RequestDetail.tsx` | Single request view (movies) |
 | `frontend/src/pages/Dashboard.tsx` | Requests list + filters + managed media |
+| `frontend/src/pages/NativeFranchise.tsx` | Native (arr-free) franchise view: seasons, Specials pill, language select, "Fix identity" repair |
 | `frontend/src/api.ts` | Axios client + all API functions |
 
 ## Environment Variables
@@ -458,6 +524,11 @@ NTFY_TOPIC=
 - [ ] Scan Downloads: title+season mismatch detection frees wrongly-linked RCs
 - [ ] Multi-season pack (S01-S03) shows all seasons covered in franchise view
 - [ ] isSeasonPackTitle handles S##-## range (e.g. "S01-S03" covers season 2)
+- [ ] Specials pill shows honest numerator/denominator (native shows: TMDB named specials), never hidden when unfilled
+- [ ] Empty S00 grip (no video files) still gets a TMDB-only Specials pill for native franchises (DiP/Smurfs/Ninjago)
+- [ ] `fetchTMDBSeason` altTitle fallback resolves mangled row titles from the on-disk folder name ("Ninjago: Dragon Rising" → "LEGO Ninjago: Dragons Rising")
+- [ ] Fix identity rewrites `series:<junk>-264-al3x:0` → `series:<slug>:<year>`, migrating requests/cache/language pref, 409 on clash
+- [ ] Language select uses the first season with a `request_id` (injected S00 rows sort first but have `request_id: null`)
 - [ ] Startup cleanup doesn't delete RCs for bilingual/alternate-title series
 - [ ] Unmatched match creates multi-season requests from content_path scan
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
