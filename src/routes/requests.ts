@@ -343,6 +343,11 @@ function backfillRequestIdentity(db: Database, request: any): number {
         if (libFolder && fs.existsSync(libFolder)) registered += registerVideoTree(db, libFolder, identity);
       } catch {}
     } else if (request.type === "movie") {
+      // Movies are flat in the shared processed root, so ONLY register files
+      // whose names title-match this request — never the library tree (fuzzy
+      // folder matching can collaterally claim a same-franchise movie like
+      // Moana (2016) under the Moana 2 key). Library twins get identity via the
+      // app's write paths (move-to-library hardlink, import-library backlink).
       const processedDir = getProcessedDir("movie");
       const reqNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       if (fs.existsSync(processedDir)) {
@@ -351,9 +356,6 @@ function backfillRequestIdentity(db: Database, request: any): number {
           const entryNorm = f.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
           if (titlesMatch(reqNorm, entryNorm)) registered += registerVideoTree(db, path.join(processedDir, f), identity);
         }
-      }
-      for (const folder of nativeMovieLibraryFolders(request.title || "")) {
-        if (fs.existsSync(folder)) registered += registerVideoTree(db, folder, identity);
       }
     }
   } catch {}
