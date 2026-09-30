@@ -694,7 +694,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                   </span>
                   {f.size > 0 && <span className="rtag" style={{ fontSize: 10, padding: "2px 5px" }}>{formatSize(f.size / (1024 * 1024))}</span>}
                   {f.inLibrary && (
-                    <button className={`btn btn-tiny ${removeLibConfirm === f.name ? "btn-danger" : "btn-library-ok"}`} title={`Remove ${f.name} from library`} onClick={async () => { if (removeLibConfirm === f.name) { try { await removeFromLibrary(season.request_id, f.name); await refreshProcessedAndWorkspaces(); } catch {} setRemoveLibConfirm(null); } else { setRemoveLibConfirm(f.name); } }}>
+                    <button className={`btn btn-tiny ${removeLibConfirm === f.name ? "btn-danger" : "btn-library-ok"}`} title={`Remove ${f.name} from library`} onClick={async () => { if (removeLibConfirm === f.name) { try { await removeFromLibrary(season.request_id, f.name); await refreshProcessedAndWorkspaces(); toast("Removed from library", "success"); } catch (err: any) { toast(err?.response?.data?.error || err.message || "Remove failed", "error"); } setRemoveLibConfirm(null); } else { setRemoveLibConfirm(f.name); } }}>
                       {removeLibConfirm === f.name ? "Remove?" : "In Library"}
                     </button>
                   )}

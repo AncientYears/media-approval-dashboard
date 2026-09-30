@@ -6102,7 +6102,8 @@ const type = request.type === "series" ? "series" : "movie";
 
         const processedIno = fs.statSync(processedFile).ino;
 
-        // Find library folder
+        // Find library folder — arr id wins when present, but native (arr-free)
+        // requests resolve by library_key/title against the library roots.
         let libraryDir = "";
         if (request.sonarr_id) {
           try {
@@ -6115,6 +6116,13 @@ const type = request.type === "series" ? "series" : "movie";
           try {
             const movie = await radarr.getMovie(request.radarr_id);
             libraryDir = movie.path || movie.folderPath;
+          } catch {}
+        }
+        if (!libraryDir) {
+          try {
+            libraryDir = request.type === "series"
+              ? (resolveLibraryFolder(request) || "")
+              : (nativeMovieLibraryFolders(request.title || "")[0] || "");
           } catch {}
         }
 
@@ -6185,6 +6193,13 @@ const type = request.type === "series" ? "series" : "movie";
         try {
           const movie = await radarr.getMovie(request.radarr_id);
           libraryDir = movie.path || movie.folderPath;
+        } catch {}
+      }
+      if (!libraryDir) {
+        try {
+          libraryDir = request.type === "series"
+            ? (resolveLibraryFolder(request) || "")
+            : (nativeMovieLibraryFolders(request.title || "")[0] || "");
         } catch {}
       }
       console.log(`[RemoveFromLib] libraryDir=${libraryDir} exists=${libraryDir ? fs.existsSync(libraryDir) : false}`);
