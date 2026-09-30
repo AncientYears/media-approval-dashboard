@@ -14,7 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { fetchTMDBSeason, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
+import { fetchTMDBSeason, resolveShowIdentity, searchTMDB, fetchTMDBTVSeasons, type SeasonMeta } from "../services/tmdb";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -3453,6 +3453,85 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     const { id } = req.params;
     db.prepare("UPDATE unmatched_torrents SET skipped = 1 WHERE id = ?").run(id);
     res.json({ success: true });
+  });
+
+  // GET /api/requests/discover?q=... — TMDB keyword search for the Discover
+  // modal. Arr-free: purely TMDB, returns combined movie + series hits the
+  // user can turn into native requests.
+  router.get("/discover", async (req: Request, res: Response) => {
+    const q = String(req.query.q || "").trim();
+    if (!q) return res.json({ results: [] });
+    try {
+      const [movies, series] = await Promise.all([
+        searchTMDB(q, "movie"),
+        searchTMDB(q, "series"),
+      ]);
+      const results = [
+        ...movies.map((m: any) => ({ type: "movie", id: m.id, title: m.title, year: m.year, overview: m.overview, poster: m.poster })),
+        ...series.map((s: any) => ({ type: "series", id: s.id, title: s.title, year: s.year, overview: s.overview, poster: s.poster })),
+      ];
+      res.json({ results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/requests/discover/tv/:tmdbId/seasons — season list for the picker.
+  router.get("/discover/tv/:tmdbId/seasons", async (req: Request, res: Response) => {
+    try {
+      const seasons = await fetchTMDBTVSeasons(Number(req.params.tmdbId));
+      res.json({ seasons });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/discover/request — create a native request from a
+  // discovered TMDB title. Idempotent: returns the existing request when the
+  // same library_key (movie) or key+season (series) is already tracked.
+  router.post("/discover/request", (req: Request, res: Response) => {
+    try {
+      const { type, tmdbId, title, year, season } = req.body as {
+        type?: string;
+        tmdbId?: number;
+        title?: string;
+        year?: number;
+        season?: number;
+      };
+      const mediaType = type === "series" ? "series" : "movie";
+      if (!tmdbId || !title) return res.status(400).json({ error: "type, tmdbId and title required" });
+      const cleaned = cleanFranchiseTitle(title);
+      const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${year ?? 0}`;
+      const reqSeason = mediaType === "series" ? (Number.isFinite(season) ? season! : 1) : null;
+
+      let existing: any;
+      if (mediaType === "movie") {
+        existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+      } else {
+        existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND season = ?").get(key, reqSeason) as any;
+      }
+      if (existing) {
+        console.log(`[Discover] Already tracked: ${cleaned} (request_id=${existing.id})`);
+        return res.json({ success: true, request_id: Number(existing.id), existed: true, type: mediaType, title: cleaned });
+      }
+
+      let requestId: number;
+      if (mediaType === "movie") {
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, library_key, status, requested_by) VALUES (?, 'movie', ?, 'NEW', '[]')"
+        ).run(cleaned, key);
+        requestId = result.lastInsertRowid as number;
+      } else {
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, library_key, season, status, requested_by) VALUES (?, 'series', ?, ?, 'NEW', '[]')"
+        ).run(cleaned, key, reqSeason);
+        requestId = result.lastInsertRowid as number;
+      }
+      console.log(`[Discover] Created ${mediaType} request ${requestId}: ${cleaned} (key=${key}, season=${reqSeason ?? "—"})`);
+      res.json({ success: true, request_id: Number(requestId), existed: false, type: mediaType, title: cleaned });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // POST /api/requests/import-library - Scan Radarr/Sonarr library, hardlink files into processed dirs

@@ -100,7 +100,7 @@ export async function resolveShowId(libraryKey: string, title: string, language:
 export async function searchTMDB(
   query: string,
   mediaType: "movie" | "series",
-): Promise<Array<{ id: number; title: string; year: number | null; overview: string }>> {
+): Promise<Array<{ id: number; title: string; year: number | null; overview: string; poster: string | null }>> {
   const key = apiKey();
   if (!key) return [];
   const q = query.replace(/[\[(]\d{4}[\])]/g, "").trim() || query;
@@ -115,8 +115,25 @@ export async function searchTMDB(
       title: r.title || r.name || "",
       year: Number.isFinite(year) ? year : null,
       overview: (r.overview || "").slice(0, 200),
+      poster: r.poster_path || null,
     };
   });
+}
+
+/** Season list for a TMDB series, used by the Discover season selector. */
+export async function fetchTMDBTVSeasons(
+  tmdbId: number,
+  language?: string,
+): Promise<Array<{ season_number: number; name: string; episode_count: number }>> {
+  const data = await tmdbGet<any>(`/tv/${tmdbId}?language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
+  if (!data?.seasons?.length) return [];
+  return data.seasons
+    .filter((s: any) => typeof s.season_number === "number" && s.season_number >= 0)
+    .map((s: any) => ({
+      season_number: s.season_number,
+      name: s.name || `Season ${s.season_number}`,
+      episode_count: s.episode_count || 0,
+    }));
 }
 
 /**

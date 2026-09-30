@@ -205,6 +205,13 @@ Download (100% complete)
 - Per-file moves (processed panel `fileName`) append the moved basename to the request's `release_id IS NULL` approval_history `processed_files`.
 - `markCompleted()` helper is scoped to the move-to-library route; guard is `status IN ('DOWNLOADING','SEEDING')`. SEARCHING/APPROVED/REJECTED/DISMISSED are never touched.
 
+### TMDB Discovery (Phase D)
+- **`DiscoverModal`** (frontend "Discover" button in the Dashboard toolbar) searches TMDB and turns a pick into a native request — the arr-free way to request new media when there's no Seerr/Overseerr.
+- `GET /api/requests/discover?q=` — runs `searchTMDB(query, "movie")` + `searchTMDB(query, "series")` in parallel, returns combined `{type,id,title,year,overview,poster}`.
+- `GET /api/requests/discover/tv/:tmdbId/seasons` — `fetchTMDBTVSeasons()` from `/tv/{id}` (filters out S00 grip rows, `season_number > 0`).
+- `POST /api/requests/discover/request` `{type, tmdbId, title, year, season?}` — builds `movie:<slug>:<year>` / `series:<slug>:<year>` via `slugForKeyTitle(cleanFranchiseTitle(title))`, inserts a native `media_requests` row with `status='NEW'` (movie) or key+season (series, default S01). **Idempotent**: returns existing `request_id` with `existed: true` when the same key (movie) or key+season (series) is already tracked. Frontend then navigates to `/requests/:id` (RequestDetail) where the existing `POST /:id/search` (Prowlarr, already arr-free) takes over.
+- `searchTMDB` now also returns `poster` (`poster_path`, used for thumbnails; frontend builds `https://image.tmdb.org/t/p/w92{poster}`).
+
 ### Startup Cleanup
 - Startup iterates all RCs with torrent hashes
 - **Skips title check** for RCs where request has `sonarr_id`/`radarr_id` (ID link trusted)
@@ -552,4 +559,8 @@ NTFY_TOPIC=
 - [ ] Scan Downloads pre-fills TMDB candidates when arr profiles unavailable (panel still shows pick buttons)
 - [ ] Scan Downloads attaches torrents to existing native `library_key` rows (Step 1b) without calling arrs
 - [ ] Move to Library marks DOWNLOADING/SEEDING requests COMPLETED (all three already-exists short-circuits included)
+- [ ] Discover searches TMDB (movie+series combined), shows date badges/posters/overviews
+- [ ] Discover series pick shows the season selector (lazy-loaded from `/discover/tv/:id/seasons`, S00 excluded)
+- [ ] Discover request creates native `NEW` request; duplicate pick returns `existed: true` + existing request_id
+- [ ] Discover navigation lands on RequestDetail where `POST /:id/search` (Prowlarr) takes over
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb

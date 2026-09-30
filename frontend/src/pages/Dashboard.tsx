@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibraryNative, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed } from "../api";
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 import DownloadDirsModal from "../components/DownloadDirsModal";
+import DiscoverModal from "../components/DiscoverModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -90,6 +91,7 @@ export default function Dashboard() {
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
   const [downloadDirsOpen, setDownloadDirsOpen] = useState(false);
+  const [discoverOpen, setDiscoverOpen] = useState(false);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
 
   const loadData = useCallback(async () => {
@@ -179,6 +181,7 @@ export default function Dashboard() {
         }
       } : undefined} />}
       {downloadDirsOpen && <DownloadDirsModal onClose={() => { setDownloadDirsOpen(false); loadData(); }} />}
+      {discoverOpen && <DiscoverModal onClose={() => setDiscoverOpen(false)} onRequested={(id) => navigate(`/requests/${id}`)} />}
       {confirmDelete && (
         <ConfirmModal
           message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
@@ -262,6 +265,7 @@ export default function Dashboard() {
             setModal({ title: "Import Missing", lines });
             loadData();
           }}>Import Missing</button>
+          <button className="btn btn-primary btn-tiny" onClick={() => setDiscoverOpen(true)}>Discover</button>
           <button className="btn btn-primary btn-tiny" onClick={async () => {
             setModal({ title: "Scan Downloads", lines: ["Scanning qBittorrent..."] });
             const result = await scanDownloads();

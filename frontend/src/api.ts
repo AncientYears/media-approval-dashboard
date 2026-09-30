@@ -379,3 +379,18 @@ export async function skipUnmatched(id: number) {
   const response = await api.post(`/requests/unmatched/${id}/skip`);
   return response.data;
 }
+
+export async function discover(q: string) {
+  const response = await api.get("/requests/discover", { params: { q } });
+  return response.data;
+}
+
+export async function discoverTVSeasons(tmdbId: number) {
+  const response = await api.get(`/requests/discover/tv/${tmdbId}/seasons`);
+  return response.data;
+}
+
+export async function discoverRequest(payload: { type: "movie" | "series"; tmdbId: number; title: string; year: number | null; season?: number }) {
+  const response = await api.post("/requests/discover/request", payload);
+  return response.data;
+}
