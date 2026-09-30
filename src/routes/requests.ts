@@ -104,7 +104,10 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   // path is missing is relocated by registered inode identity (hardlinks share
   // the inode, so a moved/renamed file is found in the request's season folder)
   // and the AH row is rewritten. Read-time repair — names are never trusted.
-  if (req.id && Number(req.id) > 0) healProcessedFilesForRequest(db, req);
+  if (req.id && Number(req.id) > 0) {
+    healProcessedFilesForRequest(db, req);
+    backfillRequestIdentity(db, req);
+  }
 
   const coveredRows = db.prepare(`
     SELECT rc.parsed_episodes, rc.title FROM release_candidates rc
@@ -310,6 +313,51 @@ function healProcessedFilesForRequest(db: Database, request: any): string[] {
     }
   }
   return out;
+}
+
+/**
+ * Lazy identity backfill: register every video file belonging to this request
+ * when it is read, so files that never ran through a writing flow (manual mv,
+ * pre-P0 placement, Sonarr-era imports) still get a media_files row. Series:
+ * the request's season folder in both processed and library trees. Movie: the
+ * flat processed movies root (title-matched only — the root is shared across
+ * all movies) plus the resolved library folder(s). Idempotent, DB metadata
+ * only; never touches the trees. Returns rows registered.
+ */
+function backfillRequestIdentity(db: Database, request: any): number {
+  if (!request?.library_key) return 0;
+  const identity = {
+    library_key: request.library_key,
+    title: request.title || "",
+    season: request.season ?? 0,
+  };
+  let registered = 0;
+  try {
+    if (request.type === "series") {
+      const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const seasonNum = request.season ?? 1;
+      const processedFolder = seasonFolderForLibraryKey(db, request.library_key, baseTitle, seasonNum);
+      if (processedFolder) registered += registerVideoTree(db, processedFolder, identity);
+      try {
+        const libFolder = resolveLibraryFolder(request);
+        if (libFolder && fs.existsSync(libFolder)) registered += registerVideoTree(db, libFolder, identity);
+      } catch {}
+    } else if (request.type === "movie") {
+      const processedDir = getProcessedDir("movie");
+      const reqNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (fs.existsSync(processedDir)) {
+        for (const f of fs.readdirSync(processedDir)) {
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+          const entryNorm = f.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          if (titlesMatch(reqNorm, entryNorm)) registered += registerVideoTree(db, path.join(processedDir, f), identity);
+        }
+      }
+      for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+        if (fs.existsSync(folder)) registered += registerVideoTree(db, folder, identity);
+      }
+    }
+  } catch {}
+  return registered;
 }
 
 // Resolve the library folder for a native (arr-free) request — mirrors the
@@ -6526,6 +6574,7 @@ const type = request.type === "series" ? "series" : "movie";
       // Self-heal stale processed_files entries (manual mv/rename) before they
       // seed matchedNames — otherwise the panel silently drops renamed files.
       healProcessedFilesForRequest(db, request);
+      backfillRequestIdentity(db, request);
 
       // Get approved releases for this request to match by content basename
       const releases = db.prepare(
@@ -6723,9 +6772,13 @@ const type = request.type === "series" ? "series" : "movie";
         // Accept when: explicitly associated (name/relPath), OR the file is a
         // hardlink of one of the request's library files (inode — authoritative
         // even when a torrent is linked and association bookkeeping is lost),
-        // OR title-match fallback when the request has zero explicit associations.
+        // OR registered identity claims it for this request's library_key
+        // (survives a remove-from-library dropping the library twin), OR
+        // title-match fallback when the request has zero explicit associations.
         const linkedToLibrary = ino > 0 && libraryInodes.has(ino);
-        if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary) {
+        const identityRow = request.library_key ? identifyByPath(db, fullPath) : null;
+        const identityHit = !!(identityRow && identityRow.library_key === request.library_key);
+        if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary && !identityHit) {
           if (!hasExplicitAssociations) {
             const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
             if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
@@ -7303,7 +7356,11 @@ const type = request.type === "series" ? "series" : "movie";
           const seasonNum = request.season || 1;
           destFolder = findExistingSeasonFolder(showFolder, seasonNum) || path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
         } else {
-          destFolder = MEDIA_MOVIES;
+          // Native movie: place into the matching "<Title> (Year)/" library
+          // subfolder when one exists (same resolution the processed panel's
+          // in-library scan uses), else the MEDIA_MOVIES root.
+          const folders = nativeMovieLibraryFolders(request.title || "");
+          destFolder = folders[0] && folders[0] !== MEDIA_MOVIES ? folders[0] : MEDIA_MOVIES;
         }
         try {
           if (!fs.existsSync(destFolder)) fs.mkdirSync(destFolder, { recursive: true });
