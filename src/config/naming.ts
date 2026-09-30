@@ -170,6 +170,29 @@ function parseVideoToken(tok: string): string | null {
   return null;
 }
 
+/** Edition markers preserved as tags (theatrical/extended/international/…). */
+const EDITION_MULTI_RE =
+  /\b(director'?s cut|special edition|anniversary edition|limited edition|theatrical|extended|international|uncut|unrated|ultimate|remastered|anniversary)\b/gi;
+const EDITION_SINGLE = new Set([
+  "theatrical", "extended", "international", "uncut", "unrated", "ultimate",
+  "remastered", "anniversary", "limited", "edition", "cut",
+]);
+
+function editionLabel(word: string): string {
+  const key = word.toLowerCase().replace(/'/g, "");
+  if (key === "directors cut") return "Director's Cut";
+  return key.split(/\s+/).map((s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "")).join(" ");
+}
+
+function collectEditions(base: string): string[] {
+  const out: string[] = [];
+  for (const m of base.matchAll(EDITION_MULTI_RE)) {
+    const label = editionLabel(m[1]);
+    if (!out.includes(label)) out.push(label);
+  }
+  return out;
+}
+
 export interface ReleaseTags {
   tags: string;
   group: string | null;
@@ -339,10 +362,26 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   const probedAudioLabel = primary?.codecName ? probeAudioLabel(primary.codecName) : null;
   if (probedAudioLabel) {
     const ch = probeChannelLabel(primary!.channels, primary!.channelLayout);
-    const atmos =
-      /truehd|mlp/i.test(primary!.codecName || "") && audio.some((a) => /atmos/i.test(a)) ? " Atmos" : "";
-    const entry = `${probedAudioLabel}${atmos}${ch ? ` ${ch}` : ""}`;
     const fam = audioFamilyOf(probedAudioLabel);
+    // The title often carries a subtype ffprobe cannot see (DTS-HD MA,
+    // DTS-HD, TrueHD + Atmos). Probe stays authoritative for the family and
+    // channels; the most specific same-family title label wins so detail
+    // survives instead of flattening "DTS-HD MA" to "DTS".
+    const sameFam = audio.filter((a) => audioFamilyOf(a) === fam);
+    const atmos = fam === "truehd" && audio.some((a) => /atmos/i.test(a)) ? " Atmos" : "";
+    let base = probedAudioLabel;
+    if (sameFam.length) {
+      if (fam === "dts") {
+        if (sameFam.some((a) => /dts-hd ma/i.test(a))) base = "DTS-HD MA";
+        else if (sameFam.some((a) => /dts-hd/i.test(a))) base = "DTS-HD";
+        else base = "DTS";
+      } else if (fam === "truehd") {
+        base = "TrueHD";
+      } else {
+        base = sameFam[0].replace(/\s+\d\.\d$/, "");
+      }
+    }
+    const entry = `${base}${atmos}${ch ? ` ${ch}` : ""}`;
     const kept = audio.filter((a) => audioFamilyOf(a) !== fam);
     audio.length = 0;
     audio.push(entry, ...kept);
@@ -382,8 +421,12 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   const out: ReleaseTags = { tags: "", group: null, language: null, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
+  // Editions ("International", "Extended", "Director's Cut", …) are preserved
+  // as tags — and a bare "-International"-style tail that is one of them stops
+  // being treated as a release group.
+  const editions = collectEditions(base);
   const grp = base.match(/-([A-Z0-9]{2,12})$/i);
-  if (grp && !looksLikeCodec(grp[1])) {
+  if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
   }
@@ -392,6 +435,7 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   const tryToken = (tok: string, fromBracket: boolean) => {
     const at = tok.trim();
     if (!at) return;
+    if (EDITION_SINGLE.has(at.toLowerCase())) return;
     if (LANG_TAGS.has(at.toUpperCase()) && at.length <= 12) {
       out.language = at.toUpperCase();
       return;
@@ -419,6 +463,16 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     }
     const video = parseVideoToken(at);
     if (video && !out.video.includes(video)) out.video.push(video);
+    // "MA" splits out of "DTS-HD MA 2.0" into its own token — fold it back
+    // onto a dts family entry so the label reads "DTS-HD MA 2.0", not "DTS-HD
+    // 2.0" + a stray "[MA]".
+    if (/^ma$/i.test(at)) {
+      const di = out.audio.findIndex((a) => /dts-hd/i.test(a));
+      if (di >= 0 && !/ ma/i.test(out.audio[di])) {
+        out.audio[di] = `${out.audio[di]} MA`;
+        return;
+      }
+    }
     if (!srcM && !resM && !audio && !video) {
       // HDR flags (DV, HDR10Plus, HDR10, HLG, ...) are recognized from loose
       // dotted words AND brackets. Unknown short bracket tags are preserved
@@ -461,7 +515,7 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     tryToken(t, false);
   }
 
-  out.misc = misc;
+  out.misc = [...editions, ...misc];
   out.tags = renderTags(out);
   return out;
 }
