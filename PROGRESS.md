@@ -146,13 +146,19 @@ media_files             - Identity layer (dev,inode) → library_key/season/epis
   naming templates stored in `settings` + `GET`/`PUT /api/settings/naming`
   (Settings → Naming Templates, token list, disable toggle), TMDB
   `resolveExternalIds` (`tmdb_external_ids` cache, offline fallback reuses ids
-  embedded in an already-canonical target folder). Applied at single-file
-  `move-to-processed` and native `move-to-library` (per-file + torrent paths):
-  movies/specials → `Title (YYYY) [imdbid-tt####] - [PL] [Bluray-1080p]...-GRP`;
-  episodes → `Show - SxxExx - Name [tags]-GRP` (`{EpisodeTitle}` from
-  `tmdb_season_cache`, offline). Dirs/workspace outputs/adopt/import keep their
-  names. Native-only; arr-linked moves still defer to Radarr/Sonarr. Naming is
-  cosmetic (reads stay inode-keyed).
+  embedded in an already-canonical target folder). **P1b: tags are probed from
+  the source file first (`src/services/mediaProbe.ts` ffprobe →
+  `assembleCanonicalTags`) — resolution from real pixel height, video codec +
+  bit depth, HDR flags (DV/HDR10Plus/HDR10/HLG), primary audio codec + channels
+  (Atmos kept from title); probe wins, title keeps source/language/group;
+  `[DV HDR10Plus]`/`[TrueHD Atmos 7.1]`/`[AC3 2.0]` brackets split + merge,
+  channel kept intact (`DD+5.1`), `[Unknown]` tail → group.** Applied at
+  single-file `move-to-processed` and native `move-to-library` (per-file +
+  torrent paths): movies/specials → `Title (YYYY) [imdbid-tt####] - [PL]
+  [Bluray-1080p]...-GRP`; episodes → `Show - SxxExx - Name [tags]-GRP`
+  (`{EpisodeTitle}` from `tmdb_season_cache`, offline). Dirs/workspace
+  outputs/adopt/import keep their names. Native-only; arr-linked moves still
+  defer to Radarr/Sonarr. Naming is cosmetic (reads stay inode-keyed).
 - **P2**: "Fix names" modal — per-file checkbox rename (processed ↔ library
   twins + lone processed files), inode-verified. Movie/series/season dir
   creation (kernel builders exist) also lands here.

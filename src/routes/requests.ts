@@ -20,12 +20,15 @@ import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, r
 import {
   loadNamingConf,
   parseReleaseTags,
+  assembleCanonicalTags,
   parseEpisodeCode,
   canonicalMovieFile,
   canonicalSpecialFile,
   canonicalEpisodeFile,
   uniqueDestPath,
+  type ProbeInfo,
 } from "../config/naming";
+import { probeVideoFile } from "../services/mediaProbe";
 import { seerrRemoveRequest } from "../services/seerr";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
@@ -964,12 +967,14 @@ async function namingPiecesForRequest(db: Database, request: any, idHintFolder?:
 
 /** Canonical file basename (no extension) for a NEW processed/library file, or
  * null to keep today's raw release name. Null on disabled naming, missing
- * pivots (episode code / title / id), or unresolved identity — never guesses. */
-async function canonicalFileBase(db: Database, request: any, sourceBase: string, idHintFolder?: string): Promise<string | null> {
+ * pivots (episode code / title / id), or unresolved identity — never guesses.
+ * `probe` (ffprobe facts about the source file, when probing is available)
+ * upgrades playback-info tags beyond what title-scraping infers. */
+async function canonicalFileBase(db: Database, request: any, sourceBase: string, idHintFolder?: string, probe?: ProbeInfo | null): Promise<string | null> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return null;
   const pieces = await namingPiecesForRequest(db, request, idHintFolder);
-  const tags = parseReleaseTags(sourceBase);
+  const tags = assembleCanonicalTags(parseReleaseTags(sourceBase), probe || null);
   if (request.type === "movie") {
     if (!pieces) return null;
     return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
@@ -6466,7 +6471,8 @@ const type = request.type === "series" ? "series" : "movie";
       try {
         const contentStat = fs.statSync(contentPath);
         if (request.library_key && contentStat.isFile()) {
-          canonicalName = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV);
+          const probe = await probeVideoFile(contentPath);
+          canonicalName = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV, probe);
         }
       } catch {}
 
@@ -7472,11 +7478,13 @@ const type = request.type === "series" ? "series" : "movie";
       let destFileName = path.basename(sourcePath);
       if (request.library_key && !fs.statSync(sourcePath).isDirectory()) {
         try {
+          const probe = await probeVideoFile(sourcePath);
           const canonical = await canonicalFileBase(
             db,
             request,
             path.basename(sourcePath),
             request.type === "series" ? path.dirname(destFolder) : destFolder,
+            probe,
           );
           if (canonical) destFileName = `${canonical}${path.extname(sourcePath)}`;
         } catch {}

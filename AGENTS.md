@@ -96,7 +96,7 @@ session can start with P0 without re-deriving the design.
   for a sample franchise before/after. Optional leftover: `user.nad.identity`
   xattr mirror (best-effort, skip `download/`). — **superseded: xattr was dropped
   on user request; identity is DB-only.**
-- **P1 — canonical writes (DONE, pending VM verification)**: naming kernel
+- **P1 — canonical writes (DONE, pending VM verification) + P1b probing (DONE, pending VM verification)**: naming kernel
   `src/config/naming.ts` (token templates, tag/group extraction, canonical dir +
   file builders, collision-safe `uniqueDestPath`) + tmdb external-id resolution
   (`resolveExternalIds` in `src/services/tmdb.ts`, `tmdb_external_ids` cache,
@@ -107,13 +107,23 @@ session can start with P0 without re-deriving the design.
   `move-to-library` (per-file + torrent paths) name files per template
   (`{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}`,
   `{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}`);
-  `{EpisodeTitle}` fills from `tmdb_season_cache` (offline). Folders keep their
-  structure; `move-to-library` dirs, workspace outputs, adopt and library-import
-  are NOT renamed (P2's Fix Names owns existing trees). Native requests only —
-  arr-linked moves still defer naming to Radarr/Sonarr. `uniqueDestPath`
-  idempotently reuses same-inode destinations and suffixes `-2/-3` different
-  ones so multiple versions of a movie/special coexist. Naming stays cosmetic:
-  reads remain inode-keyed and request.library_key-driven.
+  `{EpisodeTitle}` fills from `tmdb_season_cache` (offline). **P1b: playback
+  tags are probed from the source file with ffprobe
+  (`src/services/mediaProbe.ts` → `assembleCanonicalTags`) before title
+  inference — resolution from real pixel height, video codec + bit depth, HDR
+  flags (DV/HDR10+/HDR10/HLG from `side_data_list`/`color_transfer`), primary
+  audio codec + channel layout (TrueHD → TrueHD 7.1 / "Atmos" still only from
+  the title). Probe wins for codec/resolution/channels; title keeps
+  source/language/group. Multi-word brackets (`[DV HDR10Plus]`,
+  `[TrueHD Atmos 7.1]`, `[AC3 2.0]`) are split and merged, channel numbers are
+  kept intact (`DD+5.1`), and a bracketed `[Unknown]`/`[Group]` tail becomes the
+  release group.** Folders keep their structure; `move-to-library` dirs,
+  workspace outputs, adopt and library-import are NOT renamed (P2's Fix Names
+  owns existing trees). Native requests only — arr-linked moves still defer
+  naming to Radarr/Sonarr. `uniqueDestPath` idempotently reuses same-inode
+  destinations and suffixes `-2/-3` different ones so multiple versions of a
+  movie/special coexist. Naming stays cosmetic: reads remain inode-keyed and
+  request.library_key-driven.
 - **P2 — standardize tool**: "Fix Names" modal + optional batch renamer for
   existing trees; optional single maintenance script, not HTTP surface. Movie
   dir creation (`{Title} ({Year}) [imdbid-tt{ImdbId}]`) also lands here (the
@@ -483,7 +493,8 @@ resolution inherits the pref through every call site.
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
-| `src/config/naming.ts` | Naming kernel (P1): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/video/group), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
+| `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
+| `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — resolution/height, video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG) |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
