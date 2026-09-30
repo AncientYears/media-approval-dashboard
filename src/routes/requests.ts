@@ -382,6 +382,28 @@ function backfillRequestIdentity(db: Database, request: any): number {
 // move-to-library resolution: fuzzy show folder under MEDIA_TV + existing
 // localized season folder (Sezon I, etc.), movies map flat to MEDIA_MOVIES.
 // Returns null when the library folder cannot be located.
+/** Locate a native series' library SHOW folder under MEDIA_TV (bracket/year
+ * tolerant via normalizeFolder). Null when nothing exists. Same resolution the
+ * library reconcile uses, but for the fix-names dir rows. */
+function resolveLibraryShowFolder(request: { library_key?: string | null; type?: string; title?: string }): string | null {
+  if (!request.library_key || request.type !== "series") return null;
+  const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+  const direct = path.join(MEDIA_TV, baseTitle);
+  if (fs.existsSync(direct)) return direct;
+  const want = normalizeFolder(baseTitle);
+  if (!want) return null;
+  try {
+    for (const d of fs.readdirSync(MEDIA_TV)) {
+      const norm = normalizeFolder(d);
+      if (!norm) continue;
+      if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+        return path.join(MEDIA_TV, d);
+      }
+    }
+  } catch {}
+  return null;
+}
+
 function resolveLibraryFolder(request: {
   library_key?: string | null;
   type?: string;
@@ -1026,7 +1048,7 @@ interface FixNameGroup {
 interface FixNameDirRow {
   id: string;
   path: string;
-  tree: "processed";
+  tree: "processed" | "library";
   kind: "show" | "season" | "movie";
   currentName: string;
   proposedName: string | null;
@@ -1280,17 +1302,30 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     groups.push({ id: `g${gid++}`, ino, processed, library });
   }
 
-  // Folder-level proposals (processed tree only, safest scope). A folder is
-  // proposed only when this request "owns" it: no registered file inside maps
-  // to a DIFFERENT library_key (protects multi-season franchises whose season
-  // rows share one show folder — same key = owned).
+  // Folder-level proposals. Processed tree first (this request's show dir, then
+  // its season dirs — top-down), then library dirs for the same franchise. A
+  // folder is proposed only when this request "owns" it: no registered file
+  // inside maps to a DIFFERENT library_key (protects multi-season franchises
+  // whose season rows share one show folder — same key = owned).
   const conf = loadNamingConf(db);
   const namingEnabled = conf.enabled;
   const dirs: FixNameDirRow[] = [];
   let did = 0;
+  const sharedNote = "Folder holds files of another franchise — fix identities first";
   if (type === "series") {
     for (const [showDir, seasons] of showSeasons) {
       const ownedShow = folderOwnedExclusively(db, showDir, request.library_key);
+      const showName = path.basename(showDir);
+      const showCanonical = namingEnabled && cachedPieces ? canonicalSeriesDir(conf, cachedPieces) : null;
+      dirs.push({
+        id: `d${did++}`,
+        path: showDir,
+        tree: "processed",
+        kind: "show",
+        currentName: showName,
+        proposedName: showCanonical && showCanonical !== showName && ownedShow ? showCanonical : null,
+        note: !namingEnabled ? "Naming disabled in Settings" : ownedShow ? (showCanonical == null ? "Could not resolve identity (TMDB needed)" : showCanonical === showName ? null : null) : sharedNote,
+      });
       for (const seasonDir of seasons) {
         const seasonName = path.basename(seasonDir);
         const sn = parseSeasonNumber(seasonName);
@@ -1302,20 +1337,41 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
           kind: "season",
           currentName: seasonName,
           proposedName: !namingEnabled || !ownedShow || !canonical || canonical === seasonName ? null : canonical,
-          note: !namingEnabled ? "Naming disabled in Settings" : !ownedShow ? "Folder shared with another franchise — not renaming" : sn == null ? "Could not parse season number" : canonical === seasonName ? null : null,
+          note: !namingEnabled ? "Naming disabled in Settings" : !ownedShow ? sharedNote : sn == null ? "Could not parse season number" : canonical === seasonName ? null : null,
         });
       }
-      const showName = path.basename(showDir);
-      const showCanonical = namingEnabled && cachedPieces ? canonicalSeriesDir(conf, cachedPieces) : null;
+    }
+    // Library: show folder + this request's season folder.
+    const libShow = resolveLibraryShowFolder(request);
+    if (libShow) {
+      const libOwned = folderOwnedExclusively(db, libShow, request.library_key);
+      const libShowName = path.basename(libShow);
+      const libShowCanonical = namingEnabled && cachedPieces ? canonicalSeriesDir(conf, cachedPieces) : null;
       dirs.push({
         id: `d${did++}`,
-        path: showDir,
-        tree: "processed",
+        path: libShow,
+        tree: "library",
         kind: "show",
-        currentName: showName,
-        proposedName: showCanonical && showCanonical !== showName && ownedShow ? showCanonical : null,
-        note: !namingEnabled ? "Naming disabled in Settings" : ownedShow ? (showCanonical == null ? "Could not resolve identity (TMDB needed)" : showCanonical === showName ? null : null) : "Folder shared with another franchise — not renaming",
+        currentName: libShowName,
+        proposedName: libShowCanonical && libShowCanonical !== libShowName && libOwned ? libShowCanonical : null,
+        note: !namingEnabled ? "Naming disabled in Settings" : libOwned ? (libShowCanonical == null ? "Could not resolve identity (TMDB needed)" : libShowCanonical === libShowName ? null : null) : sharedNote,
       });
+      const wantSeason = request.season ?? (targetSeason ? parseInt(targetSeason.slice(1), 10) : 1);
+      const libSeason = findExistingSeasonFolder(libShow, wantSeason) || path.join(libShow, `S${String(wantSeason).padStart(2, "0")}`);
+      if (fs.existsSync(libSeason)) {
+        const seasonName = path.basename(libSeason);
+        const sn = parseSeasonNumber(seasonName);
+        const canonical = sn == null ? null : canonicalSeasonDir(conf, sn);
+        dirs.push({
+          id: `d${did++}`,
+          path: libSeason,
+          tree: "library",
+          kind: "season",
+          currentName: seasonName,
+          proposedName: !namingEnabled || !libOwned || !canonical || canonical === seasonName ? null : canonical,
+          note: !namingEnabled ? "Naming disabled in Settings" : !libOwned ? sharedNote : sn == null ? "Could not parse season number" : canonical === seasonName ? null : null,
+        });
+      }
     }
   } else {
     for (const movieDir of movieDirs) {
@@ -1329,7 +1385,25 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         kind: "movie",
         currentName: name,
         proposedName: canonical && canonical !== name && owned ? canonical : null,
-        note: !namingEnabled ? "Naming disabled in Settings" : owned ? (canonical == null ? "Could not resolve identity (TMDB needed)" : canonical === name ? null : null) : "Folder shared with another franchise — not renaming",
+        note: !namingEnabled ? "Naming disabled in Settings" : owned ? (canonical == null ? "Could not resolve identity (TMDB needed)" : canonical === name ? null : null) : sharedNote,
+      });
+    }
+    // Library movie dir(s) — nativeMovieLibraryFolders falls back to the movie
+    // root itself when nothing matches; skip proposing the root.
+    for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+      if (!folder || path.normalize(folder) === path.normalize(MEDIA_MOVIES)) continue;
+      if (!fs.existsSync(folder)) continue;
+      const name = path.basename(folder);
+      const owned = folderOwnedExclusively(db, folder, request.library_key);
+      const canonical = namingEnabled && cachedPieces ? canonicalMovieDir(conf, cachedPieces) : null;
+      dirs.push({
+        id: `d${did++}`,
+        path: folder,
+        tree: "library",
+        kind: "movie",
+        currentName: name,
+        proposedName: canonical && canonical !== name && owned ? canonical : null,
+        note: !namingEnabled ? "Naming disabled in Settings" : owned ? (canonical == null ? "Could not resolve identity (TMDB needed)" : canonical === name ? null : null) : sharedNote,
       });
     }
   }
@@ -1455,17 +1529,23 @@ function rewriteProcessedFilesPrefix(db: Database, prefix: string, replacement: 
  * folder that turn out not to be directories get caught by `stat` upstream. */
 function dirKindForPath(p: string): "show" | "season" | "movie" {
   const pn = path.normalize(p);
-  if (path.dirname(pn) === path.normalize(PROCESSED_MOVIES)) return "movie";
-  if (path.dirname(pn) === path.normalize(PROCESSED_TV)) return "show";
-  if (path.dirname(path.dirname(pn)) === path.normalize(PROCESSED_TV)) return "season";
+  const dirP = path.dirname(pn);
+  const dirG = path.dirname(dirP);
+  const isTvRoot = (r: string) => dirP === path.normalize(r);
+  const isTvChild = (r: string) => dirG === path.normalize(r);
+  const isMovieRoot = (r: string) => dirP === path.normalize(r);
+  if (isTvRoot(PROCESSED_TV) || isTvRoot(MEDIA_TV)) return "show";
+  if (isTvChild(PROCESSED_TV) || isTvChild(MEDIA_TV)) return "season";
+  if (isMovieRoot(PROCESSED_MOVIES) || isMovieRoot(MEDIA_MOVIES)) return "movie";
   return "movie";
 }
 
-/** Rename an owned processed folder to its canonical name. Safety: only the
- * processed tree, only top-level (show/movie) or show-child (season) folders,
- * only when the request exclusively owns the whole tree, canonical name is
- * recomputed server-side, destination collisions abort (never silently merge),
- * and AH processed_files prefixes are rewritten for every affected request. */
+/** Rename an owned processed/library folder to its canonical name. Safety: only
+ * top-level (show/movie) or show-child (season) folders under the four managed
+ * trees, only when the request exclusively owns the whole tree, canonical name
+ * is recomputed server-side, destination collisions abort (never silently
+ * merge), and AH processed_files prefixes are rewritten for every request under
+ * a processed folder (library paths have no bookkeeping — Jellyfin rescans). */
 async function applyDirRename(
   db: Database,
   request: any,
@@ -1482,15 +1562,23 @@ async function applyDirRename(
   const conf = loadNamingConf(db);
   if (!conf.enabled) return { ok: false, error: "Naming disabled in Settings", kind };
 
+  const parent = path.dirname(oldDir);
+  let inLibrary: boolean;
   let canonical: string | null = null;
   if (kind === "season") {
-    if (!isDirectChildOfRoot(oldDir, PROCESSED_TV)) return { ok: false, error: "Season folder is not directly under a processed show folder", kind };
+    // Must sit directly under a show folder that is itself under PROCESSED_TV or MEDIA_TV.
+    inLibrary = isDirectChildOfRoot(parent, MEDIA_TV);
+    if (!inLibrary && !isDirectChildOfRoot(parent, PROCESSED_TV)) {
+      return { ok: false, error: "Season folder is not directly under a processed/library show folder", kind };
+    }
     const sn = parseSeasonNumber(path.basename(oldDir));
     canonical = sn == null ? null : canonicalSeasonDir(conf, sn);
   } else {
-    if (!isDirectChildOfRoot(oldDir, kind === "show" ? PROCESSED_TV : PROCESSED_MOVIES)) {
-      return { ok: false, error: "Folder is not at the top of the processed tree", kind };
-    }
+    const rootOk = kind === "show"
+      ? isDirectChildOfRoot(oldDir, PROCESSED_TV) || isDirectChildOfRoot(oldDir, MEDIA_TV)
+      : isDirectChildOfRoot(oldDir, PROCESSED_MOVIES) || isDirectChildOfRoot(oldDir, MEDIA_MOVIES);
+    if (!rootOk) return { ok: false, error: "Folder is not at the top of a managed tree", kind };
+    inLibrary = kind === "show" ? isDirectChildOfRoot(oldDir, MEDIA_TV) : isDirectChildOfRoot(oldDir, MEDIA_MOVIES);
     const pieces = await namingPiecesForRequest(db, request);
     if (!pieces) return { ok: false, error: "Could not resolve identity (TMDB needed)", kind };
     canonical = kind === "show" ? canonicalSeriesDir(conf, pieces) : canonicalMovieDir(conf, pieces);
@@ -1500,10 +1588,9 @@ async function applyDirRename(
   const oldName = path.basename(oldDir);
   if (canonical === oldName) return { ok: true, skipped: true, old: oldName, new: canonical, kind };
   if (!folderOwnedExclusively(db, oldDir, request.library_key)) {
-    return { ok: false, error: "Folder contains files of another franchise — not renaming", kind };
+    return { ok: false, error: "Folder contains files of another franchise — fix identities first", kind };
   }
 
-  const parent = path.dirname(oldDir);
   const dest = path.join(parent, canonical);
   if (fs.existsSync(dest)) {
     try {
@@ -1522,9 +1609,11 @@ async function applyDirRename(
     return { ok: false, error: "Rename verification failed", kind };
   }
 
-  const oldPrefix = kind === "show" ? `${oldName}/` : `${path.basename(parent)}/${oldName}/`;
-  const newPrefix = kind === "show" ? `${canonical}/` : `${path.basename(parent)}/${canonical}/`;
-  rewriteProcessedFilesPrefix(db, oldPrefix, newPrefix);
+  if (!inLibrary) {
+    const oldPrefix = kind === "show" ? `${oldName}/` : `${path.basename(parent)}/${oldName}/`;
+    const newPrefix = kind === "show" ? `${canonical}/` : `${path.basename(parent)}/${canonical}/`;
+    rewriteProcessedFilesPrefix(db, oldPrefix, newPrefix);
+  }
   console.log(`[FixNames] renamed dir ${oldDir} -> ${dest}`);
   return { ok: true, old: oldName, new: canonical, kind };
 }

@@ -15,7 +15,7 @@ interface FixNameRow {
 interface FixNameDirRow {
   id: string;
   path: string;
-  tree: "processed";
+  tree: "processed" | "library";
   kind: "show" | "season" | "movie";
   currentName: string;
   proposedName: string | null;
@@ -36,7 +36,7 @@ interface NameRow {
   proposedName: string | null;
   note: string | null;
   label: string;
-  badge: "processed" | "library" | "dir";
+  badge: "processed" | "library" | "dir" | "libdir";
 }
 
 export default function FixNamesModal({
@@ -100,7 +100,7 @@ export default function FixNamesModal({
       proposedName: d.proposedName,
       note: d.note,
       label: `${d.kind} dir`,
-      badge: "dir",
+      badge: d.tree === "library" ? "libdir" : "dir",
     })),
     ...groups.flatMap((g) => {
       const rows: NameRow[] = [];
@@ -173,8 +173,8 @@ export default function FixNamesModal({
     const checked = !!selected[row.id];
     const note = row.note || (renamable ? null : "Already canonical");
     const badgeLabel =
-      row.badge === "dir" ? "DIR" : row.badge === "library" ? "LIBRARY" : "PROCESSED";
-    const badgeColor = row.badge === "dir" ? "#0ea5e9" : row.badge === "library" ? "#8b5cf6" : "#3b82f6";
+      row.badge === "dir" ? "DIR" : row.badge === "libdir" ? "LIB DIR" : row.badge === "library" ? "LIBRARY" : "PROCESSED";
+    const badgeColor = row.badge === "dir" ? "#0ea5e9" : row.badge === "libdir" ? "#06b6d4" : row.badge === "library" ? "#8b5cf6" : "#3b82f6";
     return (
       <div
         className={`fixname-row${nested ? " fixname-row-nested" : ""}`}
@@ -221,7 +221,7 @@ export default function FixNamesModal({
     proposedName: d.proposedName,
     note: d.note,
     label: `${d.kind} dir`,
-    badge: "dir",
+    badge: d.tree === "library" ? "libdir" : "dir",
   }));
 
   return (
@@ -232,11 +232,11 @@ export default function FixNamesModal({
           <p style={{ fontSize: 13, color: "#94a3b8", marginBottom: 12 }}>
             Standardize names for <strong style={{ color: "#cbd5e1" }}>{title}</strong> to the canonical
             template. Red = current, green = proposed. File renames keep the file{`'`}s inode
-            (hardlinked library copies stay intact). Folder renames apply only to the processed
-            tree and only to folders this request owns outright — a folder shared with another
-            franchise is never proposed.
-          </p>
-          {error && <div className="modal-line" style={{ color: "#f87171", marginBottom: 8 }}>{error}</div>}
+            (hardlinked library copies stay intact). Folder renames cover both the processed
+            and library trees, only for folders this request owns outright — a folder that
+            holds files of another franchise is never proposed. Rename top-down (show folder
+            first), then re-open to finish each layer.
+          </p>{error && <div className="modal-line" style={{ color: "#f87171", marginBottom: 8 }}>{error}</div>}
           {loading ? (
             <div className="modal-line" style={{ color: "#94a3b8" }}>Scanning processed + library files…</div>
           ) : allRows.length === 0 ? (
