@@ -427,15 +427,74 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   const hdr = Array.from(new Set([...t.hdr, ...(v?.hdr || [])]));
   const resolution = t.resolution ?? probeResolution(v?.height);
 
+  // A Polish dub carries no language in its file NAME — the only evidence is the
+  // audio stream tag ffprobe already returns. Fill the language in from the
+  // primary audio track, but never override a language the title stated, and only
+  // for a track we recognise (so an "und"/empty tag cannot invent a tag).
+  const language = t.language ?? probeLanguageLabel(probe);
+
   return {
     ...t,
+    language,
     resolution,
     audio,
     hdr,
     video,
-    tags: renderTags({ ...t, resolution, audio, hdr, video }),
+    tags: renderTags({ ...t, language, resolution, audio, hdr, video }),
   };
 }
+
+/** Language tag from the audio streams' container tags, or null.
+ *  A Polish dub carries nothing in its file NAME — the stream tag is the only
+ *  evidence — but tagging every plain English original "[EN]" is just noise. So:
+ *  fire when the file has more than one audio track, or when a single track is
+ *  not English. Tracks in DIFFERENT languages are ambiguous, so stay silent. */
+function probeLanguageLabel(probe: ProbeInfo | null): string | null {
+  const streams = probe?.audio || [];
+  const codes = streams.map((a) => String(a.language || "").trim().toLowerCase()).filter((c) => c && c !== "und" && c !== "unknown");
+  if (!codes.length) return null;
+  if (new Set(codes).size > 1) return null;
+  if (streams.length < 2 && isEnglishCode(codes[0])) return null;
+  const raw = codes[0];
+  if (raw.length === 3) {
+    return ISO3_TO_2[raw.toUpperCase()] || (/^[a-z]{3}$/.test(raw) ? raw.toUpperCase() : null);
+  }
+  return /^[a-z]{2}$/.test(raw) ? raw.toUpperCase() : null;
+}
+
+const isEnglishCode = (code: string): boolean => code === "en" || code === "eng";
+
+const ISO3_TO_2: Record<string, string> = {
+  POL: "PL",
+  ENG: "EN",
+  GER: "DE",
+  FRE: "FRA",
+  SPA: "ESP",
+  ITA: "ITA",
+  NLD: "NLD",
+  POR: "POR",
+  RUS: "RUS",
+  JPN: "JPN",
+  KOR: "KOR",
+  CHI: "CHI",
+  ZHO: "CHI",
+  SWE: "SWE",
+  NOR: "NOR",
+  DAN: "DAN",
+  FIN: "FIN",
+  CZE: "CZE",
+  CES: "CZE",
+  HUN: "HUN",
+  ROU: "ROU",
+  GRE: "GRE",
+  UKR: "UKR",
+  TUR: "TUR",
+  ARA: "ARA",
+  HEB: "HEB",
+  THA: "THA",
+  VIE: "VIE",
+  IND: "IND",
+};
 
 /**
  * Extract the trailing release metadata from a filename base so it can survive
