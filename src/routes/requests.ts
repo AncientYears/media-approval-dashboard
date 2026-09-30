@@ -1298,11 +1298,10 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     } catch {}
 
     const pb = await proposeCanonicalName(db, request, path.basename(a.fullPath), probe, cachedPieces);
-    const withExt = (name: string | null, p: string) => {
-      if (!name) return null;
-      const ext = path.extname(p);
-      return ext && !path.extname(name) ? `${name}${ext}` : name;
-    };
+    // Canonical file proposals are extensionless by construction — append the
+    // source extension unconditionally (never detect one from the name: channel
+    // layouts like "[DTS-HD MA 2.0]" contain dots that would fool extname).
+    const withExt = (name: string | null, p: string) => (name ? `${name}${path.extname(p)}` : null);
     const processed: FixNameRow = {
       id: `p-${gid}`,
       ino,
@@ -1457,9 +1456,10 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
   const parent = path.dirname(oldPath);
   const oldBasename = path.basename(oldPath);
   // Proposals arrive without an extension (the canonical base name); re-attach
-  // the original one so a rename never strips ".mkv".
+  // the original one so a rename never strips ".mkv". endsWith — never extname:
+  // channel layouts like "2.0" inside the name would fool it.
   const ext = path.extname(oldPath);
-  const newName = ext && !path.extname(newNameArg) ? `${newNameArg}${ext}` : newNameArg;
+  const newName = ext && !newNameArg.endsWith(ext) ? `${newNameArg}${ext}` : newNameArg;
   const dest = uniqueDestPath(path.join(parent, newName), st.ino);
 
   if (fs.existsSync(dest)) {
