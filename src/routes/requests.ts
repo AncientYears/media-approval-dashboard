@@ -621,7 +621,38 @@ function nativeSpecialDenominator(db: Database, library_key: string | null | und
       if (tc) tmdb = namedSpecialCount(tc.payload);
     } catch {}
   }
-  return Math.max(tmdb, covered.size + extras);
+  // The release numbering on disk can exceed TMDB's S00 list (a "Show S0XE03"
+  // file asserts a third special even when TMDB only names two). Floor the
+  // denominator with the highest special slot attested by files so the pill
+  // says "2/3" for a collection that holds specials 1 and 3.
+  return Math.max(tmdb, covered.size + extras, maxSpecialNumberInS00(db, library_key, baseTitle));
+}
+
+/** Highest special position attested by video files in the processed S00
+ * folder. Null returns from extractEpisodeFromFilename ("S0X" releases) are
+ * re-parsed here for their trailing E## — the file still renders as an
+ * unnumbered SPECIAL row in the grid, but the number it asserts keeps the
+ * Specials pill denominator honest. Returns 0 when nothing is numbered. */
+function maxSpecialNumberInS00(db: Database, library_key: string | null | undefined, baseTitle: string): number {
+  let maxNum = 0;
+  const folder = seasonFolderForLibraryKey(db, library_key, baseTitle, 0);
+  if (!folder) return 0;
+  let files: string[];
+  try {
+    files = fs.readdirSync(folder);
+  } catch {
+    return 0;
+  }
+  for (const f of files) {
+    if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+    let n: number | null = extractEpisodeFromFilename(f);
+    if (n == null && /[Ss]0[Xx]/.test(f)) {
+      const m = f.match(/[Ss]0[Xx][\s._-]*E?(\d{1,3})/i);
+      if (m) n = parseInt(m[1], 10);
+    }
+    if (n != null && n > maxNum) maxNum = n;
+  }
+  return maxNum;
 }
 
 /** Named special episodes in a cached TMDB season-0 payload. TMDB pads many
@@ -4722,7 +4753,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     try {
       const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
       const offset = parseInt(req.query.offset as string) || 0;
-      const query = `SELECT * FROM "${table}" ORDER BY id DESC LIMIT ? OFFSET ?`;
+      // rowid keeps this working for tables without an id column
+      // (tmdb_season_cache, tmdb_franchise_prefs are keyed by composite PKs).
+      const query = `SELECT * FROM "${table}" ORDER BY rowid DESC LIMIT ? OFFSET ?`;
       const rows = db.prepare(query).all(limit, offset) as any[];
       const total = db.prepare(`SELECT COUNT(*) as c FROM "${table}"`).get() as any;
       const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
