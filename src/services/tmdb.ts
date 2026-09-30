@@ -120,6 +120,26 @@ export async function searchTMDB(
   });
 }
 
+/** Resolve title + year for a TMDB id (movie or series) — used by the Seerr
+ * webhook so its requests share the Discover library_key identity. Returns
+ * null when the API key is unset or the lookup fails. */
+export async function fetchTMDBById(
+  mediaType: "movie" | "series",
+  tmdbId: number,
+  language?: string,
+): Promise<{ id: number; title: string; year: number | null } | null> {
+  const path = mediaType === "movie" ? `/movie/${tmdbId}` : `/tv/${tmdbId}`;
+  const data = await tmdbGet<any>(`${path}?language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
+  if (!data?.id) return null;
+  const date = data.release_date || data.first_air_date || "";
+  const year = date ? parseInt(String(date).slice(0, 4), 10) : null;
+  return {
+    id: data.id,
+    title: String(data.title || data.name || "").trim(),
+    year: Number.isFinite(year) ? year : null,
+  };
+}
+
 /** Season list for a TMDB series, used by the Discover season selector. */
 export async function fetchTMDBTVSeasons(
   tmdbId: number,

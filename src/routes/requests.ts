@@ -14,7 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { fetchTMDBSeason, resolveShowIdentity, searchTMDB, fetchTMDBTVSeasons, type SeasonMeta } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, fetchTMDBById, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -3549,6 +3549,94 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       console.log(`[Discover] Created ${mediaType} request ${requestId}: ${cleaned} (key=${key}, season=${reqSeason ?? "—"})`);
       res.json({ success: true, request_id: Number(requestId), existed: false, type: mediaType, title: cleaned });
     } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/seerr/webhook — ingest Seerr request notifications into
+  // native media_requests (arr-free: Seerr may run with zero Sonarr/Radarr
+  // instances). Idempotent against library_key (+ season), mirrors the Discover
+  // pipeline, and ignores issue/decline/availability events. The media object is
+  // parsed defensively because Seerr's webhook payload shape has drifted across
+  // versions; unparseable bodies are logged and acked.
+  //
+  // Optional secret: set SEERR_WEBHOOK_TOKEN and reuse it in Seerr's webhook
+  // "Auth Header" (sent as a Bearer token).
+  router.post("/seerr/webhook", async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const expected = process.env.SEERR_WEBHOOK_TOKEN;
+      if (expected) {
+        const auth = String(req.headers.authorization || "");
+        const hdr = String(req.headers["x-seerr-webhook-token"] || "");
+        const provided = auth.startsWith("Bearer ") ? auth.split(" ")[1] : hdr;
+        if (provided !== expected) return res.status(401).json({ error: "invalid or missing webhook token" });
+      }
+
+      const media = body.media || body.payload?.media || body.data?.media || body["{{media}}"] || {};
+      const reqObj = body.request || body.payload?.request || body.data?.request || body["{{request}}"] || {};
+      const notificationType = String(body.notification_type || body.type || body.event || "").toLowerCase();
+      if (/(issue|declin|fail|available|reopen|resolv|comment)/.test(notificationType)) {
+        return res.json({ success: true, ignored: true, reason: "unrelated notification" });
+      }
+
+      const rawType = String(media.media_type || body.media_type || "").toLowerCase();
+      const mediaType = rawType === "movie" ? "movie" : rawType === "series" || rawType === "tv" ? "series" : null;
+      const tmdbId = Number(media.tmdbId || body.tmdbId || body.mediaTmdbId || 0);
+      if (!mediaType || !tmdbId) {
+        console.log("[Seerr webhook] unhandled payload:", JSON.stringify(body));
+        return res.json({ success: true, ignored: true, reason: "no media_type/tmdbId" });
+      }
+
+      const t = await fetchTMDBById(mediaType, tmdbId);
+      let title = String(t?.title || media.title || body.subject || body.message || "").trim();
+      const year = t?.year ?? (Number.isFinite(Number(body.year)) ? Number(body.year) : null);
+      if (!title) {
+        console.log("[Seerr webhook] no title resolvable (tmdbId=" + tmdbId + "):", JSON.stringify(body));
+        return res.json({ success: true, ignored: true, reason: "no title resolved (TMDB_API_KEY set?)" });
+      }
+
+      let season: number | null = mediaType === "series" ? 1 : null;
+      if (season !== null) {
+        const blob = [media.seasonNumber, media.season_number, reqObj.seasonNumber, body.season, body.seasonNumber, body.subject, body.message]
+          .filter((v) => v !== undefined && v !== null && String(v).trim() !== "")
+          .join(" ");
+        const m = String(blob).match(/\bS(\d{1,2})\b/) || String(blob).match(/season\s+(\d{1,2})/i);
+        if (m) season = parseInt(m[1], 10);
+      }
+
+      const cleaned = cleanFranchiseTitle(title);
+      const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${year ?? 0}`;
+      const reqSeason = mediaType === "series" ? season! : null;
+
+      let existing: any;
+      if (mediaType === "movie") {
+        existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+      } else {
+        existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND season = ?").get(key, reqSeason) as any;
+      }
+      if (existing) {
+        return res.json({ success: true, request_id: Number(existing.id), existed: true, type: mediaType, title: cleaned });
+      }
+
+      const user = String(reqObj.requestedBy_username || body.requestedBy_username || "Seerr").trim() || "Seerr";
+      const requestedBy = JSON.stringify([user]);
+      let requestId: number;
+      if (mediaType === "movie") {
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, library_key, status, requested_by) VALUES (?, 'movie', ?, 'NEW', ?)"
+        ).run(cleaned, key, requestedBy);
+        requestId = result.lastInsertRowid as number;
+      } else {
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, library_key, season, status, requested_by) VALUES (?, 'series', ?, ?, 'NEW', ?)"
+        ).run(cleaned, key, reqSeason, requestedBy);
+        requestId = result.lastInsertRowid as number;
+      }
+      console.log(`[Seerr webhook] Created ${mediaType} request ${requestId}: ${cleaned} (key=${key}, season=${reqSeason ?? "—"} by ${user})`);
+      res.json({ success: true, request_id: Number(requestId), existed: false, type: mediaType, title: cleaned });
+    } catch (error: any) {
+      console.error("[Seerr webhook] error:", error.message);
       res.status(500).json({ error: error.message });
     }
   });
