@@ -96,7 +96,7 @@ session can start with P0 without re-deriving the design.
   for a sample franchise before/after. Optional leftover: `user.nad.identity`
   xattr mirror (best-effort, skip `download/`). — **superseded: xattr was dropped
   on user request; identity is DB-only.**
-- **P1 — canonical writes (DONE, pending VM verification) + P1b probing (DONE, pending VM verification)**: naming kernel
+- **P1 — canonical writes (DONE, verified on VM) + P1b probing (DONE, verified on VM)**: naming kernel
   `src/config/naming.ts` (token templates, tag/group extraction, canonical dir +
   file builders, collision-safe `uniqueDestPath`) + tmdb external-id resolution
   (`resolveExternalIds` in `src/services/tmdb.ts`, `tmdb_external_ids` cache,
@@ -114,7 +114,7 @@ session can start with P0 without re-deriving the design.
   flags (DV/HDR10+/HDR10/HLG from `side_data_list`/`color_transfer`), primary
   audio codec + channel layout (TrueHD → TrueHD 7.1 / "Atmos" still only from
   the title). Probe wins for codec/resolution/channels; title keeps
-  source/language/group. Multi-word brackets (`[DV HDR10Plus]`,
+  source/language/group. Multi-word brackets (`[DV HDR10+]`,
   `[TrueHD Atmos 7.1]`, `[AC3 2.0]`) are split and merged, channel numbers are
   kept intact (`DD+5.1`), and a bracketed `[Unknown]`/`[Group]` tail becomes the
   release group.** Folders keep their structure; `move-to-library` dirs,
@@ -124,11 +124,18 @@ session can start with P0 without re-deriving the design.
   destinations and suffixes `-2/-3` different ones so multiple versions of a
   movie/special coexist. Naming stays cosmetic: reads remain inode-keyed and
   request.library_key-driven.
-- **P2 — standardize tool**: "Fix Names" modal + optional batch renamer for
-  existing trees; optional single maintenance script, not HTTP surface. Movie
-  dir creation (`{Title} ({Year}) [imdbid-tt{ImdbId}]`) also lands here (the
-  kernel's `canonicalMovieDir`/`canonicalSeriesDir`/`canonicalSeasonDir` already
-  exist).
+- **P2 — standardize tool (DONE, committed `0b6a48c`, pending VM verification)**: "Fix Names"
+  modal + HTTP surface (`POST /:id/fix-names/preview` + `POST /:id/fix-names/apply` in
+  `src/routes/requests.ts`, helpers `buildFixNameGroups`/`proposeCanonicalName`/
+  `applyFixNameRename` after `canonicalFileBase`). Preview returns grouped rows —
+  each processed file (matched via AH `processed_files`/identity/title fallback) plus its
+  library twin by inode (`nativeMovieLibraryFolders`/`resolveLibraryFolder`); proposal
+  reuses the naming kernel + `assembleCanonicalTags`, one ffprobe per `(dev,ino)` (pool of
+  4). Names are recomputed server-side on apply (client sends only paths); renames are
+  collision-safe (`uniqueDestPath`), inode-verified (`renameSync` + pre/post `stat`),
+  refresh `media_files.release_name` + AH `processed_files` basenames. File-level only;
+  library-only files and movie/series/season dir creation deferred (kernel's
+  `canonicalMovieDir`/`canonicalSeriesDir`/`canonicalSeasonDir` already exist).
 - Verify with `npm run type-check` + deployed coverage counts unchanged for a
   sample franchise before/after.
 

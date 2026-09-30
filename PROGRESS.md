@@ -81,6 +81,8 @@ Also: TMDB Discover (button → native request → Prowlarr), Scan Downloads
 | GET | /api/db | All tables, columns, rows (DB viewer) |
 | GET | /api/settings/naming | Naming templates + defaults + tokens (P1) |
 | PUT | /api/settings/naming | Save naming templates (P1) |
+| POST | /api/requests/:id/fix-names/preview | P2 proposal groups (processed + library twins), canonical old→new names |
+| POST | /api/requests/:id/fix-names/apply | P2 inode-verified renames (names recomputed server-side) |
 | POST | /api/test-connections | Connection testing (legacy) |
 
 ### DB Schema
@@ -140,8 +142,8 @@ media_files             - Identity layer (dev,inode) → library_key/season/epis
   deployable alone. REMAINING: verify on the VM (coverage counts unchanged for
   a sample franchise before/after), then P1/P2 below. No xattr mirror — identity
   is DB-only; `/download` stays 100% isolated (never written to, ever).
-- **P1 (implemented, pending VM verification)**: canonical naming for NEW writes
-  only — `src/config/naming.ts` kernel (`parseReleaseTags` import, canonical
+- **P1 + P1b (implemented, VM-verified)**: canonical naming for NEW writes only —
+  `src/config/naming.ts` kernel (`parseReleaseTags` import, canonical
   movie/special/episode/dir builders, `uniqueDestPath`, token templates),
   naming templates stored in `settings` + `GET`/`PUT /api/settings/naming`
   (Settings → Naming Templates, token list, disable toggle), TMDB
@@ -149,19 +151,28 @@ media_files             - Identity layer (dev,inode) → library_key/season/epis
   embedded in an already-canonical target folder). **P1b: tags are probed from
   the source file first (`src/services/mediaProbe.ts` ffprobe →
   `assembleCanonicalTags`) — resolution from real pixel height, video codec +
-  bit depth, HDR flags (DV/HDR10Plus/HDR10/HLG), primary audio codec + channels
-  (Atmos kept from title); probe wins, title keeps source/language/group;
-  `[DV HDR10Plus]`/`[TrueHD Atmos 7.1]`/`[AC3 2.0]` brackets split + merge,
-  channel kept intact (`DD+5.1`), `[Unknown]` tail → group.** Applied at
+  bit depth, HDR flags (DV/HDR10+/HDR10/HLG, HDR10 suppressed when HDR10+
+  present), primary audio codec + channels (Atmos kept from title); probe wins,
+  title keeps source/language/group; `[DV HDR10+]`/`[TrueHD Atmos 7.1]`/
+  `[AC3 2.0]` brackets split + merge, channel kept intact (`DD+5.1`),
+  `[Unknown]` tail → group.** Applied at
   single-file `move-to-processed` and native `move-to-library` (per-file +
   torrent paths): movies/specials → `Title (YYYY) [imdbid-tt####] - [PL]
   [Bluray-1080p]...-GRP`; episodes → `Show - SxxExx - Name [tags]-GRP`
   (`{EpisodeTitle}` from `tmdb_season_cache`, offline). Dirs/workspace
   outputs/adopt/import keep their names. Native-only; arr-linked moves still
   defer to Radarr/Sonarr. Naming is cosmetic (reads stay inode-keyed).
-- **P2**: "Fix names" modal — per-file checkbox rename (processed ↔ library
-  twins + lone processed files), inode-verified. Movie/series/season dir
-  creation (kernel builders exist) also lands here.
+  VM-verified end-to-end (Moana 2 → `Moana 2 (2024) [imdbid-tt13622970] - [2160p]
+  [TrueHD Atmos 7.1][DV HDR10+][HEVC][10bit]-Unknown.mkv`).
+- **P2 (implemented, pending VM verification)**: "Fix names" modal (`POST
+  /:id/fix-names/preview` + `/:id/fix-names/apply`) — grouped proposal of
+  processed files + their library twins (matched by inode), canonical old→new
+  names via the naming kernel (probe-enriched, one ffprobe per inode), per-row
+  checkbox selection, backend recomputes names on apply (never trusts the
+  client), `uniqueDestPath` collision suffixes, renames are inode-verified
+  (`renameSync` + `stat` before/after), `media_files.release_name` + AH
+  `processed_files` refreshed. Scope: files only (library twin shown when the
+  processed file is already linked); dir/season creation deferred.
 - Matching order: inode first → canonical-name (IDs embedded) → fuzzy title
   (backup for copied-not-hardlinked files). Release names stay in `/download`.
 
