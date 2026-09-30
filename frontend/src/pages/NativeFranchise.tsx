@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity } from "../api";
 import { useToast } from "../components/Toast";
+import FixNamesModal from "../components/FixNamesModal";
 
 const LANGUAGES = ["pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA", "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO", "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA"];
 
@@ -16,6 +17,7 @@ export default function NativeFranchise() {
   const [episodes, setEpisodes] = useState<Record<number, any>>({});
   const [refreshing, setRefreshing] = useState<number | null>(null);
   const [language, setLanguage] = useState<string>("");
+  const [fixRequestId, setFixRequestId] = useState<number | null>(null);
 
   const loadEpisodes = async (season: any) => {
     if (episodes[season.season]) return;
@@ -210,6 +212,9 @@ export default function NativeFranchise() {
                       <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
                         {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
                       </button>
+                      <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); setFixRequestId(season.request_id); }} title="Standardize this season's file/folder names">
+                        Fix Names
+                      </button>
                       <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
                         Open Releases
                       </button>
@@ -250,6 +255,18 @@ export default function NativeFranchise() {
           );
         })}
       </div>
+      {fixRequestId != null && (
+        <FixNamesModal
+          requestId={fixRequestId}
+          title={franchise.title}
+          onClose={() => setFixRequestId(null)}
+          onApplied={async () => {
+            const data = await fetchNativeFranchise(Number(id));
+            setFranchise(data);
+            setLanguage(data.language || "");
+          }}
+        />
+      )}
     </>
   );
 }

@@ -615,9 +615,11 @@ export default function RequestDetail() {
           <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 8 }} onClick={handleScanProcessed} disabled={scanning}>
             {scanning ? "Scanning..." : "Scan Folder"}
           </button>
-          <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 4 }} onClick={() => setFixNamesOpen(true)} title="Standardize filenames to the canonical naming template">
-            Fix Names
-          </button>
+          {request.type !== "series" && (
+            <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 4 }} onClick={() => setFixNamesOpen(true)} title="Standardize filenames to the canonical naming template">
+              Fix Names
+            </button>
+          )}
         </div>
         {processedFiles.length > 0 && (
           <>
