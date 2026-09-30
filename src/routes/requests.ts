@@ -1078,6 +1078,7 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return null;
+  if (ep.episodeEnd) return null;
   if (ep.season === 0) {
     if (pieces?.imdbId) {
       return canonicalSpecialFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
@@ -1258,6 +1259,10 @@ async function proposeCanonicalName(
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
+  if (ep.episodeEnd) {
+    const z = (n: number) => String(n).padStart(2, "0");
+    return { name: null, role: "episode", note: `Multi-episode file (S${z(ep.season)}E${z(ep.episode)}-E${z(ep.episodeEnd)}) - rename by hand` };
+  }
   if (ep.season !== (request.season ?? ep.season)) return { name: null, role: "episode", note: `S${ep.season} does not match request season` };
   const episodeTitle =
     (request.library_key
@@ -1428,6 +1433,30 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     }
 
     groups.push({ id: `g${gid++}`, ino, processed, library });
+  }
+
+  // Jumbled sources (two overlapping numbering runs of one dub, a mis-numbered
+  // file) make two DIFFERENT files claim the same SxxExx, so both propose the
+  // same destination. uniqueDestPath would then silently suffix "-2"/"-3" and
+  // leave you with duplicate-looking files. Flag them instead of proposing a
+  // rename we know is ambiguous — the episode number has to be fixed by hand.
+  const destCounts = new Map<string, number>();
+  for (const g of groups) {
+    for (const row of [g.processed, g.library]) {
+      if (!row?.proposedName) continue;
+      const key = `${path.dirname(row.path)}\u0000${row.proposedName.toLowerCase()}`;
+      destCounts.set(key, (destCounts.get(key) || 0) + 1);
+    }
+  }
+  for (const g of groups) {
+    for (const row of [g.processed, g.library]) {
+      if (!row?.proposedName) continue;
+      const key = `${path.dirname(row.path)}\u0000${row.proposedName.toLowerCase()}`;
+      if ((destCounts.get(key) || 0) < 2) continue;
+      const clash = "Duplicate episode number in source - fix the file name by hand";
+      row.proposedName = null;
+      row.note = row.note ? `${row.note}; ${clash}` : clash;
+    }
   }
 
   // Folder-level proposals. Processed tree first (this request's show dir, then

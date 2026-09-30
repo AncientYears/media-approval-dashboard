@@ -571,7 +571,19 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
 export function parseEpisodeCode(
   fileBase: string,
   opts?: { knownSeason?: number | null },
-): { season: number; episode: number; forcedSeason?: boolean } | null {
+): { season: number; episode: number; forcedSeason?: boolean; episodeEnd?: number } | null {
+  // A multi-episode file ("S01E01-02", "S01E01-E02") must never be read as a
+  // single episode: naming it "S01E01" silently mislabels the E02 content it
+  // also holds. `episodeEnd` marks it so callers can skip it instead.
+  const multi = fileBase.match(/\b[sS](\d{1,2})\s*[eE](\d{1,3})\s*[-‐‑‒–—―]\s*[eE]?(\d{1,3})\b/);
+  if (multi) {
+    const season = parseInt(multi[1], 10);
+    const episode = parseInt(multi[2], 10);
+    const episodeEnd = parseInt(multi[3], 10);
+    if (Number.isFinite(season) && Number.isFinite(episode) && Number.isFinite(episodeEnd) && episodeEnd > episode) {
+      return { season, episode, episodeEnd };
+    }
+  }
   const m = fileBase.match(/\b[sS](\d{1,2})\s*[eE](\d{1,3})\b/);
   if (m) {
     const season = parseInt(m[1], 10);
