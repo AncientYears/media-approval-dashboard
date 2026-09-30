@@ -194,6 +194,12 @@ Download (100% complete)
 4. **Skip**: `POST /unmatched/:id/skip` — marks as skipped, removed from panel
 5. Matched entries immediately appear as managed cards with DOWNLOADING status
 
+### Arr-less request creation (Phase B)
+- **`POST /unmatched/:id/match` falls back to native when arrs are down/unconfigured**: a `radarrProfileId || radarrRootPath` (or sonarr equivalent) missing from the profile fetch, or any throw inside the arr path, redirects to a native branch. The pick is resolved on TMDB via `searchTMDB()` → `library_key` (`movie:<slug>:<year>` / `series:<slug>:<year>`, slug from the **resolved TMDB name**, matching fix-identity). Creates/updates `media_requests` (status DOWNLOADING), inserts RC + approval_history, marks `unmatched_torrents` matched. Response carries `native: true`.
+- **Scan-downloads matches existing native requests** (Step 1b): when no Radarr/Sonarr match exists, torrents whose title matches a `library_key` row are attached (existing or newly-created per-season rows under the same key) with a status of DOWNLOADING — no arr call needed.
+- **TMDB candidate pre-fill**: when profiles are unavailable (`!radarrProfileId` / `!sonarrProfileId`) and no native match, scan-downloads fills `candidate_results` straight from `searchTMDB(cleanFranchiseTitle(lookupTitle), …)` so the unmatched panel still offers pick buttons. Candidate `id` is the TMDB id.
+- `searchTMDB(query, mediaType)` lives in `src/services/tmdb.ts`; returns `{id,title,year,overview}` capped at 10. Requires `TMDB_API_KEY`; returns `[]` when unset.
+
 ### Startup Cleanup
 - Startup iterates all RCs with torrent hashes
 - **Skips title check** for RCs where request has `sonarr_id`/`radarr_id` (ID link trusted)
@@ -537,4 +543,7 @@ NTFY_TOPIC=
 - [ ] Language select uses the first season with a `request_id` (injected S00 rows sort first but have `request_id: null`)
 - [ ] Startup cleanup doesn't delete RCs for bilingual/alternate-title series
 - [ ] Unmatched match creates multi-season requests from content_path scan
+- [ ] Unmatched match returns 400 with a clear "Could not resolve on TMDB" when TMDB_API_KEY unset and arrs are down
+- [ ] Scan Downloads pre-fills TMDB candidates when arr profiles unavailable (panel still shows pick buttons)
+- [ ] Scan Downloads attaches torrents to existing native `library_key` rows (Step 1b) without calling arrs
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb

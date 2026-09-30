@@ -93,6 +93,33 @@ export async function resolveShowId(libraryKey: string, title: string, language:
 }
 
 /**
+ * Keyword search against TMDB, used to pre-fill `unmatched_torrents` candidates
+ * when Radarr/Sonarr are unavailable (arr-less request creation). Returns
+ * candidate-like objects the unmatched panel can offer the user.
+ */
+export async function searchTMDB(
+  query: string,
+  mediaType: "movie" | "series",
+): Promise<Array<{ id: number; title: string; year: number | null; overview: string }>> {
+  const key = apiKey();
+  if (!key) return [];
+  const q = query.replace(/[\[(]\d{4}[\])]/g, "").trim() || query;
+  const path = mediaType === "movie" ? "/search/movie" : "/search/tv";
+  const data = await tmdbGet<any>(`${path}?query=${encodeURIComponent(q)}&page=1&language=${process.env.TMDB_LANGUAGE || "en-US"}`);
+  if (!data?.results?.length) return [];
+  return data.results.slice(0, 10).map((r: any) => {
+    const date = r.release_date || r.first_air_date || "";
+    const year = date ? parseInt(String(date).slice(0, 4), 10) : null;
+    return {
+      id: r.id,
+      title: r.title || r.name || "",
+      year: Number.isFinite(year) ? year : null,
+      overview: (r.overview || "").slice(0, 200),
+    };
+  });
+}
+
+/**
  * Fetch a season's episode list from TMDB, cached in tmdb_season_cache so the
  * app works offline after the first successful lookup. Returns null when no
  * API key, nothing cached, and the network can't be reached.

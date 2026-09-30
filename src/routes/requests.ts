@@ -14,7 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { fetchTMDBSeason, resolveShowIdentity, type SeasonMeta } from "../services/tmdb";
+import { fetchTMDBSeason, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -2496,6 +2496,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         existingSonarrByTitle.set(s.title.toLowerCase(), s);
       }
 
+      // Native (library_key) requests: matchable even when Radarr/Sonarr are down.
+      const allNativeMovies = db.prepare(
+        "SELECT id, title, library_key, status FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL"
+      ).all() as any[];
+      const allNativeSeries = db.prepare(
+        "SELECT id, title, season, library_key, status FROM media_requests WHERE type = 'series' AND library_key IS NOT NULL"
+      ).all() as any[];
+
       for (const torrent of newTorrents) {
         const parsed = parseTorrentName(torrent.name);
         const savePath = (fromQBittorrentPath(torrent.save_path) || "").toLowerCase();
@@ -2550,6 +2558,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               const sNorm = normalizeTitleForMatch(s.title);
               return titlesMatch(sNorm, tNorm);
             });
+          }
+
+          // Step 1b: No arr match — fall back to existing native (library_key)
+          // requests, so content already tracked arr-free gets its torrent
+          // attached without needing Radarr/Sonarr at all.
+          let nativeMatch: any = null;
+          if (!matchedRadarr && !matchedSonarr) {
+            if (type === "movie") {
+              nativeMatch = allNativeMovies.find((m: any) => {
+                const mNorm = normalizeTitleForMatch(m.title);
+                return titlesMatch(mNorm, tNorm);
+              }) || null;
+            } else if (type === "series") {
+              nativeMatch = allNativeSeries.find((s: any) => {
+                const sNorm = normalizeTitleForMatch(s.title);
+                return titlesMatch(sNorm, tNorm);
+              }) || null;
+            }
           }
 
           // Step 2: If no local match, use Sonarr/Radarr lookup — try all results until one validates
@@ -2612,6 +2638,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             } catch (err: any) {
               console.error(`[ScanDownloads] Radarr lookup failed for "${lookupTitle}": ${err.message}`);
             }
+          } else if (type === "movie" && !matchedRadarr && !radarrProfileId && !nativeMatch) {
+            // Arr-less fallback: pre-fill candidates straight from TMDB so the
+            // unmatched panel still offers pick buttons.
+            try {
+              const hits = (await searchTMDB(cleanFranchiseTitle(lookupTitle), "movie")) || [];
+              const candidates = hits.map((f: any) => ({
+                id: f.id,
+                title: f.title,
+                year: f.year,
+                overview: f.overview,
+                normalized: normalizeTitleForMatch(f.title),
+              }));
+              if (candidates.length > 0) {
+                db.prepare(`INSERT OR REPLACE INTO unmatched_torrents
+                  (torrent_name, torrent_hash, save_path, type, size, lookup_title, candidate_results, skipped)
+                  VALUES (?, ?, ?, 'movie', ?, ?, ?, 0)`)
+                  .run(torrent.name, torrent.hash, fromQBittorrentPath(torrent.save_path), torrent.size || 0, lookupTitle, JSON.stringify(candidates));
+                console.log(`[ScanDownloads] (arr-less) TMDB movie candidates for "${lookupTitle}": ${candidates.length}`);
+              }
+            } catch (err: any) {
+              console.error(`[ScanDownloads] TMDB movie lookup failed for "${lookupTitle}": ${err.message}`);
+            }
           } else if (type === "series" && !matchedSonarr && sonarrProfileId) {
             try {
               const lookup = await sonarr.lookupSeries(lookupTitle);
@@ -2670,6 +2718,28 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               }
             } catch (err: any) {
               console.error(`[ScanDownloads] Sonarr lookup failed for "${lookupTitle}": ${err.message}`);
+            }
+          } else if (type === "series" && !matchedSonarr && !sonarrProfileId && !nativeMatch) {
+            // Arr-less fallback: pre-fill candidates straight from TMDB so the
+            // unmatched panel still offers pick buttons.
+            try {
+              const hits = (await searchTMDB(cleanFranchiseTitle(lookupTitle), "series")) || [];
+              const candidates = hits.map((f: any) => ({
+                id: f.id,
+                title: f.title,
+                year: f.year,
+                overview: f.overview,
+                normalized: normalizeTitleForMatch(f.title),
+              }));
+              if (candidates.length > 0) {
+                db.prepare(`INSERT OR REPLACE INTO unmatched_torrents
+                  (torrent_name, torrent_hash, save_path, type, size, lookup_title, candidate_results, skipped)
+                  VALUES (?, ?, ?, 'series', ?, ?, ?, 0)`)
+                  .run(torrent.name, torrent.hash, fromQBittorrentPath(torrent.save_path), torrent.size || 0, lookupTitle, JSON.stringify(candidates));
+                console.log(`[ScanDownloads] (arr-less) TMDB series candidates for "${lookupTitle}": ${candidates.length}`);
+              }
+            } catch (err: any) {
+              console.error(`[ScanDownloads] TMDB series lookup failed for "${lookupTitle}": ${err.message}`);
             }
           }
 
@@ -2773,6 +2843,65 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 }
                 results.push({ title, status: "skipped", type: "series", error: "Already imported" });
               }
+            }
+          } else if (type === "movie" && nativeMatch) {
+            const title = nativeMatch.title;
+            let existingReq = db.prepare(
+              "SELECT id, status FROM media_requests WHERE library_key = ? AND type = 'movie'"
+            ).get(nativeMatch.library_key) as any;
+            if (!existingReq) {
+              const result = db.prepare(
+                "INSERT INTO media_requests (title, type, library_key, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
+              ).run(title, nativeMatch.library_key);
+              existingReq = { id: result.lastInsertRowid as number, status: "DOWNLOADING" };
+            } else if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+              db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
+            }
+            const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
+            if (!existingRc) {
+              const rcResult = db.prepare(
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+              ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, fromQBittorrentPath(torrent.save_path), parseQualityFromName(torrent.name));
+              db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
+            }
+            results.push({ title, status: "imported", type: "movie", request_id: Number(existingReq.id) });
+            console.log(`[ScanDownloads] Movie (native): ${title} (key=${nativeMatch.library_key})`);
+          } else if (type === "series" && nativeMatch) {
+            const title = nativeMatch.title;
+            const contentPath = fromQBittorrentPath(torrent.content_path) || "";
+            const seasonDirs: number[] = [];
+            if (contentPath && fs.existsSync(contentPath)) {
+              const st = fs.statSync(contentPath);
+              if (st.isDirectory()) {
+                for (const entry of fs.readdirSync(contentPath)) {
+                  const sn = parseSeasonNumber(entry);
+                  if (sn !== null) seasonDirs.push(sn);
+                }
+              }
+            }
+            const seasonsToCreate = seasonDirs.length > 0 ? seasonDirs : [season];
+            for (const s of seasonsToCreate) {
+              const epStr2 = seasonDirs.length > 0 ? `S${String(s).padStart(2, "0")}` : epStr;
+              let existingReq = db.prepare(
+                "SELECT id, status FROM media_requests WHERE library_key = ? AND season = ?"
+              ).get(nativeMatch.library_key, s) as any;
+              if (!existingReq) {
+                const result = db.prepare(
+                  "INSERT INTO media_requests (title, type, library_key, season, status, requested_by) VALUES (?, 'series', ?, ?, 'DOWNLOADING', '[]')"
+                ).run(title, nativeMatch.library_key, s);
+                existingReq = { id: result.lastInsertRowid as number, status: "DOWNLOADING" };
+              } else if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+                db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existingReq.id);
+              }
+              const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(existingReq.id, torrent.hash) as any;
+              if (!existingRc) {
+                const rcResult = db.prepare(
+                  "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality, parsed_episodes) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?, ?)"
+                ).run(existingReq.id, `qbit-${torrent.hash.slice(0, 12)}`, torrent.name, Math.round((torrent.size || 0) / (1024 * 1024)), torrent.hash, fromQBittorrentPath(torrent.save_path), parseQualityFromName(torrent.name), epStr2);
+                db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, existingReq.id);
+              }
+              results.push({ title, status: "imported", type: "series", request_id: Number(existingReq.id) });
+              console.log(`[ScanDownloads] Series (native): ${title} S${String(s).padStart(2, "0")} (key=${nativeMatch.library_key})`);
             }
           } else {
             results.push({ title: torrent.name, status: "no_match", type });
@@ -3096,10 +3225,24 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const radarrRootPath = radarrRootFolders[0]?.path || "";
       const sonarrRootPath = sonarrRootFolders[0]?.path || "";
 
+      /** Native fallback: resolve the pick on TMDB and build a library_key. */
+      const resolveNativeKey = async (): Promise<{ key: string; title: string } | null> => {
+        const cleaned = cleanFranchiseTitle(pick.title);
+        const hits = (await searchTMDB(cleaned, row.type === "movie" ? "movie" : "series")) || [];
+        const resolved = hits.find((h: any) => h.id === pick.id) || hits[0];
+        if (!resolved) return null;
+        const prefix = row.type === "movie" ? "movie" : "series";
+        return { key: `${prefix}:${slugForKeyTitle(resolved.title)}:${resolved.year ?? 0}`, title: cleaned };
+      };
+
       if (row.type === "movie") {
+        const radarrOk = !!(radarrProfileId && radarrRootPath);
+        let native = !radarrOk;
+        if (radarrOk) {
+          try {
         const lookup = await radarr.lookupMovie(pick.title);
         const found = lookup.find((f: any) => f.tmdbId === pick.id || f.title?.toLowerCase() === pick.title?.toLowerCase());
-        if (!found) return res.status(400).json({ error: "Movie not found in Radarr lookup" });
+        if (!found) throw new Error("Movie not found in Radarr lookup");
         // Check if already in Radarr
         const allMovies = await radarr.getAllMovies();
         const existingMovie = allMovies.find((m: any) => m.tmdbId === found.tmdbId || m.title?.toLowerCase() === found.title?.toLowerCase());
@@ -3138,12 +3281,47 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
         }
         db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(radarrId, pick.title, id);
-        res.json({ success: true, type: "movie", request_id: requestId, title: pick.title });
-      } else {
+            return res.json({ success: true, type: "movie", request_id: requestId, title: pick.title });
+          } catch (err: any) {
+            console.warn(`[Unmatched Match] Radarr path failed, falling back to native: ${err.message}`);
+            native = true;
+          }
+        }
+        if (native) {
+          const r = await resolveNativeKey();
+          if (!r) return res.status(400).json({ error: "Could not resolve movie on TMDB" });
+          let existingReq = db.prepare("SELECT id, status FROM media_requests WHERE library_key = ? AND type = 'movie'").get(r.key) as any;
+          let requestId: number;
+          if (existingReq) {
+            requestId = existingReq.id;
+            if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+              db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+            }
+          } else {
+            const result = db.prepare(
+              "INSERT INTO media_requests (title, type, library_key, status, requested_by) VALUES (?, 'movie', ?, 'DOWNLOADING', '[]')"
+            ).run(r.title, r.key);
+            requestId = result.lastInsertRowid as number;
+          }
+          const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
+          if (!existingRc) {
+            const rcResult = db.prepare(
+              "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+            ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
+            db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
+          }
+          db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(r.key, r.title, id);
+          return res.json({ success: true, type: "movie", request_id: requestId, title: r.title, native: true });
+        }
+      } else if (row.type === "series") {
         // Series path
+        const sonarrOk = !!(sonarrProfileId && sonarrRootPath);
+        let native = !sonarrOk;
+        if (sonarrOk) {
+          try {
         const lookup = await sonarr.lookupSeries(pick.title);
         const found = lookup.find((f: any) => f.tvdbId === pick.id || f.title?.toLowerCase() === pick.title?.toLowerCase());
-        if (!found) return res.status(400).json({ error: "Series not found in Sonarr lookup" });
+        if (!found) throw new Error("Series not found in Sonarr lookup");
         // Check if already in Sonarr
         const allSeries = await sonarr.getAllSeries();
         const existingSeries = allSeries.find((s: any) => s.tvdbId === found.tvdbId || s.title?.toLowerCase() === found.title?.toLowerCase());
@@ -3206,8 +3384,64 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           createdSeasons.push(s);
         }
         db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(sonarrId, pick.title, id);
-        res.json({ success: true, type: "series", seasons: createdSeasons, title: pick.title });
+            return res.json({ success: true, type: "series", seasons: createdSeasons, title: pick.title });
+          } catch (err: any) {
+            console.warn(`[Unmatched Match] Sonarr path failed, falling back to native: ${err.message}`);
+            native = true;
+          }
+        }
+        if (native) {
+          const r = await resolveNativeKey();
+          if (!r) return res.status(400).json({ error: "Could not resolve series on TMDB" });
+          let seasonsToCreate: number[] = [];
+          let createdSeasons: number[] = [];
+          try {
+            const torrents = await qbittorrent.getTorrents();
+            const t = torrents.find((t2: any) => t2.hash === row.torrent_hash);
+            if (t?.content_path) {
+              const cp = fromQBittorrentPath(t.content_path);
+              if (cp && fs.existsSync(cp) && fs.statSync(cp).isDirectory()) {
+                for (const entry of fs.readdirSync(cp)) {
+                  const sn = parseSeasonNumber(entry);
+                  if (sn !== null) seasonsToCreate.push(sn);
+                }
+              }
+            }
+          } catch {}
+          if (seasonsToCreate.length === 0) {
+            const defaultSeason = req.body.season != null ? req.body.season : 1;
+            seasonsToCreate = [defaultSeason];
+          }
+          for (const s of seasonsToCreate) {
+            let existingReq = db.prepare("SELECT id, status FROM media_requests WHERE library_key = ? AND season = ?").get(r.key, s) as any;
+            let requestId: number;
+            if (existingReq) {
+              requestId = existingReq.id;
+              if (existingReq.status !== "DOWNLOADING" && existingReq.status !== "SEEDING") {
+                db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+              }
+            } else {
+              const result = db.prepare(
+                "INSERT INTO media_requests (title, type, library_key, season, status, requested_by) VALUES (?, 'series', ?, ?, 'DOWNLOADING', '[]')"
+              ).run(r.title, r.key, s);
+              requestId = result.lastInsertRowid as number;
+            }
+            const existingRc = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND torrent_hash = ?").get(requestId, row.torrent_hash) as any;
+            if (!existingRc) {
+              const rcResult = db.prepare(
+                "INSERT INTO release_candidates (request_id, radarr_release_id, title, indexer, size_mb, torrent_hash, save_path, radarr_quality) VALUES (?, ?, ?, 'qBittorrent', ?, ?, ?, ?)"
+              ).run(requestId, `qbit-${row.torrent_hash.slice(0, 12)}`, row.torrent_name, Math.round((row.size || 0) / (1024 * 1024)), row.torrent_hash, row.save_path, parseQualityFromName(row.torrent_name));
+              db.prepare("INSERT INTO approval_history (release_id, request_id, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)").run(rcResult.lastInsertRowid, requestId);
+            }
+            createdSeasons.push(s);
+          }
+          db.prepare("UPDATE unmatched_torrents SET matched_at = datetime('now'), matched_id = ?, matched_title = ? WHERE id = ?").run(r.key, r.title, id);
+          return res.json({ success: true, type: "series", seasons: createdSeasons, title: r.title, native: true });
+        }
+      } else {
+        return res.status(400).json({ error: `Unsupported type: ${row.type}` });
       }
+      return res.status(500).json({ error: "Match failed" });
     } catch (error: any) {
       console.error("[Unmatched Match] Error:", error.message);
       res.status(500).json({ error: error.message });
