@@ -54,11 +54,14 @@ session can start with P0 without re-deriving the design.
   canonical-name (IDs embedded) → fuzzy title, so a file that was **copied**
   instead of hardlinked (doomed inode) still resolves by name. User explicitly
   wanted this fallback.
-- **Optional xattr mirror** (`user.nad.identity`, JSON) written on
-  processed/library/workspace inodes so identity "ships with the file" (hardlinks
-  share the inode → visible on every link). Best-effort; skip writing to
-  anything under `download/` (immutable); EXDEV/copy breaks do not matter
-  because the DB table is the source of truth and re-writes on next scan.
+- **`/download` is completely isolated — the last line of defence.** Never
+  write inside it: no xattrs, no renames, no metadata, no reorganization, ever
+  (qBittorrent seeds from there forever). Identity is **DB-only** — the app
+  never touches a download file beyond read-only `stat()`; even the `media_files`
+  row for a download twin is written only because the processed hardlink shares
+  the same inode. Existing flows that remove download content do so by design:
+  destroy's `renameSync` moves it to `/Processed` only *after* the torrent is
+  deleted from qBittorrent. No xattr mirror was ever added and one must not be.
 - **Canonical naming (both trees, name-for-name so they track visually)** — user
   confirmed this convention (ID-anchored, Jellyfin-friendly):
   - Series show dir: `Title (YYYY) [tvdbid-####]`; movie: `Title (YYYY) [imdbid-tt####]`

@@ -134,8 +134,8 @@ settings                - Key-value config storage
   and every coverage read. Verified end-to-end: simulated rename → panel shows
   the renamed file and AH rows rewritten. No renames performed by the app;
   deployable alone. REMAINING: verify on the VM (coverage counts unchanged for
-  a sample franchise before/after), optional `user.nad.identity` xattr mirror,
-  P1/P2 below.
+  a sample franchise before/after), then P1/P2 below. No xattr mirror — identity
+  is DB-only; `/download` stays 100% isolated (never written to, ever).
 - **P1**: canonical naming for new writes only —
   `Title (YYYY) [tvdbid-####]` series dirs / `Title (YYYY) [imdbid-tt####]`
   movie dirs, `Sxx` season dirs, ID-anchored file names with loader tags
