@@ -7439,7 +7439,7 @@ const type = request.type === "series" ? "series" : "movie";
 
       const finalDest = importResult.success ? sourcePath : destPath;
       const method = importResult.success ? "imported via Radarr/Sonarr" : (fs.existsSync(destPath) && fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied");
-      console.log(`[MoveToLibrary] ${method} ${sourcePath}`);
+      console.log(`[MoveToLibrary] ${method} ${sourcePath} -> ${finalDest}`);
 
       // Register identity on both trees — source (processed) and dest (library);
       // copy fallbacks create a new inode, so both sides are recorded.

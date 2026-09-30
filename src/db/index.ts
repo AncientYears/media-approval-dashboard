@@ -2,10 +2,67 @@
 import path from "path";
 import fs from "fs";
 import { fromQBittorrentPath, PROCESSED_MOVIES, PROCESSED_TV } from "../config/paths";
+import { identifyByPath, deriveIdentityFromFilename } from "../services/identity";
 
 export interface DBInstance {
   db: Database.Database;
   close: () => void;
+}
+
+/**
+ * Relocate a stored processed_files relative path whose file is missing at boot.
+ * Startup cleanup runs before any read-time self-heal, so instead of just
+ * dropping the dangling entry we try to find the file's current home by its
+ * registered inode identity (manual mv/rename keeps the inode). Candidates:
+ * the request's season folder (series — every show dir owning the Sxx folder)
+ * or the processed movies root. Accepts the first file whose identity row
+ * matches library_key (+ season for series) AND whose derived episode
+ * numbers/role agree with the stored basename. Returns the new rel path,
+ * else null (caller falls back to dropping). Names are never trusted —
+ * identity row agreement is the gate.
+ */
+function relocateProcessedFile(
+  db: Database.Database,
+  req: { type: string; library_key?: string | null; season?: number | null },
+  baseDir: string,
+  storedRel: string,
+): string | null {
+  const season = req.season ?? 0;
+  const candidates: string[] = [];
+  if (req.type === "series") {
+    const Sxx = `S${String(season).padStart(2, "0")}`;
+    try {
+      for (const showDir of fs.readdirSync(PROCESSED_TV)) {
+        const sf = path.join(PROCESSED_TV, showDir, Sxx);
+        try {
+          if (fs.statSync(sf).isDirectory()) candidates.push(sf);
+        } catch {}
+      }
+    } catch {}
+  } else {
+    candidates.push(PROCESSED_MOVIES);
+  }
+  const stored = deriveIdentityFromFilename(path.basename(storedRel));
+  for (const folder of candidates) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(folder, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.isDirectory() || !/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e.name)) continue;
+      const row = identifyByPath(db, path.join(folder, e.name));
+      if (!row) continue;
+      if (req.library_key && row.library_key !== req.library_key) continue;
+      if (req.type === "series" && row.season !== season) continue;
+      const cur = deriveIdentityFromFilename(e.name);
+      const sameNums = stored.episodeNumbers.length > 0 && cur.episodeNumbers[0] === stored.episodeNumbers[0];
+      if (!sameNums && !(stored.role === "extra" && cur.role === "extra")) continue;
+      return path.relative(baseDir, path.join(folder, e.name));
+    }
+  }
+  return null;
 }
 
 export function initializeDatabase(dbPath: string): DBInstance {
@@ -302,11 +359,14 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       } catch {}
     }
 
-    // Clean dangling filenames from processed_files that no longer exist on disk
+    // Clean dangling filenames from processed_files that no longer exist on disk.
+    // Try inode-identity relocation FIRST (a manual mv/rename keeps the inode and
+    // the file is still findable in the request's season folder); only drop the
+    // entry when nothing can be relocated.
     const processedMoviesDir = PROCESSED_MOVIES;
     const processedTvDir = PROCESSED_TV;
     const ahWithRequest = db.prepare(`
-      SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id FROM approval_history ah
+      SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id, mr.library_key, mr.season FROM approval_history ah
       JOIN media_requests mr ON mr.id = ah.request_id
       WHERE ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
     `).all() as any[];
@@ -315,10 +375,23 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
         const arr = JSON.parse(r.processed_files);
         if (!Array.isArray(arr)) continue;
         const baseDir = r.type === "series" ? processedTvDir : processedMoviesDir;
-        const filtered = arr.filter((f: string) => fs.existsSync(path.join(baseDir, f)));
-        if (filtered.length !== arr.length) {
-          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(filtered), r.id);
-          console.log(`[DB] Cleaned dangling processed_files for approval_history id=${r.id}: ${arr.length} -> ${filtered.length}`);
+        const filtered: string[] = [];
+        const relocated: string[] = [];
+        for (const f of arr) {
+          if (fs.existsSync(path.join(baseDir, f))) {
+            filtered.push(f);
+            continue;
+          }
+          const rel = relocateProcessedFile(db, r, baseDir, f);
+          if (rel) {
+            relocated.push(`${f} -> ${rel}`);
+            filtered.push(rel);
+          }
+        }
+        const deduped = [...new Set(filtered)];
+        if (relocated.length > 0 || deduped.length !== arr.length) {
+          db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(deduped), r.id);
+          console.log(`[DB] Cleaned dangling processed_files for approval_history id=${r.id}: ${arr.length} -> ${deduped.length}${relocated.length ? ` (relocated: ${relocated.join(", ")})` : ""}`);
         }
       } catch {}
     }
