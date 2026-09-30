@@ -46,27 +46,50 @@ async function tmdbGet<T>(path: string): Promise<T | null> {
   }
 }
 
-/** Resolve a library_key (+ fallback title) to a TMDB show id. */
-async function resolveShowId(libraryKey: string, title: string, language: string): Promise<{ id: number; via: string } | null> {
+export interface ResolvedShow {
+  id: number;
+  name: string;
+  year: number | null;
+  via: string;
+}
+
+/** Resolve a library_key (+ fallback title) to a TMDB show id + year. */
+export async function resolveShowIdentity(libraryKey: string, title: string, language: string): Promise<ResolvedShow | null> {
   const ext = extractExternalId(libraryKey);
   if (ext) {
     const data = await tmdbGet<any>(`/find/${encodeURIComponent(ext.id)}?external_source=${ext.source}&language=${language}`);
     const hit = data?.tv_results?.[0];
-    if (hit?.id) return { id: hit.id, via: ext.source };
+    if (hit?.id) {
+      const yr = hit.first_air_date ? parseInt(String(hit.first_air_date).slice(0, 4), 10) : null;
+      return { id: hit.id, name: hit.name || title, year: Number.isFinite(yr) ? yr : null, via: ext.source };
+    }
   }
   const year = libraryKeyYear(libraryKey);
-  const query = `/search/tv?query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ""}&language=${language}`;
+  const q = title.replace(/[\[(]\d{4}[\])]/g, "").trim() || title;
+  const query = `/search/tv?query=${encodeURIComponent(q)}${year ? `&first_air_date_year=${year}` : ""}&language=${language}`;
   const data = await tmdbGet<any>(query);
   const hit = data?.results?.[0];
-  if (hit?.id) return { id: hit.id, via: "search" };
+  if (hit?.id) {
+    const yr = hit.first_air_date ? parseInt(String(hit.first_air_date).slice(0, 4), 10) : null;
+    return { id: hit.id, name: hit.name || title, year: Number.isFinite(yr) ? yr : null, via: "search" };
+  }
   // A slug's year is best-effort — retry yearless before giving up so a show
   // stored under a wrong/zero year still resolves (pills + episode names).
   if (year) {
-    const retry = await tmdbGet<any>(`/search/tv?query=${encodeURIComponent(title)}&language=${language}`);
+    const retry = await tmdbGet<any>(`/search/tv?query=${encodeURIComponent(q)}&language=${language}`);
     const retryHit = retry?.results?.[0];
-    if (retryHit?.id) return { id: retryHit.id, via: "search" };
+    if (retryHit?.id) {
+      const yr = retryHit.first_air_date ? parseInt(String(retryHit.first_air_date).slice(0, 4), 10) : null;
+      return { id: retryHit.id, name: retryHit.name || title, year: Number.isFinite(yr) ? yr : null, via: "search" };
+    }
   }
   return null;
+}
+
+/** Back-compat: resolve to just the show id. */
+export async function resolveShowId(libraryKey: string, title: string, language: string): Promise<{ id: number; via: string } | null> {
+  const s = await resolveShowIdentity(libraryKey, title, language);
+  return s ? { id: s.id, via: s.via } : null;
 }
 
 /**

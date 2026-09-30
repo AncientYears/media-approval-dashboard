@@ -64,6 +64,11 @@ export async function refreshNativeSeasonMetadata(requestId: number, season: num
   return response.data;
 }
 
+export async function fixNativeIdentity(requestId: number) {
+  const response = await api.post(`/requests/native-franchise/${requestId}/fix-identity`);
+  return response.data;
+}
+
 export async function setFranchiseLanguage(requestId: number, language: string | null) {
   const response = await api.post(`/requests/${requestId}/set-language`, { language });
   return response.data;

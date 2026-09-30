@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity } from "../api";
 import { useToast } from "../components/Toast";
 
 const LANGUAGES = ["pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA", "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO", "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA"];
@@ -147,6 +147,30 @@ export default function NativeFranchise() {
           <option value="">Default language</option>
           {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
+        <button
+          className="btn btn-secondary btn-tiny"
+          style={{ marginLeft: 8 }}
+          title={`Re-resolve this franchise on TMDB and rewrite its library_key to a clean \`series:<slug>:<year>\` (fixes junk slugs like "...-264-al3x" and zero years). Migrates requests, TMDB cache and language pref.`}
+          onClick={async () => {
+            try {
+              const res = await fixNativeIdentity(Number(id));
+              if (res.fixed) {
+                toast(`Identity fixed: ${res.old_key} → ${res.new_key}`, "success");
+                setFranchise(null);
+                fetchNativeFranchise(Number(id))
+                  .then((data) => {
+                    setFranchise(data);
+                    setLanguage(data.language || "");
+                  })
+                  .catch((e: any) => setError(e.message));
+              } else {
+                toast(res.reason === "unresolved on TMDB" ? "Could not resolve show on TMDB (server offline / no API key?)" : "Identity already canonical", "info");
+              }
+            } catch (e: any) {
+              toast(e.response?.data?.error || e.message || "Fix identity failed", "error");
+            }
+          }}
+        >Fix identity</button>
       </div>
 
       <div className="franchise-seasons-list">

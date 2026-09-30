@@ -14,7 +14,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { fetchTMDBSeason, type SeasonMeta } from "../services/tmdb";
+import { fetchTMDBSeason, resolveShowIdentity, type SeasonMeta } from "../services/tmdb";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
@@ -522,8 +522,8 @@ function processedShowDirFromFiles(db: Database, requestIds: number[]): string |
   try {
     rows = db
       .prepare(
-        "SELECT processed_files FROM approval_history WHERE release_id IS NULL" +
-          ` AND request_id IN (${requestIds.map(() => "?").join(",")})` +
+        "SELECT processed_files FROM approval_history" +
+          ` WHERE request_id IN (${requestIds.map(() => "?").join(",")})` +
           " AND processed_files IS NOT NULL AND processed_files != '[]'",
       )
       .all(...requestIds) as any[];
@@ -537,6 +537,34 @@ function processedShowDirFromFiles(db: Database, requestIds: number[]): string |
       if (fs.existsSync(path.join(PROCESSED_TV, parts[0]))) return parts[0];
     }
   }
+  return null;
+}
+
+/** Last-resort show dir: a PROCESSED_TV folder that contains a season directory
+ * matching one of the franchise's own season numbers. Bridges titles that are
+ * nothing alike on disk (e.g. key slug "ninjago-dragon-rising" vs folder
+ * "LEGO Ninjago: Dragons Rising") when no processed file paths exist. */
+function showDirByStructure(requestSeasons: number[]): string | null {
+  const want = new Set(requestSeasons.filter((s) => s > 0));
+  if (want.size === 0) return null;
+  try {
+    for (const d of fs.readdirSync(PROCESSED_TV)) {
+      let st: fs.Stats;
+      try {
+        st = fs.statSync(path.join(PROCESSED_TV, d));
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) continue;
+      try {
+        for (const sub of fs.readdirSync(path.join(PROCESSED_TV, d), { withFileTypes: true })) {
+          if (!sub.isDirectory()) continue;
+          const sn = parseSeasonNumber(sub.name);
+          if (sn != null && want.has(sn)) return d;
+        }
+      } catch {}
+    }
+  } catch {}
   return null;
 }
 
@@ -628,6 +656,17 @@ function cleanFranchiseTitle(title: string): string {
       .trim();
   } while (t !== prev && t.length > 0);
   return t;
+}
+
+/** Slug for a library_key identity: lowercase alnum dashed, bracketed year
+ * dropped (the year is carried by the key's own segment). */
+function slugForKeyTitle(title: string): string {
+  return (title || "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[\[(]\d{4}[\])]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 /** Year embedded in the library_key (`series:<id|slug>:<year>`), if any. */
@@ -1395,7 +1434,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // above simply wins for seasons both sources agree on.
         {
           const franchiseYear = libraryKeyYear(libraryKey);
-          const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id));
+          const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id)) ?? showDirByStructure(seasons.map((s: any) => s.season ?? 0));
           const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear, fallbackShowDir);
           for (const [sn, files] of diskSeasons) {
             if (existingSeasons.has(sn)) continue;
@@ -4431,7 +4470,7 @@ let episodes: any[];
       // root got imported as Specials, or a season exists disk-first).
       const franchiseYear = libraryKeyYear(seed.library_key);
       const existingSeasons = new Set(seasons.map((s: any) => s.season));
-      const fallbackShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id));
+      const fallbackShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id)) ?? showDirByStructure(rows.map((r: any) => r.season ?? 0));
       const diskSeasons = diskSeasonFolders(title, franchiseYear, fallbackShowDir);
       for (const [sn, files] of diskSeasons) {
         if (existingSeasons.has(sn)) continue;
@@ -4617,8 +4656,54 @@ let episodes: any[];
     }
   });
 
+  // POST /api/requests/native-franchise/:id/fix-identity - repair a native
+  // franchise's library_key. Keys minted from unparsed release names carry junk
+  // slugs and a zero year (e.g. series:tajemnica-sagali-264-al3x:0). Re-resolve
+  // the show on TMDB from the cleaned title and rewrite the key to the canonical
+  // `series:<slug>:<year>`, migrating every dependent row (requests, TMDB cache,
+  // language pref). No-op when already canonical, refuses when another franchise
+  // already owns the target key.
+  router.post("/native-franchise/:id/fix-identity", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(400).json({ error: "Series request with library_key required" });
+      }
+      const oldKey = seed.library_key;
+      const cleaned = cleanFranchiseTitle(seed.title || "");
+      const resolved = await resolveShowIdentity(oldKey, cleaned, franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US");
+      if (!resolved) {
+        return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "unresolved on TMDB" });
+      }
+      let slug = slugForKeyTitle(cleaned);
+      if (!slug || slug.length < 3) slug = slugForKeyTitle(resolved.name);
+      const newKey = `series:${slug}:${resolved.year ?? 0}`;
+      if (newKey === oldKey) {
+        return res.json({ fixed: false, old_key: oldKey, new_key: newKey, reason: "already canonical" });
+      }
+      const clash = (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'series' AND library_key = ?").get(newKey) as any)?.c || 0;
+      if (clash > 0) {
+        return res.status(409).json({ error: `Key ${newKey} is already in use by another franchise — not overwriting` });
+      }
+      db.transaction(() => {
+        db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
+        db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+        db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+      })();
+      res.json({
+        fixed: true,
+        old_key: oldKey,
+        new_key: newKey,
+        resolved: { id: resolved.id, name: resolved.name, year: resolved.year, via: resolved.via },
+      });
+    } catch (error: any) {
+      console.error("Error fixing franchise identity:", error.message || error);
+      res.status(500).json({ error: "Failed to fix franchise identity" });
+    }
+  });
+
   // POST /api/requests/:id/set-language - set/clear per-franchise TMDB language.
-  // Language is stored per library_key so mixed-language libraries keep working.
   router.post("/:id/set-language", (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
