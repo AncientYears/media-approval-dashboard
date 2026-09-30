@@ -1258,20 +1258,26 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
   if (!rest) return null;
   const stripped = specialTitleFromSourceName(sourceBase, request, showPieces?.title);
   const lang = request.library_key ? franchiseLanguage(db, request.library_key) : null;
+  // A special is usually filed on TMDB as its own movie. Try that first — it is
+  // the most specific match. The scene title is in the release's own language
+  // ("Fretka kontra Wszechświat") whose words share nothing with the English
+  // title, so a non-English search runs too even when no franchise language is
+  // configured, since these are the titles the files actually carry.
+  const searchLang = lang || "pl-PL";
   for (const candidate of [stripped, rest]) {
     if (!candidate) continue;
     try {
-      const id = await resolveSpecialIdentity(candidate, lang || undefined);
+      const id = await resolveSpecialIdentity(candidate, searchLang);
       if (id) return { title: id.title, year: id.year, imdbId: id.imdbId, onTmdb: true };
     } catch {}
   }
-  // Not a standalone film — but it may still be a named special in the series'
-  // own S00 list ("pilot episode"). Then it IS on TMDB and we must not claim
-  // otherwise; the on-disk title stays because it is the more useful one.
+  // Not a film — but it may be a named special in the series' own S00 list
+  // ("pilot episode"). Numbered episodes take their TMDB title, so use this one
+  // for the same reason rather than keeping the on-disk name.
   if (request.library_key && episode) {
     try {
       const tmdbTitle = episodeTitleFromCache(db, request.library_key, 0, episode, lang);
-      if (tmdbTitle) return { title: stripped || rest, year: null, imdbId: null, onTmdb: true };
+      if (tmdbTitle) return { title: tmdbTitle, year: null, imdbId: null, onTmdb: true };
     } catch {}
   }
   return { title: stripped || rest, year: null, imdbId: null, onTmdb: false };
