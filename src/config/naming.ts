@@ -184,6 +184,27 @@ function editionLabel(word: string): string {
   return key.split(/\s+/).map((s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "")).join(" ");
 }
 
+/** Multi-word release phrases that must survive as ONE tag. Everything else in
+ *  a bracket is split on whitespace so "[DV HDR10Plus]" classifies piece by
+ *  piece, which would otherwise shred "[Dual Audio]" into "[Dual][Audio]". */
+const MISC_PHRASES: Record<string, string> = {
+  "dual audio": "Dual Audio",
+  "multi audio": "Multi Audio",
+  "dual subs": "Dual Subs",
+  "dual subtitles": "Dual Subtitles",
+  "multi subs": "Multi Subs",
+  "multi subtitle": "Multi Subtitles",
+  "multi subtitles": "Multi Subtitles",
+  "multi language": "Multi Language",
+  "dual language": "Dual Language",
+  "audio only": "Audio Only",
+  "video only": "Video Only",
+  "complete season": "Complete Season",
+  "complete series": "Complete Series",
+  "season pack": "Season Pack",
+  "limited series": "Limited Series",
+};
+
 function collectEditions(base: string): string[] {
   const out: string[] = [];
   for (const m of base.matchAll(EDITION_MULTI_RE)) {
@@ -498,6 +519,14 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     // Split multi-word bracket tags ("[DV HDR10Plus]", "[TrueHD Atmos 7.1]",
     // "[AC3 2.0]") into single tokens so each piece classifies/merges, then
     // re-joins into the canonical shape ([TrueHD Atmos 7.1], [DV HDR10Plus]).
+    // Known phrases ("[Dual Audio]") are kept whole first, or the whitespace
+    // split below would emit them as a row of meaningless single-word tags.
+    const whole = m[1].trim();
+    const phrase = MISC_PHRASES[whole.toLowerCase()];
+    if (phrase) {
+      misc.push(phrase);
+      continue;
+    }
     for (const piece of m[1].split(/\s+/)) tryToken(piece, true);
   }
   // Loose dotted/separated release tail. Re-join known multi-word compounds
@@ -512,6 +541,16 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     if (/^web$/i.test(t) && /^(dl|rip)$/i.test(next)) { tryToken(`${t}-${next}`, false); i++; continue; }
     if (/^(bd|dvd|blu)$/i.test(t) && /^rip$/i.test(next)) { tryToken(`${t}-${next}`, false); i++; continue; }
     if (/^blu$/i.test(t) && /^ray$/i.test(next)) { tryToken(`${t}-${next}`, false); i++; continue; }
+    // Same phrase rule for the unbracketed tail: "…x264 Dual Audio" must stay
+    // one tag rather than losing both halves to the unknown-token drop.
+    if (/^(dual|multi)$/i.test(t) && /^(audio|subs?|subtitles|language)$/i.test(next)) {
+      const phrase = MISC_PHRASES[`${t.toLowerCase()} ${next.toLowerCase()}`];
+      if (phrase) {
+        if (!misc.includes(phrase)) misc.push(phrase);
+        i++;
+        continue;
+      }
+    }
     tryToken(t, false);
   }
 
