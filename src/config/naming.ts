@@ -238,11 +238,14 @@ function renderTags(f: {
   else if (f.source) tags += `[${f.source}]`;
   else if (f.resolution) tags += `[${f.resolution}]`;
   for (const a of f.audio) tags += `[${a}]`;
-  const hdr = [...f.hdr].sort((a, b) => {
-    const ra = HDR_RANK.indexOf(a);
-    const rb = HDR_RANK.indexOf(b);
-    return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb) || a.localeCompare(b);
-  });
+  // HDR10+ implies the HDR10 base layer — never print both (redundant).
+  const hdr = [...f.hdr]
+    .filter((x) => !(x === "HDR10" && f.hdr.includes("HDR10Plus")))
+    .sort((a, b) => {
+      const ra = HDR_RANK.indexOf(a);
+      const rb = HDR_RANK.indexOf(b);
+      return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb) || a.localeCompare(b);
+    });
   if (hdr.length) tags += `[${hdr.join(" ")}]`;
   for (const v of f.video) tags += `[${v}]`;
   for (const m of f.misc) tags += `[${m}]`;
