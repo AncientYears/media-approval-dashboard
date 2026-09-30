@@ -1079,7 +1079,7 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return null;
   if (ep.season === 0) {
-    const sp = await specialPiecesForFile(db, request, sourceBase, pieces);
+    const sp = await specialPiecesForFile(db, request, sourceBase, pieces, ep.episode);
     if (!sp) return null;
     return canonicalSpecialFile(conf, { title: sp.title, year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group });
   }
@@ -1253,18 +1253,28 @@ function specialTitleFromSourceName(base: string, request: any, showTitle?: stri
 /** Resolve an S00 special's own title/year/imdbId, preferring TMDB and falling
  *  back to the on-disk name. Two sources: the name after the episode code, and
  *  that with a leading show-name prefix stripped. */
-async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null): Promise<{ title: string; year: number | null; imdbId: string | null } | null> {
+async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null, episode?: number | null): Promise<{ title: string; year: number | null; imdbId: string | null; onTmdb: boolean } | null> {
   const rest = episodeTitleFromSourceName(sourceBase);
   if (!rest) return null;
   const stripped = specialTitleFromSourceName(sourceBase, request, showPieces?.title);
+  const lang = request.library_key ? franchiseLanguage(db, request.library_key) : null;
   for (const candidate of [stripped, rest]) {
     if (!candidate) continue;
     try {
-      const id = await resolveSpecialIdentity(candidate);
-      if (id) return { title: id.title, year: id.year, imdbId: id.imdbId };
+      const id = await resolveSpecialIdentity(candidate, lang || undefined);
+      if (id) return { title: id.title, year: id.year, imdbId: id.imdbId, onTmdb: true };
     } catch {}
   }
-  return { title: stripped || rest, year: null, imdbId: null };
+  // Not a standalone film — but it may still be a named special in the series'
+  // own S00 list ("pilot episode"). Then it IS on TMDB and we must not claim
+  // otherwise; the on-disk title stays because it is the more useful one.
+  if (request.library_key && episode) {
+    try {
+      const tmdbTitle = episodeTitleFromCache(db, request.library_key, 0, episode, lang);
+      if (tmdbTitle) return { title: stripped || rest, year: null, imdbId: null, onTmdb: true };
+    } catch {}
+  }
+  return { title: stripped || rest, year: null, imdbId: null, onTmdb: false };
 }
 
 /**
@@ -1300,7 +1310,7 @@ async function proposeCanonicalName(
     // A special is usually filed on TMDB as its own movie, never under the show,
     // so the show's id must not be reused. Resolve the special itself and keep
     // the S00Exx marker so two specials can never collapse to one name.
-    const sp = await specialPiecesForFile(db, request, base, pieces);
+    const sp = await specialPiecesForFile(db, request, base, pieces, parseEpisodeCode(base, { knownSeason: 0 })?.episode ?? null);
     if (!sp) return { name: null, role: "special", note: "No title in file name" };
     const epNo = parseEpisodeCode(base, { knownSeason: 0 });
     const name = canonicalSpecialFile(conf, {
@@ -1313,7 +1323,7 @@ async function proposeCanonicalName(
       group: tags.group,
     });
     if (!name) return { name: null, role: "special", note: "Missing title pieces" };
-    return { name: name === base ? null : name, role: "special", note: sp.imdbId ? null : "Not on TMDB - kept the on-disk title" };
+    return { name: name === base ? null : name, role: "special", note: sp.onTmdb ? null : "Not on TMDB - kept the on-disk title" };
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };

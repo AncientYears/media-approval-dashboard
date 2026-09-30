@@ -102,15 +102,27 @@ export async function resolveShowId(libraryKey: string, title: string, language:
  *  IMDb id can never be reused for them. Searches the on-disk title as a movie
  *  and returns null when nothing convincing matches — the caller then keeps the
  *  on-disk title instead of guessing. */
-export async function resolveSpecialIdentity(title: string): Promise<{ tmdbId: number; imdbId: string | null; title: string; year: number | null } | null> {
+export async function resolveSpecialIdentity(title: string, language?: string): Promise<{ tmdbId: number; imdbId: string | null; title: string; year: number | null } | null> {
   const q = title.replace(/[[({][^\])}]*[\])}]/g, " ").replace(/\s+/g, " ").trim();
   if (!q || q.length < 3) return null;
   let hits: Array<{ id: number; title: string; year: number | null }>;
   try {
     hits = await searchTMDB(q, "movie");
   } catch {
-    return null;
+    hits = [];
   }
+  // A scene release names the special in its own language ("Fretka kontra
+  // Wszecświat"), which shares no words with the English TMDB title. TMDB
+  // matches translated titles too, so retry in the franchise's language before
+  // giving up on it.
+  if (language) {
+    try {
+      for (const hit of await searchTMDB(q, "movie", language)) {
+        if (!hits.some((h) => h.id === hit.id)) hits.push(hit);
+      }
+    } catch {}
+  }
+  if (!hits.length) return null;
   const words = (s: string) =>
     new Set(
       s
@@ -141,12 +153,13 @@ export async function resolveSpecialIdentity(title: string): Promise<{ tmdbId: n
 export async function searchTMDB(
   query: string,
   mediaType: "movie" | "series",
+  language?: string,
 ): Promise<Array<{ id: number; title: string; year: number | null; overview: string; poster: string | null }>> {
   const key = apiKey();
   if (!key) return [];
   const q = query.replace(/[\[(]\d{4}[\])]/g, "").trim() || query;
   const path = mediaType === "movie" ? "/search/movie" : "/search/tv";
-  const data = await tmdbGet<any>(`${path}?query=${encodeURIComponent(q)}&page=1&language=${process.env.TMDB_LANGUAGE || "en-US"}`);
+  const data = await tmdbGet<any>(`${path}?query=${encodeURIComponent(q)}&page=1&language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
   if (!data?.results?.length) return [];
   return data.results.slice(0, 10).map((r: any) => {
     const date = r.release_date || r.first_air_date || "";
