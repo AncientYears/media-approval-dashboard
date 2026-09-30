@@ -18,7 +18,7 @@ export async function probeVideoFile(filePath: string): Promise<ProbeInfo | null
       "-show_streams",
       "-show_format",
       filePath,
-    ]);
+    ], { timeout: 20000 });
     const info = JSON.parse(stdout);
     const streams: any[] = Array.isArray(info.streams) ? info.streams : [];
     const videoStream = streams.find((s) => s.codec_type === "video");
@@ -37,7 +37,7 @@ export async function probeVideoFile(filePath: string): Promise<ProbeInfo | null
       for (const sd of sideData) {
         const type = String(sd.type || "");
         if (/dolby ?vision|dovi/i.test(type)) addHdr(hdr, "DV");
-        else if (/smpte ?st ?2094|hdr10\+/i.test(type)) addHdr(hdr, "HDR10Plus");
+        else if (/smpte ?st ?2094|hdr10\+/i.test(type)) addHdr(hdr, "HDR10+");
         else if (/smpte ?st ?2086|mastering ?display/i.test(type)) addHdr(hdr, "HDR10");
       }
       const transfer = String(videoStream.color_transfer || "");
