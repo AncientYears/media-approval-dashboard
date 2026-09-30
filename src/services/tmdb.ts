@@ -59,6 +59,13 @@ async function resolveShowId(libraryKey: string, title: string, language: string
   const data = await tmdbGet<any>(query);
   const hit = data?.results?.[0];
   if (hit?.id) return { id: hit.id, via: "search" };
+  // A slug's year is best-effort — retry yearless before giving up so a show
+  // stored under a wrong/zero year still resolves (pills + episode names).
+  if (year) {
+    const retry = await tmdbGet<any>(`/search/tv?query=${encodeURIComponent(title)}&language=${language}`);
+    const retryHit = retry?.results?.[0];
+    if (retryHit?.id) return { id: retryHit.id, via: "search" };
+  }
   return null;
 }
 

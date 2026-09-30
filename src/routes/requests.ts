@@ -559,6 +559,25 @@ function seasonFolderForLibraryKey(db: Database, library_key: string | null | un
   return fs.existsSync(cand) ? cand : null;
 }
 
+/** True when a show's processed folder contains the given season FOLDER,
+ * files or not. Iterates title-matched + path-derived show dirs. Used to show
+ * a Specials pill for shows whose empty S00 structure was created alongside
+ * the season folders (Death in Paradise, The Smurfs, Ninjago). */
+function seasonFolderOnDisk(baseTitle: string, season: number, year?: number | null, extraShowDir?: string | null): boolean {
+  const Sxx = `S${String(season).padStart(2, "0")}`;
+  for (const showDir of matchShowFolders(baseTitle, year)) {
+    try {
+      if (fs.existsSync(path.join(PROCESSED_TV, showDir, Sxx))) return true;
+    } catch {}
+  }
+  if (extraShowDir) {
+    try {
+      if (fs.existsSync(path.join(PROCESSED_TV, extraShowDir, Sxx))) return true;
+    } catch {}
+  }
+  return false;
+}
+
 /** Denominator for a native Specials (S00) season. Imported S00 rows carry an
  * `episode_count` that is a file-count snapshot — episodes stored loose in the
  * library root get miscast as "specials" and inflate the number (e.g. 55
@@ -1405,14 +1424,23 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             });
             existingSeasons.add(sn);
           }
-          // Disk-less Specials still appear when cached TMDB season-0 episodes
-          // exist (native franchises — they carry a library_key for the cache).
-          if (sonarrId == null && !existingSeasons.has(0)) {
+          // Specials with no request row (native franchises — they carry a
+          // library_key for the cache): inject from cached TMDB season-0, or
+          // actively fetch when the show has an S00 folder on disk (even empty).
+          if (sonarrId == null && !existingSeasons.has(0) && libraryKey) {
             let tmdbSpecials = 0;
             try {
               const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(libraryKey) as any;
               if (tc) tmdbSpecials = namedSpecialCount(tc.payload);
             } catch {}
+            if (tmdbSpecials === 0 && seasonFolderOnDisk(franchiseTitle, 0, franchiseYear, fallbackShowDir)) {
+              try {
+                const meta = await fetchTMDBSeason(db, libraryKey, 0, franchiseTitle, {
+                  language: franchiseLanguage(db, libraryKey),
+                });
+                if (meta) tmdbSpecials = namedSpecialCount(JSON.stringify(meta));
+              } catch {}
+            }
             if (tmdbSpecials > 0) {
               mappedSeasons.push({
                 season: 0,
@@ -4299,7 +4327,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       // Present files with no parseable episode number (e.g. S00 movies like
       // "Candace Against the Universe") — TMDB has no special entry, but the
       // file is there and should show as FILLED.
-      const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const baseTitle = cleanFranchiseTitle(request.title || "");
       const extras: { name: string }[] = [];
       try {
         const folder = seasonFolderForLibraryKey(db, request.library_key, baseTitle, season);
@@ -4313,7 +4341,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       let meta: SeasonMeta | null = null;
       if (request.library_key) {
         try {
-          meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "", {
+          meta = await fetchTMDBSeason(db, request.library_key, season, baseTitle, {
             language: franchiseLanguage(db, request.library_key),
           });
         } catch (err: any) {
@@ -4363,7 +4391,7 @@ let episodes: any[];
   // GET /api/requests/native-franchise/:id - arr-free franchise overview: all
   // seasons grouped by the library_key of a seed request, each with file-derived
   // coverage. Episodes themselves come from GET /:id/episodes on expand.
-  router.get("/native-franchise/:id", (req: Request, res: Response) => {
+  router.get("/native-franchise/:id", async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
       const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
@@ -4377,7 +4405,7 @@ let episodes: any[];
       const titleSeason = rows.find((r: any) => r.season !== 0) || rows[0];
       const title = cleanFranchiseTitle(titleSeason.title);
       const seasons = rows.map((s: any) => {
-        const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        const baseTitle = cleanFranchiseTitle(s.title || "");
         const covered = coveredEpisodesForRequest(db, s);
         const extras = unnumberedFilesInSeasonFolder(baseTitle, s.season ?? 0, libraryKeyYear(s.library_key));
         let fileCount = 0;
@@ -4431,13 +4459,23 @@ let episodes: any[];
         });
         existingSeasons.add(sn);
       }
-      // Disk-less Specials still appear when cached TMDB season-0 episodes exist.
+      // Specials with no request row: inject from cached TMDB season-0, or
+      // actively fetch it when the show has an S00 folder on disk (even empty —
+      // Death in Paradise, The Smurfs, Ninjago all keep placeholder S00 grips).
       if (!existingSeasons.has(0)) {
         let tmdbSpecials = 0;
         try {
           const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(seed.library_key) as any;
           if (tc) tmdbSpecials = namedSpecialCount(tc.payload);
         } catch {}
+        if (tmdbSpecials === 0 && seasonFolderOnDisk(title, 0, franchiseYear, fallbackShowDir)) {
+          try {
+            const meta = await fetchTMDBSeason(db, seed.library_key, 0, title, {
+              language: franchiseLanguage(db, seed.library_key),
+            });
+            if (meta) tmdbSpecials = namedSpecialCount(JSON.stringify(meta));
+          } catch {}
+        }
         if (tmdbSpecials > 0) {
           seasons.push({
             season: 0,
@@ -4472,7 +4510,7 @@ let episodes: any[];
       }
       const season = parseInt(req.query.season as string, 10);
       const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
-      const baseTitle = (seed.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const baseTitle = cleanFranchiseTitle(seed.title || "");
       const covered = coveredEpisodesForRequest(db, { id: -1, title: baseTitle, season: sNum, episode_count: null, library_key: seed.library_key } as any);
       const extras: { name: string }[] = [];
       try {
@@ -4540,7 +4578,7 @@ let episodes: any[];
         return res.status(400).json({ error: "No library_key to refresh" });
       }
       const season = request.season ?? 0;
-      const meta = await fetchTMDBSeason(db, request.library_key, season, request.title || "", {
+      const meta = await fetchTMDBSeason(db, request.library_key, season, cleanFranchiseTitle(request.title || ""), {
         language: franchiseLanguage(db, request.library_key),
         force: true,
       });
@@ -4566,7 +4604,7 @@ let episodes: any[];
       }
       const season = parseInt(req.query.season as string, 10);
       const sNum = Number.isFinite(season) && season >= 0 ? season : 0;
-      const baseTitle = (seed.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const baseTitle = cleanFranchiseTitle(seed.title || "");
       const meta = await fetchTMDBSeason(db, seed.library_key, sNum, baseTitle, {
         language: franchiseLanguage(db, seed.library_key),
         force: true,
