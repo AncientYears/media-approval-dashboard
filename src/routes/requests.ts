@@ -990,6 +990,24 @@ async function namingPiecesForRequest(db: Database, request: any, idHintFolder?:
   return pieces;
 }
 
+/**
+ * namingPiecesForRequest with a disk-tied fallback: when TMDB is unset or a
+ * title simply cannot be resolved, parse ids from an already-canonical folder
+ * ("Title (Year) [tvdbid-####]"/"[imdbid-tt####]") so existing trees still name
+ * canonically. Candidates come from the processed dirs matched for the request
+ * plus the library tree, where the user has usually already applied the naming.
+ */
+async function namingPiecesWithDiskFallback(db: Database, request: any, hintFolders: string[]): Promise<NamingPieces | null> {
+  const pieces = await namingPiecesForRequest(db, request);
+  if (pieces) return pieces;
+  for (const folder of hintFolders) {
+    if (!folder) continue;
+    const p = await namingPiecesForRequest(db, request, folder);
+    if (p) return p;
+  }
+  return null;
+}
+
 /** Canonical file basename (no extension) for a NEW processed/library file, or
  * null to keep today's raw release name. Null on disabled naming, missing
  * pivots (episode code / title / id), or unresolved identity — never guesses.
@@ -1257,9 +1275,17 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
   const probes = await probeInodesConcurrently(probePaths);
 
+  // Identity pieces for dir/file proposals — TMDB first, then parse ids from
+  // already-canonical folders on disk (processed dirs matched + library dirs).
+  const cachedPieces = await namingPiecesWithDiskFallback(db, request, [
+    ...(type === "movie" ? movieDirs : []),
+    ...(type === "series" ? [...showSeasons.keys()] : []),
+    ...(type === "series" ? [resolveLibraryShowFolder(request) || ""] : []),
+    ...(type === "movie" ? nativeMovieLibraryFolders(request.title || "") : []),
+  ]);
+
   const groups: FixNameGroup[] = [];
   let gid = 0;
-  const cachedPieces = await namingPiecesForRequest(db, request);
   for (const a of accepted) {
     let ino: number | null = null;
     let key = "";
