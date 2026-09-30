@@ -164,11 +164,12 @@ export function initializeDatabase(dbPath: string): DBInstance {
     CREATE TABLE IF NOT EXISTS tmdb_season_cache (
       library_key TEXT NOT NULL,
       season INTEGER NOT NULL,
+      language TEXT NOT NULL DEFAULT 'en-US',
       tmdb_show_id INTEGER,
       show_name TEXT,
       payload TEXT NOT NULL,
       fetched_at TEXT NOT NULL,
-      PRIMARY KEY (library_key, season)
+      PRIMARY KEY (library_key, season, language)
     );
 
     CREATE TABLE IF NOT EXISTS tmdb_franchise_prefs (
@@ -326,6 +327,42 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
     const ahColNames = ahCols.map((c: any) => c.name);
     if (!ahColNames.includes("processed_files")) {
       db.exec(`ALTER TABLE approval_history ADD COLUMN processed_files TEXT DEFAULT '[]'`);
+    }
+
+    // Migration: key tmdb_season_cache by language as well. It used to be
+    // (library_key, season) only, so a fetch in one language overwrote the other
+    // and the same request's episode titles flipped between e.g. Polish and
+    // English depending on which endpoint wrote last. Rows are copied into the
+    // language they were actually fetched in.
+    const tscCols = db.prepare("PRAGMA table_info(tmdb_season_cache)").all() as any[];
+    if (tscCols.length && !tscCols.some((c: any) => c.name === "language")) {
+      console.log("[DB] Migrating tmdb_season_cache: adding language to primary key...");
+      const rows = db.prepare("SELECT library_key, season, tmdb_show_id, show_name, payload, fetched_at FROM tmdb_season_cache").all() as any[];
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tmdb_season_cache_new (
+          library_key TEXT NOT NULL,
+          season INTEGER NOT NULL,
+          language TEXT NOT NULL DEFAULT 'en-US',
+          tmdb_show_id INTEGER,
+          show_name TEXT,
+          payload TEXT NOT NULL,
+          fetched_at TEXT NOT NULL,
+          PRIMARY KEY (library_key, season, language)
+        )
+      `);
+      const ins = db.prepare(
+        "INSERT OR REPLACE INTO tmdb_season_cache_new (library_key, season, language, tmdb_show_id, show_name, payload, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const r of rows) {
+        let lang = "en-US";
+        try {
+          const meta = JSON.parse(r.payload);
+          if (meta && typeof meta.language === "string" && meta.language) lang = meta.language;
+        } catch {}
+        ins.run(r.library_key, r.season, lang, r.tmdb_show_id, r.show_name, r.payload, r.fetched_at);
+      }
+      db.exec("DROP TABLE tmdb_season_cache");
+      db.exec("ALTER TABLE tmdb_season_cache_new RENAME TO tmdb_season_cache");
     }
 
     // Migration: make release_id nullable in approval_history (for system/library-imported entries)

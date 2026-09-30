@@ -1046,7 +1046,10 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
     }
     return null;
   }
-  const episodeTitle = request.library_key ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode) : null;
+  const episodeTitle =
+    (request.library_key
+      ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key))
+      : null) || episodeTitleFromSourceName(sourceBase);
   return canonicalEpisodeFile(conf, {
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
     season: ep.season,
@@ -1153,6 +1156,28 @@ async function probeInodesConcurrently(paths: string[]): Promise<Map<string, Pro
   return map;
 }
 
+/** Episode title already present in an on-disk name ("... - S03E15 - The
+ * Screaming Earth [1080p]...") — used only when TMDB has nothing cached, so a
+ * rename can never silently strip a title that is already on disk. */
+function episodeTitleFromSourceName(base: string): string | null {
+  const m = base.match(/\b[sS]\d{1,2}[\s._-]*[eE]\d{1,3}\b[\s._-]+(.+)$/);
+  if (!m) return null;
+  let rest = m[1];
+  // Cut the release tail: first bracket group, or a trailing tag word run. A
+  // leading bracket means the name went straight from the code to tags ("- S03E01
+  // [Dual Audio]") — there is no title to keep.
+  const bracket = rest.search(/[[({]/);
+  if (bracket === 0) return null;
+  if (bracket > 0) rest = rest.slice(0, bracket);
+  else rest = rest.replace(/\s+[\w.]*\d{3,4}p\b.*$/i, "").replace(/\s+-\s*[A-Za-z0-9]{2,12}$/, "");
+  rest = rest.replace(/[[({]\s*$/, "").replace(/\s*[\])}]\s*$/, "").trim().replace(/[-_]+$/, "").trim();
+  if (!rest || rest.length > 90) return null;
+  // A leftover tag run ("1080p WEB-DL") is not a title.
+  if (/^\[.*\]$/.test(rest) || /^\d{3,4}[pi]$/i.test(rest)) return null;
+  if (!/[a-z]{3}/i.test(rest)) return null;
+  return rest;
+}
+
 /**
  * Canonical basename proposal for ONE existing file (no extension never applied
  * here — callers keep the original extension). Returns null when nothing should
@@ -1188,7 +1213,10 @@ async function proposeCanonicalName(
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
   if (ep.season !== (request.season ?? ep.season)) return { name: null, role: "episode", note: `S${ep.season} does not match request season` };
-  const episodeTitle = request.library_key ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode) : null;
+  const episodeTitle =
+    (request.library_key
+      ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode, request.library_key ? franchiseLanguage(db, request.library_key) : null)
+      : null) || episodeTitleFromSourceName(base);
   const name = canonicalEpisodeFile(conf, {
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
     season: ep.season,
@@ -1290,6 +1318,21 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   // Probe all involved files once per dev:ino (parallel, cached).
   const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
   const probes = await probeInodesConcurrently(probePaths);
+
+  // Episode titles + identity both come from TMDB. Warm this request's season
+  // (franchise language, altTitle = the on-disk show folder) BEFORE resolving
+  // identity: a season that was never fetched would otherwise propose names with
+  // the episode title stripped, and the cached show id is what pins the identity.
+  if (type === "series" && request.library_key && request.season !== 0) {
+    try {
+      const lang = franchiseLanguage(db, request.library_key);
+      const altTitle = [...showSeasons.keys()].map((d) => path.basename(d)).find((n) => n && n.length > 2) || null;
+      await fetchTMDBSeason(db, request.library_key, request.season ?? 1, cleanFranchiseTitle(request.title || ""), {
+        language: lang,
+        altTitle,
+      });
+    } catch {}
+  }
 
   // Identity pieces for dir/file proposals — TMDB first, then parse ids from
   // already-canonical folders on disk (processed dirs matched + library dirs).

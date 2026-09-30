@@ -170,16 +170,18 @@ export async function fetchTMDBSeason(
 ): Promise<SeasonMeta | null> {
   const language = opts.language || process.env.TMDB_LANGUAGE || "en-US";
   const force = !!opts.force;
+  // The cache is keyed by language too, so a Polish fetch never clobbers the
+  // English one (they used to share a row and flip-flop on every refresh).
   const cacheRow = db
-    .prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?")
-    .get(libraryKey, season) as any;
+    .prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ? AND language = ?")
+    .get(libraryKey, season, language) as any;
   let cached: SeasonMeta | null = null;
-  if (cacheRow && !force) {
+  if (cacheRow) {
     try {
       cached = JSON.parse(cacheRow.payload) as SeasonMeta;
     } catch {}
   }
-  if (cached && cached.language === language) return cached;
+  if (cached && !force) return cached;
 
   const key = apiKey();
   if (!key) return cached;
@@ -233,9 +235,10 @@ export async function fetchTMDBSeason(
       };
     }),
   };
-  db.prepare("INSERT OR REPLACE INTO tmdb_season_cache (library_key, season, tmdb_show_id, show_name, payload, fetched_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+  db.prepare("INSERT OR REPLACE INTO tmdb_season_cache (library_key, season, language, tmdb_show_id, show_name, payload, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     libraryKey,
     season,
+    language,
     show.id,
     meta.show_name,
     JSON.stringify(meta),
@@ -334,6 +337,34 @@ export async function resolveExternalIds(
       }
     }
   } catch {}
+  // Deterministic identity first: if this key's seasons were already fetched,
+  // reuse that show id instead of searching by title. A mangled stored title
+  // ("Ninjago: Dragon Rising") can otherwise miss, or worse, match a different
+  // show in the same franchise.
+  if (mediaType === "series") {
+    const knownId = cachedShowIdForKey(db, libraryKey);
+    if (knownId) {
+      const ext = await fetchExternalIds("series", knownId, language);
+      const show = await tmdbGet<any>(`/tv/${knownId}?language=${language}`);
+      if (ext) {
+        const yr = show?.first_air_date ? parseInt(String(show.first_air_date).slice(0, 4), 10) : null;
+        const out: ExternalIds = {
+          tmdbId: knownId,
+          imdbId: ext.imdbId,
+          tvdbId: ext.tvdbId,
+          title: (show?.name as string) || title,
+          year: Number.isFinite(yr) ? yr : null,
+        };
+        try {
+          db.prepare(
+            "INSERT OR REPLACE INTO tmdb_external_ids (library_key, media_type, tmdb_id, imdb_id, tvdb_id, title, year, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+          ).run(libraryKey, mediaType, out.tmdbId, out.imdbId, out.tvdbId, out.title, out.year ?? null);
+        } catch {}
+        if (!out.imdbId && !out.tvdbId) return null;
+        return out;
+      }
+    }
+  }
   const show =
     mediaType === "series"
       ? await resolveShowIdentity(libraryKey, title, language)
@@ -360,16 +391,42 @@ export async function resolveExternalIds(
 }
 
 /** Read-only lookup of a numbered episode's name from tmdb_season_cache — used
- * to fill {EpisodeTitle} on the write path without hitting the network. */
-export function episodeTitleFromCache(db: Database, libraryKey: string, season: number, episode: number): string | null {
+ * to fill {EpisodeTitle} on the write path without hitting the network. The
+ * cache is per-language, so a caller with a franchise preference must pass it
+ * (or the row is looked up in the default language). */
+export function episodeTitleFromCache(
+  db: Database,
+  libraryKey: string,
+  season: number,
+  episode: number,
+  language?: string | null,
+): string | null {
+  const lang = language || process.env.TMDB_LANGUAGE || "en-US";
   try {
-    const row = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?").get(libraryKey, season) as any;
+    const row = db
+      .prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ? AND language = ?")
+      .get(libraryKey, season, lang) as any;
     if (!row) return null;
     const meta = JSON.parse(row.payload) as SeasonMeta;
     const ep = meta.episodes?.find((e) => e.episode_number === episode);
     const name = ep?.name?.trim();
     if (!name || /^(Episode|Odcinek|Folge|Épisode|Episodio|Episódio)\s+\d+$/i.test(name)) return null;
     return name;
+  } catch {
+    return null;
+  }
+}
+
+/** The TMDB show id already resolved for a library_key, if any season of it has
+ * been cached. Used as a deterministic identity source for naming: the episode
+ * titles on screen come from this show, so the canonical dir should too — no
+ * title search (and no risk of matching the wrong Ninjago). */
+export function cachedShowIdForKey(db: Database, libraryKey: string): number | null {
+  try {
+    const row = db
+      .prepare("SELECT tmdb_show_id FROM tmdb_season_cache WHERE library_key = ? AND tmdb_show_id IS NOT NULL ORDER BY fetched_at DESC LIMIT 1")
+      .get(libraryKey) as any;
+    return row?.tmdb_show_id ?? null;
   } catch {
     return null;
   }
