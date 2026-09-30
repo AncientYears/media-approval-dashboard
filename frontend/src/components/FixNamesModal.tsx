@@ -12,11 +12,31 @@ interface FixNameRow {
   note: string | null;
 }
 
+interface FixNameDirRow {
+  id: string;
+  path: string;
+  tree: "processed";
+  kind: "show" | "season" | "movie";
+  currentName: string;
+  proposedName: string | null;
+  note: string | null;
+}
+
 interface FixNameGroup {
   id: string;
   ino: number | null;
   processed: FixNameRow | null;
   library: FixNameRow | null;
+}
+
+interface NameRow {
+  id: string;
+  path: string;
+  currentName: string;
+  proposedName: string | null;
+  note: string | null;
+  label: string;
+  badge: "processed" | "library" | "dir";
 }
 
 export default function FixNamesModal({
@@ -31,6 +51,7 @@ export default function FixNamesModal({
   onApplied: () => void;
 }) {
   const [groups, setGroups] = useState<FixNameGroup[]>([]);
+  const [dirs, setDirs] = useState<FixNameDirRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -46,12 +67,17 @@ export default function FixNamesModal({
     try {
       const data = await fixNamesPreview(requestId);
       const gs: FixNameGroup[] = data.groups || [];
+      const ds: FixNameDirRow[] = data.dirs || [];
       setGroups(gs);
+      setDirs(ds);
       const sel: Record<string, boolean> = {};
       for (const g of gs) {
         for (const row of [g.processed, g.library]) {
           if (row && row.proposedName) sel[row.id] = true;
         }
+      }
+      for (const d of ds) {
+        if (d.proposedName) sel[d.id] = true;
       }
       setSelected(sel);
     } catch (e: any) {
@@ -65,16 +91,49 @@ export default function FixNamesModal({
     load();
   }, [load]);
 
+  // Flatten everything into rows the selection map can address uniformly.
+  const allRows: NameRow[] = [
+    ...dirs.map((d): NameRow => ({
+      id: d.id,
+      path: d.path,
+      currentName: d.currentName,
+      proposedName: d.proposedName,
+      note: d.note,
+      label: `${d.kind} dir`,
+      badge: "dir",
+    })),
+    ...groups.flatMap((g) => {
+      const rows: NameRow[] = [];
+      if (g.processed) rows.push({
+        id: g.processed.id,
+        path: g.processed.path,
+        currentName: g.processed.currentName,
+        proposedName: g.processed.proposedName,
+        note: g.processed.note,
+        label: "file",
+        badge: "processed",
+      });
+      if (g.library) rows.push({
+        id: g.library.id,
+        path: g.library.path,
+        currentName: g.library.currentName,
+        proposedName: g.library.proposedName,
+        note: g.library.note,
+        label: "library twin",
+        badge: "library",
+      });
+      return rows;
+    }),
+  ];
+
   function toggle(id: string) {
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   function selectAll() {
     const sel: Record<string, boolean> = {};
-    for (const g of groups) {
-      for (const row of [g.processed, g.library]) {
-        if (row && row.proposedName) sel[row.id] = true;
-      }
+    for (const r of allRows) {
+      if (r.proposedName) sel[r.id] = true;
     }
     setSelected(sel);
   }
@@ -83,17 +142,8 @@ export default function FixNamesModal({
     setSelected({});
   }
 
-  const selectedPaths = Object.entries(selected)
-    .filter(([, v]) => v)
-    .map(([id]) => {
-      for (const g of groups) {
-        if (g.processed?.id === id) return g.processed;
-        if (g.library?.id === id) return g.library;
-      }
-      return null;
-    })
-    .filter((r): r is FixNameRow => r !== null)
-    .map((r) => r.path);
+  const selectedPaths = allRows.filter((r) => selected[r.id]).map((r) => r.path);
+  const selectableCount = allRows.filter((r) => r.proposedName).length;
 
   async function apply() {
     if (selectedPaths.length === 0) return;
@@ -118,14 +168,13 @@ export default function FixNamesModal({
     }
   }
 
-  const selectableCount = groups.filter(
-    (g) => (g.processed?.proposedName) || (g.library?.proposedName)
-  ).length;
-
-  function Row({ row, nested }: { row: FixNameRow; nested?: boolean }) {
+  function Row({ row, nested }: { row: NameRow; nested?: boolean }) {
     const renamable = !!row.proposedName;
     const checked = !!selected[row.id];
     const note = row.note || (renamable ? null : "Already canonical");
+    const badgeLabel =
+      row.badge === "dir" ? "DIR" : row.badge === "library" ? "LIBRARY" : "PROCESSED";
+    const badgeColor = row.badge === "dir" ? "#0ea5e9" : row.badge === "library" ? "#8b5cf6" : "#3b82f6";
     return (
       <div
         className={`fixname-row${nested ? " fixname-row-nested" : ""}`}
@@ -147,17 +196,13 @@ export default function FixNamesModal({
           disabled={!renamable}
           onChange={(e) => { e.stopPropagation(); toggle(row.id); }}
         />
-        <span className="badge" style={{
-          fontSize: 10,
-          background: row.tree === "processed" ? "#3b82f6" : "#8b5cf6",
-          flexShrink: 0,
-        }}>
-          {row.tree === "processed" ? "PROCESSED" : "LIBRARY"}
+        <span className="badge" style={{ fontSize: 10, background: badgeColor, flexShrink: 0 }}>
+          {badgeLabel}
         </span>
         <span style={{ fontFamily: "monospace", fontSize: 12, flex: 1, minWidth: 0 }}>
           {renamable ? (
             <>
-              <div style={{ color: "#94a3b8", textDecoration: "line-through", wordBreak: "break-all" }}>{row.currentName}</div>
+              <div style={{ color: "#f87171", textDecoration: "line-through", textDecorationColor: "#7f1d1d", wordBreak: "break-all" }}>{row.currentName}</div>
               <div style={{ color: "#10b981", wordBreak: "break-all" }}>→ {row.proposedName}</div>
             </>
           ) : (
@@ -169,34 +214,73 @@ export default function FixNamesModal({
     );
   }
 
+  const dirRows = dirs.map((d): NameRow => ({
+    id: d.id,
+    path: d.path,
+    currentName: d.currentName,
+    proposedName: d.proposedName,
+    note: d.note,
+    label: `${d.kind} dir`,
+    badge: "dir",
+  }));
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box fixnames-modal" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">Fix Names</h3>
         <div className="modal-body">
           <p style={{ fontSize: 13, color: "#94a3b8", marginBottom: 12 }}>
-            Standardize filenames for <strong style={{ color: "#cbd5e1" }}>{title}</strong> to the
-            canonical template. Renames keep the file{`'`}s inode — hardlinked library copies and
-            identity stay intact.
+            Standardize names for <strong style={{ color: "#cbd5e1" }}>{title}</strong> to the canonical
+            template. Red = current, green = proposed. File renames keep the file{`'`}s inode
+            (hardlinked library copies stay intact). Folder renames apply only to the processed
+            tree and only to folders this request owns outright — a folder shared with another
+            franchise is never proposed.
           </p>
           {error && <div className="modal-line" style={{ color: "#f87171", marginBottom: 8 }}>{error}</div>}
           {loading ? (
             <div className="modal-line" style={{ color: "#94a3b8" }}>Scanning processed + library files…</div>
-          ) : groups.length === 0 ? (
-            <div className="modal-line" style={{ color: "#94a3b8" }}>No files to rename.</div>
+          ) : allRows.length === 0 ? (
+            <div className="modal-line" style={{ color: "#94a3b8" }}>Nothing to rename.</div>
           ) : (
-            <div className="fixname-list" style={{ maxHeight: "42vh", overflowY: "auto", border: "1px solid #334155", borderRadius: 8, padding: 6 }}>
+            <div className="fixname-list" style={{ maxHeight: "46vh", overflowY: "auto", border: "1px solid #334155", borderRadius: 8, padding: 6 }}>
+              {dirRows.length > 0 && (
+                <div style={{ fontSize: 11, color: "#64748b", padding: "4px 8px", fontWeight: 600 }}>FOLDERS</div>
+              )}
+              {dirRows.map((d) => <Row key={d.id} row={d} />)}
+              {dirRows.length > 0 && groups.length > 0 && (
+                <div style={{ fontSize: 11, color: "#64748b", padding: "4px 8px 4px 8px", fontWeight: 600, marginTop: 6 }}>FILES</div>
+              )}
               {groups.map((g) => (
                 <div key={g.id} style={{ marginBottom: 2 }}>
-                  {g.processed ? <Row row={g.processed} /> : null}
-                  {g.library ? <Row row={g.library} nested /> : null}
+                  {g.processed && (
+                    <Row row={{
+                      id: g.processed.id,
+                      path: g.processed.path,
+                      currentName: g.processed.currentName,
+                      proposedName: g.processed.proposedName,
+                      note: g.processed.note,
+                      label: "file",
+                      badge: "processed",
+                    }} />
+                  )}
+                  {g.library && (
+                    <Row nested row={{
+                      id: g.library.id,
+                      path: g.library.path,
+                      currentName: g.library.currentName,
+                      proposedName: g.library.proposedName,
+                      note: g.library.note,
+                      label: "library twin",
+                      badge: "library",
+                    }} />
+                  )}
                 </div>
               ))}
             </div>
           )}
           {!loading && (
             <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8, display: "flex", alignItems: "center", gap: 8 }}>
-              <span>{selectedPaths.length} of {selectableCount} renamable file{selectableCount === 1 ? "" : "s"} selected.</span>
+              <span>{selectedPaths.length} of {selectableCount} renamable item{selectableCount === 1 ? "" : "s"} selected.</span>
               {selectableCount > 0 && (
                 <>
                   <button className="btn btn-secondary btn-tiny" onClick={selectAll}>Select all</button>
