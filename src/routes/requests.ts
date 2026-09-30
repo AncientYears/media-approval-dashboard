@@ -843,10 +843,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   router.get("/", (req: Request, res: Response) => {
     try {
       const stmt = db.prepare(`
-        SELECT * FROM media_requests 
-        WHERE status NOT IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
-        AND NOT (type = 'series' AND sonarr_id IS NOT NULL)
-        ORDER BY created_at DESC 
+        SELECT mr.*,
+          (SELECT COUNT(*) FROM release_candidates rc 
+           JOIN approval_history ah ON ah.release_id = rc.id
+           WHERE ah.request_id = mr.id AND rc.torrent_hash != '') as release_count,
+          (SELECT COALESCE(SUM(json_array_length(ah.processed_files)), 0) FROM approval_history ah
+           WHERE ah.request_id = mr.id AND ah.release_id IS NULL
+           AND ah.processed_files IS NOT NULL AND ah.processed_files != '[]') as processed_count
+        FROM media_requests mr
+        WHERE mr.status NOT IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+        AND NOT (mr.type = 'series' AND mr.sonarr_id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM release_candidates rc 
+          JOIN approval_history ah ON ah.release_id = rc.id
+          WHERE ah.request_id = mr.id AND rc.torrent_hash != ''
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM approval_history ah
+          WHERE ah.request_id = mr.id AND ah.release_id IS NULL
+          AND ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
+        )
+        ORDER BY mr.created_at DESC
       `);
       const rows = stmt.all();
       
@@ -1303,9 +1320,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 WHERE ah4.request_id = mr.id AND ah4.release_id IS NULL
                 AND ah4.processed_files IS NOT NULL AND ah4.processed_files != '[]') as processed_count
            FROM media_requests mr
-           WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED', 'NEW')
+           WHERE mr.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED', 'NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED')
         ) sub
-        WHERE sub.type = 'series' OR sub.release_count > 0 OR sub.processed_count > 0 OR sub.status IN ('DOWNLOADING', 'COMPLETED')
+        WHERE (sub.type = 'series' AND sub.sonarr_id IS NOT NULL)
+           OR sub.release_count > 0 OR sub.processed_count > 0
+           OR sub.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
         ORDER BY sub.title
       `).all() as any[];
 
