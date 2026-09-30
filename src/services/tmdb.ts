@@ -287,7 +287,11 @@ export async function fetchExternalIds(
   tmdbId: number,
   language?: string,
 ): Promise<{ imdbId: string | null; tvdbId: string | null } | null> {
-  const data = await tmdbGet<any>(`/${mediaType}/${tmdbId}/external_ids?language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
+  // TMDB's path segment for series is "tv", not our internal "series" — asking
+  // for /series/{id}/external_ids 404s, which is why series identity could never
+  // resolve through TMDB and always fell back to parsing an on-disk folder.
+  const segment = mediaType === "series" ? "tv" : "movie";
+  const data = await tmdbGet<any>(`/${segment}/${tmdbId}/external_ids?language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
   if (!data) return null;
   return {
     imdbId: data.imdb_id ? String(data.imdb_id) : null,
@@ -310,38 +314,36 @@ export interface ExternalIds {
  * raw basename (never rename blind). A cached all-null row is treated as a
  * negative cache so unresolved titles do not hammer TMDB on every move.
  */
+/** Why a naming identity lookup came back empty — one short, actionable
+ * sentence for the Fix Names row note (never an internal step dump). */
+export interface NamingDiag {
+  reason?: string;
+}
+
 export async function resolveExternalIds(
   db: Database,
   libraryKey: string,
   mediaType: "movie" | "series",
   title: string,
   language: string,
-  opts?: { ignoreCache?: boolean; trace?: string[] },
+  opts?: { ignoreCache?: boolean; diag?: NamingDiag },
 ): Promise<ExternalIds | null> {
-  const trace = opts?.trace;
+  const fail = (reason: string): null => {
+    opts?.diag && (opts.diag.reason = reason);
+    return null;
+  };
+  if (!apiKey()) return fail("TMDB is not configured (TMDB_API_KEY unset)");
   try {
     const cached = db.prepare("SELECT * FROM tmdb_external_ids WHERE library_key = ?").get(libraryKey) as any;
-    if (cached) {
-      // An all-null row is a negative cache (see below) — `ignoreCache` lets a
-      // caller retry the same key with a better title (on-disk folder name).
-      if (opts?.ignoreCache && !cached.imdb_id && !cached.tvdb_id) {
-        trace?.push("id cache: negative, retrying live");
-      } else {
-        if (!cached.imdb_id && !cached.tvdb_id) {
-          trace?.push("id cache: negative (all null)");
-          return null;
-        }
-        trace?.push(`id cache: hit tvdb=${cached.tvdb_id || "-"} imdb=${cached.imdb_id || "-"}`);
-        return {
-          tmdbId: cached.tmdb_id || 0,
-          imdbId: cached.imdb_id || null,
-          tvdbId: cached.tvdb_id ? String(cached.tvdb_id) : null,
-          title: cached.title || title,
-          year: cached.year ?? null,
-        };
-      }
-    } else {
-      trace?.push("id cache: empty");
+    if (cached && !(opts?.ignoreCache && !cached.imdb_id && !cached.tvdb_id)) {
+      if (!cached.imdb_id && !cached.tvdb_id) return fail("TMDB has no IMDb/TVDB id for this title");
+      return {
+        tmdbId: cached.tmdb_id || 0,
+        imdbId: cached.imdb_id || null,
+        tvdbId: cached.tvdb_id ? String(cached.tvdb_id) : null,
+        title: cached.title || title,
+        year: cached.year ?? null,
+      };
     }
   } catch {}
   // Deterministic identity first: if this key's seasons were already fetched,
@@ -351,11 +353,9 @@ export async function resolveExternalIds(
   if (mediaType === "series") {
     const knownId = cachedShowIdForKey(db, libraryKey);
     if (knownId) {
-      trace?.push(`cached show id: ${knownId}`);
       const ext = await fetchExternalIds("series", knownId, language);
       const show = await tmdbGet<any>(`/tv/${knownId}?language=${language}`);
       if (ext) {
-        trace?.push(`external_ids for ${knownId}: tvdb=${ext.tvdbId || "-"} imdb=${ext.imdbId || "-"}`);
         const yr = show?.first_air_date ? parseInt(String(show.first_air_date).slice(0, 4), 10) : null;
         const out: ExternalIds = {
           tmdbId: knownId,
@@ -364,29 +364,24 @@ export async function resolveExternalIds(
           title: (show?.name as string) || title,
           year: Number.isFinite(yr) ? yr : null,
         };
+        if (!out.imdbId && !out.tvdbId) return fail("TMDB has no IMDb/TVDB id for this show");
         try {
           db.prepare(
             "INSERT OR REPLACE INTO tmdb_external_ids (library_key, media_type, tmdb_id, imdb_id, tvdb_id, title, year, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
           ).run(libraryKey, mediaType, out.tmdbId, out.imdbId, out.tvdbId, out.title, out.year ?? null);
         } catch {}
-        if (!out.imdbId && !out.tvdbId) {
-          trace?.push("show has no imdb/tvdb id");
-          return null;
-        }
         return out;
       }
-      trace?.push(`external_ids lookup failed for ${knownId}`);
-    } else {
-      trace?.push("no cached show id for key");
+      return fail("TMDB request failed while reading this show's ids");
     }
   }
   const show =
     mediaType === "series"
       ? await resolveShowIdentity(libraryKey, title, language)
       : await resolveMovieIdentity(libraryKey, title, language);
-  if (!show?.id || !apiKey()) return null;
+  if (!show?.id) return fail(`no TMDB match for "${title}"`);
   const ext = await fetchExternalIds(mediaType, show.id, language);
-  if (!ext) return null;
+  if (!ext) return fail("TMDB request failed while reading this title's ids");
   const out: ExternalIds = {
     tmdbId: show.id,
     imdbId: ext.imdbId,
@@ -401,7 +396,7 @@ export async function resolveExternalIds(
       "INSERT OR REPLACE INTO tmdb_external_ids (library_key, media_type, tmdb_id, imdb_id, tvdb_id, title, year, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
     ).run(libraryKey, mediaType, out.tmdbId, out.imdbId, out.tvdbId, out.title, out.year ?? null);
   } catch {}
-  if (!out.imdbId && !out.tvdbId) return null;
+  if (!out.imdbId && !out.tvdbId) return fail("TMDB has no IMDb/TVDB id for this title");
   return out;
 }
 

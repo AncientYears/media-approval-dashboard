@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+﻿import { Router, Request, Response } from "express";
 import { Database } from "better-sqlite3";
 import { RadarrService } from "../services/radarr";
 import { SonarrService } from "../services/sonarr";
@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, episodeTitleFromCache, type SeasonMeta } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, episodeTitleFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   parseReleaseTags,
@@ -82,7 +82,7 @@ function isSeasonPackTitle(title: string, season: number): boolean {
   const seasonPattern = new RegExp(`\\bS${String(season).padStart(2, "0")}\\b`, "i");
   if (seasonPattern.test(title) && !/\bE\d{1,3}\b/i.test(title)) return true;
   // Check season range patterns like S01-S03 or S01-03
-  const range = title.match(/\bS(\d{1,2})\s*[-�]\s*S?(\d{1,2})\b/i);
+  const range = title.match(/\bS(\d{1,2})\s*[-–]\s*S?(\d{1,2})\b/i);
   if (range) {
     const start = parseInt(range[1], 10);
     const end = parseInt(range[2], 10);
@@ -94,8 +94,8 @@ function isSeasonPackTitle(title: string, season: number): boolean {
 function extractEpisodeFromFilename(filePath: string): number | null {
   const base = filePath.split(/[/\\]/).pop() || filePath;
   // "S0X" releases mark standalone specials/movies without TMDB special numbers
-  // (e.g. "Fineasz i Ferb S0XE03 Fretka kontra Wszechswiat.mkv"). The trailing
-  // number is the release's own, not a real episode � treat as unnumbered.
+  // (e.g. "Fineasz i Ferb S0XE03 Fretka kontra Wszechświat.mkv"). The trailing
+  // number is the release's own, not a real episode — treat as unnumbered.
   if (/[Ss]0[Xx]/.test(base)) return null;
   const m = filePath.match(/[Ee](\d{1,3})/);
   if (m) return parseInt(m[1], 10);
@@ -119,7 +119,7 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   // Self-heal stored processed_files paths on access: any entry whose on-disk
   // path is missing is relocated by registered inode identity (hardlinks share
   // the inode, so a moved/renamed file is found in the request's season folder)
-  // and the AH row is rewritten. Read-time repair � names are never trusted.
+  // and the AH row is rewritten. Read-time repair — names are never trusted.
   if (req.id && Number(req.id) > 0) {
     healProcessedFilesForRequest(db, req);
     backfillRequestIdentity(db, req);
@@ -170,7 +170,7 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
         }
         // Identity-first fallback: the name tells us nothing (renamed or
         // unparseable) but the inode's registered identity holds the episode
-        // numbers. Only numbered rows count toward coverage � S0X specials stay
+        // numbers. Only numbered rows count toward coverage — S0X specials stay
         // presentation-only like the filename parser treats them.
         const row = identifyByPath(db, path.join(seasonFolder, f));
         if (row && row.role === "numbered" && row.season === season) {
@@ -210,7 +210,7 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
 // "Across the 2nd Dimension"). These render as always-FILLED SPECIAL rows in the
 // episode grid and should count as covered in summary pills too. A file whose
 // name won't parse but whose registered inode is a NUMBERED episode is covered,
-// not an extra � identity beats guessing twice.
+// not an extra — identity beats guessing twice.
 function unnumberedFilesInSeasonFolder(db: Database, baseTitle: string, season: number, year?: number | null): number {
   try {
     const folder = findSeasonFolder(baseTitle, season, year);
@@ -318,7 +318,7 @@ function healProcessedFilesForRequest(db: Database, request: any): string[] {
         next.push(rel);
         out.push(rel);
         changed = true;
-        console.log(`[Identity] self-healed processed_files AH#${ah.id}: "${f}" ? "${rel}"`);
+        console.log(`[Identity] self-healed processed_files AH#${ah.id}: "${f}" → "${rel}"`);
       } else {
         next.push(f);
         out.push(f);
@@ -336,7 +336,7 @@ function healProcessedFilesForRequest(db: Database, request: any): string[] {
  * when it is read, so files that never ran through a writing flow (manual mv,
  * pre-P0 placement, Sonarr-era imports) still get a media_files row. Series:
  * the request's season folder in both processed and library trees. Movie: the
- * flat processed movies root (title-matched only � the root is shared across
+ * flat processed movies root (title-matched only — the root is shared across
  * all movies) plus the resolved library folder(s). Idempotent, DB metadata
  * only; never touches the trees. Returns rows registered.
  */
@@ -360,7 +360,7 @@ function backfillRequestIdentity(db: Database, request: any): number {
       } catch {}
     } else if (request.type === "movie") {
       // Movies are flat in the shared processed root, so ONLY register files
-      // whose names title-match this request � never the library tree (fuzzy
+      // whose names title-match this request — never the library tree (fuzzy
       // folder matching can collaterally claim a same-franchise movie like
       // Moana (2016) under the Moana 2 key). Library twins get identity via the
       // app's write paths (move-to-library hardlink, import-library backlink).
@@ -378,7 +378,7 @@ function backfillRequestIdentity(db: Database, request: any): number {
   return registered;
 }
 
-// Resolve the library folder for a native (arr-free) request � mirrors the
+// Resolve the library folder for a native (arr-free) request — mirrors the
 // move-to-library resolution: fuzzy show folder under MEDIA_TV + existing
 // localized season folder (Sezon I, etc.), movies map flat to MEDIA_MOVIES.
 // Returns null when the library folder cannot be located.
@@ -504,7 +504,7 @@ function hardlinkTree(src: string, dest: string): number {
     return 1;
   } catch (err: any) {
     if (err.code === "EEXIST") return 0;
-    if (err.code === "EXDEV") throw new Error(`EXDEV: ${src} is on another filesystem � refusing to copy`);
+    if (err.code === "EXDEV") throw new Error(`EXDEV: ${src} is on another filesystem — refusing to copy`);
     throw err;
   }
 }
@@ -591,12 +591,12 @@ function linkTorrentToRequest(db: Database, torrent: any, entryName: string, typ
     db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(newStatus, match.id);
   }
-  console.log(`[DownloadDirs] Linked attached torrent to request #${match.id} (${match.title}) ? ${newStatus}`);
+  console.log(`[DownloadDirs] Linked attached torrent to request #${match.id} (${match.title}) → ${newStatus}`);
   return match;
 }
 
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
-// localized titles and year suffixes (e.g. "Moana 2" ? "Vaiana 2 (2026)").
+// localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
 function nativeMovieLibraryFolders(requestTitle: string): string[] {
   const want = normalizeFolder((requestTitle || "").replace(/ \(\d{4}\)$/i, ""));
@@ -659,7 +659,7 @@ function normalizeFolder(name: string): string {
 }
 
 /** Processed show folders that fuzzy-match a title, in resolution order
- * (exact-year folder ? lone year-less folder ? first candidate, mirroring
+ * (exact-year folder → lone year-less folder → first candidate, mirroring
  * findSeasonFolder's pick). Empty when nothing matches. */
 function matchShowFolders(baseTitle: string, year?: number | null): string[] {
   const want = normalizeFolder(baseTitle);
@@ -690,7 +690,7 @@ function matchShowFolders(baseTitle: string, year?: number | null): string[] {
     const yearless = candidates.filter((c) => c.year == null);
     if (yearless.length === 1 && candidates.length > yearless.length) return [yearless[0].dir];
   }
-  // Year matched (or resolved) folders are authoritative � never fall through
+  // Year matched (or resolved) folders are authoritative — never fall through
   // to a different-year folder just because the Sxx subfolder is missing.
   // Without a year to resolve against, keep the first-candidate-with-folder pick.
   return candidates.map((c) => c.dir);
@@ -839,7 +839,7 @@ function seasonFolderOnDisk(baseTitle: string, season: number, year?: number | n
 }
 
 /** Denominator for a native Specials (S00) season. Imported S00 rows carry an
- * `episode_count` that is a file-count snapshot � episodes stored loose in the
+ * `episode_count` that is a file-count snapshot — episodes stored loose in the
  * library root get miscast as "specials" and inflate the number (e.g. 55
  * placeholder specials for a show whose real specials number 13). The honest
  * count is TMDB's named special episodes plus whatever is physically in the
@@ -861,7 +861,7 @@ function nativeSpecialDenominator(db: Database, library_key: string | null | und
 
 /** Highest special position attested by video files in the processed S00
  * folder. Null returns from extractEpisodeFromFilename ("S0X" releases) are
- * re-parsed here for their trailing E## � the file still renders as an
+ * re-parsed here for their trailing E## — the file still renders as an
  * unnumbered SPECIAL row in the grid, but the number it asserts keeps the
  * Specials pill denominator honest. Returns 0 when nothing is numbered. */
 function maxSpecialNumberInS00(db: Database, library_key: string | null | undefined, baseTitle: string): number {
@@ -887,7 +887,7 @@ function maxSpecialNumberInS00(db: Database, library_key: string | null | undefi
 }
 
 /** Named special episodes in a cached TMDB season-0 payload. TMDB pads many
- * series' Specials with unnamed "Episode N" mirrors of the real episodes �
+ * series' Specials with unnamed "Episode N" mirrors of the real episodes —
  * those are structure noise, not content, and shouldn't inflate special pills. */
 function namedSpecialCount(payload: string): number {
   try {
@@ -903,7 +903,7 @@ function namedSpecialCount(payload: string): number {
 
 /** Strip parser/release junk from a series title used as the franchise display
  * name and TMDB lookup base (e.g. "Tajemnica Sagali (2016) S01E01 PL 768p
- * WEB-DL H.264-AL3X" ? "Tajemnica Sagali (2016)"). A bare trailing year in
+ * WEB-DL H.264-AL3X" → "Tajemnica Sagali (2016)"). A bare trailing year in
  * parens/brackets is preserved; resume-tail patterns are dropped repeatedly. */
 export function cleanFranchiseTitle(title: string): string {
   let t = title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "").trim();
@@ -960,7 +960,7 @@ interface NamingPieces {
  * target folder ("Title (Year) [imdbid-ttX]") so the app still names canonically
  * when TMDB is unset. Returns null when naming is disabled or nothing resolves.
  */
-async function namingPiecesForRequest(db: Database, request: any, idHintFolder?: string, trace?: string[]): Promise<NamingPieces | null> {
+async function namingPiecesForRequest(db: Database, request: any, idHintFolder?: string, diag?: NamingDiag): Promise<NamingPieces | null> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return null;
   let pieces: NamingPieces | null = null;
@@ -980,24 +980,23 @@ async function namingPiecesForRequest(db: Database, request: any, idHintFolder?:
       kind,
       cleanFranchiseTitle(request.title || ""),
       lang,
-      { trace },
+      { diag },
     );
     if (ids) pieces = { title: ids.title, year: ids.year ?? libraryKeyYear(request.library_key), imdbId: ids.imdbId, tvdbId: ids.tvdbId };
-  } catch (err: any) {
-    trace?.push(`tmdb error: ${err?.message || err}`);
+  } catch {
+    if (diag) diag.reason = "TMDB request failed";
   }
   // Mangled stored titles ("Ninjago: Dragon Rising") fail TMDB search while the
   // on-disk show/movie folder holds the real name ("LEGO Ninjago: Dragons
-  // Rising") � retry with that before falling back to id parsing. `ignoreCache`
+  // Rising") — retry with that before falling back to id parsing. `ignoreCache`
   // bypasses a negative cache row written by the first (failed) attempt.
   if (!pieces && parsed && parsed.title && parsed.title !== cleanFranchiseTitle(request.title || "")) {
     try {
       const lang = franchiseLanguage(db, request.library_key) || process.env.TMDB_LANGUAGE || "en-US";
-      trace?.push(`retry with folder name "${parsed.title}"`);
-      const ids = await resolveExternalIds(db, request.library_key, kind, parsed.title, lang, { ignoreCache: true, trace });
+      const ids = await resolveExternalIds(db, request.library_key, kind, parsed.title, lang, { ignoreCache: true, diag });
       if (ids) pieces = { title: ids.title, year: ids.year ?? parsed.year ?? libraryKeyYear(request.library_key), imdbId: ids.imdbId, tvdbId: ids.tvdbId };
-    } catch (err: any) {
-      trace?.push(`tmdb error: ${err?.message || err}`);
+    } catch {
+      if (diag) diag.reason = "TMDB request failed";
     }
   }
   if (!pieces && parsed) {
@@ -1005,12 +1004,8 @@ async function namingPiecesForRequest(db: Database, request: any, idHintFolder?:
     const fallbackTitle = cleanFranchiseTitle(request.title || "");
     if (!isSeries && parsed.imdbId) {
       pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: null };
-      trace?.push(`ids from folder: imdb=${parsed.imdbId}`);
     } else if (isSeries && (parsed.tvdbId || parsed.imdbId)) {
       pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: parsed.tvdbId };
-      trace?.push(`ids from folder: tvdb=${parsed.tvdbId || "-"} imdb=${parsed.imdbId || "-"}`);
-    } else if (parsed) {
-      trace?.push(`folder "${parsed.title}" carries no id`);
     }
   }
   return pieces;
@@ -1023,22 +1018,42 @@ async function namingPiecesForRequest(db: Database, request: any, idHintFolder?:
  * canonically. Candidates come from the processed dirs matched for the request
  * plus the library tree, where the user has usually already applied the naming.
  */
-async function namingPiecesWithDiskFallback(db: Database, request: any, hintFolders: string[]): Promise<{ pieces: NamingPieces | null; trace: string[] }> {
-  const trace: string[] = [];
-  const pieces = await namingPiecesForRequest(db, request, undefined, trace);
-  if (pieces) return { pieces, trace };
+async function namingPiecesWithDiskFallback(db: Database, request: any, hintFolders: string[]): Promise<{ pieces: NamingPieces | null; reason: string | null }> {
+  const diag: NamingDiag = {};
+  const pieces = await namingPiecesForRequest(db, request, undefined, diag);
+  if (pieces) return { pieces, reason: null };
   for (const folder of hintFolders) {
     if (!folder) continue;
-    trace.push(`--- folder hint "${path.basename(folder)}"`);
-    const p = await namingPiecesForRequest(db, request, folder, trace);
-    if (p) return { pieces: p, trace };
+    const p = await namingPiecesForRequest(db, request, folder, diag);
+    if (p) return { pieces: p, reason: null };
   }
-  return { pieces: null, trace };
+  return { pieces: null, reason: diag.reason || "no IMDb/TVDB id found" };
+}
+
+/** Warm this request's season cache, then resolve identity pieces. Shared by the
+ * preview and the apply path so a proposal can never be un-appliable: both must
+ * agree on the pieces or the modal would show a rename the apply then refuses. */
+async function fixNamesPieces(
+  db: Database,
+  request: any,
+  hintFolders: string[],
+): Promise<{ pieces: NamingPieces | null; reason: string | null }> {
+  if (request.type === "series" && request.library_key && request.season !== 0) {
+    try {
+      const lang = franchiseLanguage(db, request.library_key);
+      const altTitle = hintFolders.map((d) => path.basename(d)).find((n) => n && n.length > 2) || null;
+      await fetchTMDBSeason(db, request.library_key, request.season ?? 1, cleanFranchiseTitle(request.title || ""), {
+        language: lang,
+        altTitle,
+      });
+    } catch {}
+  }
+  return namingPiecesWithDiskFallback(db, request, hintFolders);
 }
 
 /** Canonical file basename (no extension) for a NEW processed/library file, or
  * null to keep today's raw release name. Null on disabled naming, missing
- * pivots (episode code / title / id), or unresolved identity � never guesses.
+ * pivots (episode code / title / id), or unresolved identity — never guesses.
  * `probe` (ffprobe facts about the source file, when probing is available)
  * upgrades playback-info tags beyond what title-scraping infers. */
 async function canonicalFileBase(db: Database, request: any, sourceBase: string, idHintFolder?: string, probe?: ProbeInfo | null): Promise<string | null> {
@@ -1072,7 +1087,7 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   });
 }
 
-// ---- P2: "Fix Names" � standardize existing trees (inode-verified renames) ----
+// ---- P2: "Fix Names" — standardize existing trees (inode-verified renames) ----
 
 const VIDEO_FILE_RE = /\.(mkv|mp4|avi|mov|ts|wmv)$/i;
 
@@ -1169,7 +1184,7 @@ async function probeInodesConcurrently(paths: string[]): Promise<Map<string, Pro
 }
 
 /** Episode title already present in an on-disk name ("... - S03E15 - The
- * Screaming Earth [1080p]...") � used only when TMDB has nothing cached, so a
+ * Screaming Earth [1080p]...") — used only when TMDB has nothing cached, so a
  * rename can never silently strip a title that is already on disk. */
 function episodeTitleFromSourceName(base: string): string | null {
   const m = base.match(/\b[sS]\d{1,2}[\s._-]*[eE]\d{1,3}\b[\s._-]+(.+)$/);
@@ -1177,7 +1192,7 @@ function episodeTitleFromSourceName(base: string): string | null {
   let rest = m[1];
   // Cut the release tail: first bracket group, or a trailing tag word run. A
   // leading bracket means the name went straight from the code to tags ("- S03E01
-  // [Dual Audio]") � there is no title to keep.
+  // [Dual Audio]") — there is no title to keep.
   const bracket = rest.search(/[[({]/);
   if (bracket === 0) return null;
   if (bracket > 0) rest = rest.slice(0, bracket);
@@ -1192,7 +1207,7 @@ function episodeTitleFromSourceName(base: string): string | null {
 
 /**
  * Canonical basename proposal for ONE existing file (no extension never applied
- * here � callers keep the original extension). Returns null when nothing should
+ * here — callers keep the original extension). Returns null when nothing should
  * change (already canonical / missing pivots / naming disabled). Mirrors
  * canonicalFileBase but for on-disk files whose current name is the starting
  * point, and optionally enriched by an ffprobe probe.
@@ -1241,27 +1256,6 @@ async function proposeCanonicalName(
   return { name: name === base ? null : name, role: "episode", note: null };
 }
 
-/** Warm this request's season cache, then resolve identity pieces. Shared by the
- * preview and the apply path so a proposal can never be un-appliable: both must
- * agree on the pieces or the modal would show a rename the apply then refuses. */
-async function fixNamesPieces(
-  db: Database,
-  request: any,
-  hintFolders: string[],
-): Promise<{ pieces: NamingPieces | null; trace: string[] }> {
-  if (request.type === "series" && request.library_key && request.season !== 0) {
-    try {
-      const lang = franchiseLanguage(db, request.library_key);
-      const altTitle = hintFolders.map((d) => path.basename(d)).find((n) => n && n.length > 2) || null;
-      await fetchTMDBSeason(db, request.library_key, request.season ?? 1, cleanFranchiseTitle(request.title || ""), {
-        language: lang,
-        altTitle,
-      });
-    } catch {}
-  }
-  return namingPiecesWithDiskFallback(db, request, hintFolders);
-}
-
 /** Build the grouped processed+library proposal rows + folder rows for one request (native only). */
 async function buildFixNameGroups(db: Database, request: any): Promise<{ groups: FixNameGroup[]; dirs: FixNameDirRow[] }> {
   const type = request.type === "series" ? "series" : "movie";
@@ -1280,7 +1274,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
 
   // Processed files, same season-filtered acceptance as the processed panel.
   // Accepted files also pin the folders this request owns (movie subdir, show
-  // dir + Sxx dir for series) � the basis for the directory rename rows below.
+  // dir + Sxx dir for series) — the basis for the directory rename rows below.
   const accepted: { fullPath: string }[] = [];
   const showSeasons = new Map<string, Set<string>>();
   const movieDirs = new Set<string>();
@@ -1352,18 +1346,19 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
   const probes = await probeInodesConcurrently(probePaths);
 
-  // Identity pieces for dir/file proposals — TMDB first, then parse ids from
-  // already-canonical folders on disk (processed dirs matched + library dirs).
-  const { pieces: cachedPieces, trace: identityTrace } = await fixNamesPieces(db, request, [
+  // Episode titles + identity both come from TMDB, so warm this request's season
+  // (franchise language, altTitle = the on-disk show folder) before resolving
+  // identity: a season that was never fetched would otherwise propose names with
+  // the episode title stripped.
+  const { pieces: cachedPieces, reason: identityReason } = await fixNamesPieces(db, request, [
     ...(type === "movie" ? movieDirs : []),
     ...(type === "series" ? [...showSeasons.keys()] : []),
     ...(type === "series" ? [resolveLibraryShowFolder(request) || ""] : []),
     ...(type === "movie" ? nativeMovieLibraryFolders(request.title || "") : []),
   ]);
-  // When nothing resolves, say WHY in the row note instead of a generic
-  // "TMDB needed" � identity resolution has several stages and the user can
-  // only act on the real one.
-  const identityNote = cachedPieces ? null : `Could not resolve identity: ${identityTrace.slice(-4).join(" | ") || "no TMDB data"}`;
+  // When nothing resolves, say why in the row note — one short, actionable
+  // sentence, never an internal step dump.
+  const identityNote = cachedPieces ? null : `Could not resolve identity — ${identityReason || "no IMDb/TVDB id found"}`;
 
   const groups: FixNameGroup[] = [];
   let gid = 0;
@@ -1379,7 +1374,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     } catch {}
 
     const pb = await proposeCanonicalName(db, request, path.basename(a.fullPath), probe, cachedPieces);
-    // Canonical file proposals are extensionless by construction � append the
+    // Canonical file proposals are extensionless by construction — append the
     // source extension unconditionally (never detect one from the name: channel
     // layouts like "[DTS-HD MA 2.0]" contain dots that would fool extname).
     const withExt = (name: string | null, p: string) => (name ? `${name}${path.extname(p)}` : null);
@@ -1414,15 +1409,15 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   }
 
   // Folder-level proposals. Processed tree first (this request's show dir, then
-  // its season dirs � top-down), then library dirs for the same franchise. A
+  // its season dirs — top-down), then library dirs for the same franchise. A
   // folder is proposed only when this request "owns" it: no registered file
   // inside maps to a DIFFERENT library_key (protects multi-season franchises
-  // whose season rows share one show folder � same key = owned).
+  // whose season rows share one show folder — same key = owned).
   const conf = loadNamingConf(db);
   const namingEnabled = conf.enabled;
   const dirs: FixNameDirRow[] = [];
   let did = 0;
-  const sharedNote = "Folder holds files of another franchise � fix identities first";
+  const sharedNote = "Folder holds files of another franchise — fix identities first";
   if (type === "series") {
     for (const [showDir, seasons] of showSeasons) {
       const ownedShow = folderOwnedExclusively(db, showDir, request.library_key);
@@ -1499,7 +1494,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         note: !namingEnabled ? "Naming disabled in Settings" : owned ? (canonical == null ? identityNote : canonical === name ? null : null) : sharedNote,
       });
     }
-    // Library movie dir(s) � nativeMovieLibraryFolders falls back to the movie
+    // Library movie dir(s) — nativeMovieLibraryFolders falls back to the movie
     // root itself when nothing matches; skip proposing the root.
     for (const folder of nativeMovieLibraryFolders(request.title || "")) {
       if (!folder || path.normalize(folder) === path.normalize(MEDIA_MOVIES)) continue;
@@ -1537,7 +1532,7 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
   const parent = path.dirname(oldPath);
   const oldBasename = path.basename(oldPath);
   // Proposals arrive without an extension (the canonical base name); re-attach
-  // the original one so a rename never strips ".mkv". endsWith � never extname:
+  // the original one so a rename never strips ".mkv". endsWith — never extname:
   // channel layouts like "2.0" inside the name would fool it.
   const ext = path.extname(oldPath);
   const newName = ext && !newNameArg.endsWith(ext) ? `${newNameArg}${ext}` : newNameArg;
@@ -1553,7 +1548,7 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
 
   fs.renameSync(oldPath, dest);
   const after = fs.statSync(dest);
-  if (after.ino !== st.ino) return { ok: false, error: "Rename changed the inode � aborting" };
+  if (after.ino !== st.ino) return { ok: false, error: "Rename changed the inode — aborting" };
 
   // Identity rows are keyed by (dev, inode); refresh the stored release_name.
   try {
@@ -1589,7 +1584,7 @@ function isDirectChildOfRoot(p: string, root: string): boolean {
 
 /** Folder ownership gate: block renames of folders that contain files of a
  * DIFFERENT franchise. Files with no registered identity are treated as owned.
- * This is what makes multi-season franchises safe � every season row of the
+ * This is what makes multi-season franchises safe — every season row of the
  * same show shares the show folder (same library_key) and stays non-blocking. */
 function folderOwnedExclusively(db: Database, folder: string, libraryKey: string | null): boolean {
   if (!libraryKey) return false;
@@ -1622,7 +1617,7 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
 }
 
 /** Rewrite the directory prefix of every AH processed_files entry across ALL
- * requests (not just this one) � a show-folder rename also relocates sibling
+ * requests (not just this one) — a show-folder rename also relocates sibling
  * seasons' records. Self-heal would recover anyway; this keeps it eager. */
 function rewriteProcessedFilesPrefix(db: Database, prefix: string, replacement: string) {
   const rows = db.prepare(
@@ -1661,7 +1656,7 @@ function dirKindForPath(p: string): "show" | "season" | "movie" {
  * trees, only when the request exclusively owns the whole tree, canonical name
  * is recomputed server-side, destination collisions abort (never silently
  * merge), and AH processed_files prefixes are rewritten for every request under
- * a processed folder (library paths have no bookkeeping � Jellyfin rescans). */
+ * a processed folder (library paths have no bookkeeping — Jellyfin rescans). */
 async function applyDirRename(
   db: Database,
   request: any,
@@ -1698,8 +1693,8 @@ async function applyDirRename(
     // Same resolution the preview used: the show folder (or, for a season dir,
     // its parent) is the on-disk identity hint, and the season cache is warmed so
     // episode titles and the show id agree with what the modal displayed.
-    const { pieces, trace } = await fixNamesPieces(db, request, [kind === "show" ? oldDir : parent]);
-    if (!pieces) return { ok: false, error: `Could not resolve identity: ${trace.slice(-3).join(" | ") || "no TMDB data"}`, kind };
+    const { pieces, reason } = await fixNamesPieces(db, request, [kind === "show" ? oldDir : parent]);
+    if (!pieces) return { ok: false, error: `Could not resolve identity — ${reason || "no IMDb/TVDB id found"}`, kind };
     canonical = kind === "show" ? canonicalSeriesDir(conf, pieces) : canonicalMovieDir(conf, pieces);
   }
   if (!canonical) return { ok: false, error: "Could not resolve canonical folder name", kind };
@@ -1707,7 +1702,7 @@ async function applyDirRename(
   const oldName = path.basename(oldDir);
   if (canonical === oldName) return { ok: true, skipped: true, old: oldName, new: canonical, kind };
   if (!folderOwnedExclusively(db, oldDir, request.library_key)) {
-    return { ok: false, error: "Folder contains files of another franchise � fix identities first", kind };
+    return { ok: false, error: "Folder contains files of another franchise — fix identities first", kind };
   }
 
   const dest = path.join(parent, canonical);
@@ -1723,7 +1718,7 @@ async function applyDirRename(
     return { ok: false, error: e.message, kind };
   }
   try {
-    if (!fs.statSync(dest).isDirectory()) return { ok: false, error: "Rename produced a non-directory � aborting", kind };
+    if (!fs.statSync(dest).isDirectory()) return { ok: false, error: "Rename produced a non-directory — aborting", kind };
   } catch {
     return { ok: false, error: "Rename verification failed", kind };
   }
@@ -1738,7 +1733,7 @@ async function applyDirRename(
 }
 
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
-  // Primary: prefix match � but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
+  // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
   if (torrentNorm.startsWith(lookupNorm)) {
     const suffix = torrentNorm.slice(lookupNorm.length).trimStart();
     if (!suffix || !/^\d{1,3}\b/.test(suffix)) return true;
@@ -2058,7 +2053,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             for (const rc of orphanRcs) {
               const conflict = db.prepare("SELECT id FROM release_candidates WHERE request_id = ? AND radarr_release_id = ?").get(keep.id, rc.radarr_release_id);
               if (conflict) {
-                // Duplicate RC � delete instead of move
+                // Duplicate RC — delete instead of move
                 db.prepare("DELETE FROM approval_history WHERE release_id = ?").run(rc.id);
                 db.prepare("DELETE FROM release_candidates WHERE id = ?").run(rc.id);
               } else {
@@ -2240,13 +2235,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       try { allTorrents = await qbittorrent.getTorrents(); } catch {}
 
       for (const movie of radarrMovies) {
-        // Fix existing entries: update NEW?COMPLETED if Radarr says hasFile
+        // Fix existing entries: update NEW→COMPLETED if Radarr says hasFile
         const existing = db.prepare("SELECT id, status FROM media_requests WHERE radarr_id = ?").get(movie.id) as any;
         if (existing) {
           if (movie.hasFile && existing.status === "NEW") {
             db.prepare("UPDATE media_requests SET status = 'COMPLETED' WHERE id = ?").run(existing.id);
             fixed++;
-            console.log(`[Import] Fixed ${movie.title}: NEW?COMPLETED (Radarr hasFile)`);
+            console.log(`[Import] Fixed ${movie.title}: NEW→COMPLETED (Radarr hasFile)`);
           }
           continue;
         }
@@ -2277,7 +2272,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             db.prepare(
               "INSERT INTO approval_history (request_id, release_id, approved_by) VALUES (?, (SELECT id FROM release_candidates WHERE request_id = ? LIMIT 1), 'system')"
             ).run(requestId, requestId);
-            console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}, status?SEEDING`);
+            console.log(`[Import] Detected torrent for ${movie.title}: hash=${match.hash}, status→SEEDING`);
           }
         }
 
@@ -2307,7 +2302,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (epFileCount > 0 && existing.status === "NEW") {
                 db.prepare("UPDATE media_requests SET status = 'COMPLETED', episode_count = ? WHERE id = ?").run(epCount || null, existing.id);
                 fixed++;
-                console.log(`[Import] Fixed ${detail.title} S${String(seasonNum).padStart(2, "0")}: NEW?COMPLETED (${epFileCount}/${epCount} episodes)`);
+                console.log(`[Import] Fixed ${detail.title} S${String(seasonNum).padStart(2, "0")}: NEW→COMPLETED (${epFileCount}/${epCount} episodes)`);
               }
               continue;
             }
@@ -2487,7 +2482,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ? processedBytes / (1024 * 1024)
           : seasons.reduce((sum: number, s: any) => sum + s.total_size_mb, 0);
         const mappedSeasons = seasons.map((s: any) => {
-          // Covered episodes � same logic as the franchise page (/native-franchise)
+          // Covered episodes — same logic as the franchise page (/native-franchise)
           // so dashboard counts always agree with the episode grid. This counts ALL
           // processed_files rows (including torrent-linked ones), unlike the old
           // inline version which only counted release_id IS NULL rows.
@@ -2561,7 +2556,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // Inject disk season folders absent from request rows. The processed
         // tree is the source of truth, so any season folder with files shows up
         // even when Sonarr/Radarr are unreachable or don't list the season
-        // (e.g. Specials folders) � pointed out by Death in Paradise. Sonarr
+        // (e.g. Specials folders) — pointed out by Death in Paradise. Sonarr
         // groups get DOMs driven by disk too; a later Sonarr-listed injection
         // above simply wins for seasons both sources agree on.
         {
@@ -2595,7 +2590,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             });
             existingSeasons.add(sn);
           }
-          // Specials with no request row (native franchises � they carry a
+          // Specials with no request row (native franchises — they carry a
           // library_key for the cache): inject from cached TMDB season-0, or
           // actively fetch when the show has an S00 folder on disk (even empty).
           if (sonarrId == null && !existingSeasons.has(0) && libraryKey) {
@@ -2704,7 +2699,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sKey = process.env.SONARR_API_KEY || "";
 
       let sonarrDeleteFailed = false;
-      // Delete from Sonarr (best-effort � DB rows are removed regardless so a
+      // Delete from Sonarr (best-effort — DB rows are removed regardless so a
       // down/unconfigured arr doesn't block the local delete)
       if (sUrl && sKey) {
         try {
@@ -2813,7 +2808,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           ORDER BY rc.app_score DESC, rc.size_mb DESC
         `).all(s.id, s.id) as any[];
 
-        // Get covered episodes � only from approved releases with torrent_hash (actually have these episodes)
+        // Get covered episodes — only from approved releases with torrent_hash (actually have these episodes)
         const coveredEps = new Set<number>();
         for (const r of releases) {
           if (r.approved_at && r.torrent_hash) {
@@ -2832,7 +2827,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
         }
 
-        // Also count library-imported files � parse episode numbers from processed_files paths (verify on disk)
+        // Also count library-imported files — parse episode numbers from processed_files paths (verify on disk)
         const processedTvDir = PROCESSED_TV;
         const processedAh = db.prepare(`
           SELECT processed_files FROM approval_history
@@ -2969,7 +2964,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       ).get(sonarrId, seasonNum) as any;
 
       if (!row) {
-        // No DB entry � fetch from Sonarr + filesystem (e.g., Specials)
+        // No DB entry — fetch from Sonarr + filesystem (e.g., Specials)
         let sonarrEpisodes2: Array<{ episodeNumber: number; title: string; hasFile: boolean; airDateUtc?: string }> = [];
         try {
           const episodes2 = await sonarr.getSeasonEpisodes(sonarrId, seasonNum);
@@ -3278,12 +3273,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         ).get(r.id) as any;
 
         if (approvedRelease) {
-          // Has approved release � go to DOWNLOADING
+          // Has approved release — go to DOWNLOADING
           db.prepare("UPDATE media_requests SET status = 'DOWNLOADING', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
 
           // If hash is empty, try to re-detect from qBittorrent
           if (!approvedRelease.torrent_hash && allTorrents.length > 0) {
-            // Match by title (fuzzy � check if torrent name contains the release title)
+            // Match by title (fuzzy — check if torrent name contains the release title)
             const match = allTorrents.find((t: any) =>
               t.name.toLowerCase().includes(approvedRelease.title.toLowerCase().slice(0, 20)) ||
               approvedRelease.title.toLowerCase().includes(t.name.toLowerCase().slice(0, 20))
@@ -3295,7 +3290,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           }
         } else {
-          // No approved release � go to NEW for poller to search
+          // No approved release — go to NEW for poller to search
           db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
         }
         reactivated++;
@@ -3326,7 +3321,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   // POST /api/requests/detect-torrents - Scan qBittorrent for orphaned requests and link them
   router.post("/detect-torrents", async (req: Request, res: Response) => {
     try {
-      // Find requests with no active torrent hash � includes DOWNLOADING items whose entries were wiped
+      // Find requests with no active torrent hash — includes DOWNLOADING items whose entries were wiped
       const orphans = db.prepare(
         "SELECT mr.id, mr.title FROM media_requests mr " +
         "WHERE mr.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'DOWNLOADING') " +
@@ -3416,7 +3411,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
           detected++;
           matches.push({ request_id: orphan.id, request_title: orphan.title, torrent_name: match.name, torrent_hash: match.hash,           episodes: episodeStr || '' });
-          console.log(`[Detect] Linked torrent for ${orphan.title} ? ${match.name}${episodeStr ? ` (${episodeStr})` : ''}`);
+          console.log(`[Detect] Linked torrent for ${orphan.title} → ${match.name}${episodeStr ? ` (${episodeStr})` : ''}`);
         }
       }
 
@@ -3523,7 +3518,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           db.prepare(`DELETE FROM approval_history WHERE release_id IN (${removeIds.map(() => "?").join(",")})`).run(...removeIds);
           console.log(`[ScanDownloads] Removed ${toRemove.length} stale approval(s) for RCs not in qBittorrent`);
         }
-        // Sync request statuses � any request with approved RCs in qBittorrent should be DOWNLOADING/SEEDING
+        // Sync request statuses — any request with approved RCs in qBittorrent should be DOWNLOADING/SEEDING
         let staleFixed = 0;
         const staleStatus = db.prepare(
           "SELECT DISTINCT mr.id, mr.status FROM media_requests mr " +
@@ -3629,7 +3624,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
 
         const titleClean = torrent.name
-          .replace(/\bS\d{1,2}(?:E\d{1,3}(?:[-�]\d{1,3})?)?\b/gi, "")
+          .replace(/\bS\d{1,2}(?:E\d{1,3}(?:[-–]\d{1,3})?)?\b/gi, "")
           .replace(/\bSeason\s*\d+\b/gi, "")
           .replace(/\b(?:1080p|2160p|720p|480p|BluRay|WEB-?DL|WEB-?RIP|HDRip|DVDRip|REMUX|x264|x265|HEVC|AAC|FLAC|DTS|AC3|\.mkv|\.mp4|\.avi)\b/gi, "")
           .replace(/[\[\]()]/g, " ")
@@ -3638,11 +3633,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           .trim();
 
         const lookupTitle = torrent.name
-          .replace(/\bS\d{1,2}(?:E\d{1,3}(?:[-�]\d{1,3})?)?\b/gi, "")
+          .replace(/\bS\d{1,2}(?:E\d{1,3}(?:[-–]\d{1,3})?)?\b/gi, "")
           .replace(/\bSeason\s*\d+\b/gi, "")
           .replace(/\b(?:1080p|2160p|720p|480p|BluRay|WEB-?DL|WEB-?RIP|HDRip|DVDRip|REMUX|x264|x265|HEVC|AAC|FLAC|DTS|AC3|DDP?\.?5\.?1|ATMOS|EAC3|DOLBY|DUBBED|DUBBING|DUB|MULTI|NF|HDR10\+?|DV|10bit|H\.?26[45]|AV1|60fps|23\.976|25fps|DDP|DD)\b/gi, "")
           .replace(/\[.*?\]/g, " ")
-          .replace(/[-�/\\]+/g, " ")
+          .replace(/[-–/\\]+/g, " ")
           .replace(/[._]+/g, " ")
           .replace(/\s+/g, " ")
           .trim();
@@ -3669,7 +3664,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             });
           }
 
-          // Step 1b: No arr match � fall back to existing native (library_key)
+          // Step 1b: No arr match — fall back to existing native (library_key)
           // requests, so content already tracked arr-free gets its torrent
           // attached without needing Radarr/Sonarr at all.
           let nativeMatch: any = null;
@@ -3687,7 +3682,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
           }
 
-          // Step 2: If no local match, use Sonarr/Radarr lookup � try all results until one validates
+          // Step 2: If no local match, use Sonarr/Radarr lookup — try all results until one validates
           let radarrId: number | null = null;
           let sonarrId: number | null = null;
           let matchedTitle = "";
@@ -4281,7 +4276,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 path: entryPath,
                 action,
                 ok: false,
-                error: "Not found in Processed � refusing to delete without force (would lose data)",
+                error: "Not found in Processed — refusing to delete without force (would lose data)",
               });
               continue;
             }
@@ -4302,7 +4297,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // GET /api/requests/unmatched � list unmatched torrents awaiting user match
+  // GET /api/requests/unmatched — list unmatched torrents awaiting user match
   router.get("/unmatched", (req: Request, res: Response) => {
     const rows = db.prepare(
       "SELECT * FROM unmatched_torrents WHERE matched_at IS NULL AND skipped = 0 ORDER BY created_at DESC"
@@ -4313,7 +4308,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     res.json(rows);
   });
 
-  // POST /api/requests/unmatched/:id/match � user picks a candidate
+  // POST /api/requests/unmatched/:id/match — user picks a candidate
   router.post("/unmatched/:id/match", async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -4557,14 +4552,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/unmatched/:id/skip � skip this unmatched entry
+  // POST /api/requests/unmatched/:id/skip — skip this unmatched entry
   router.post("/unmatched/:id/skip", (req: Request, res: Response) => {
     const { id } = req.params;
     db.prepare("UPDATE unmatched_torrents SET skipped = 1 WHERE id = ?").run(id);
     res.json({ success: true });
   });
 
-  // GET /api/requests/discover?q=... � TMDB keyword search for the Discover
+  // GET /api/requests/discover?q=... — TMDB keyword search for the Discover
   // modal. Arr-free: purely TMDB, returns combined movie + series hits the
   // user can turn into native requests.
   router.get("/discover", async (req: Request, res: Response) => {
@@ -4585,7 +4580,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // GET /api/requests/discover/tv/:tmdbId/seasons � season list for the picker.
+  // GET /api/requests/discover/tv/:tmdbId/seasons — season list for the picker.
   router.get("/discover/tv/:tmdbId/seasons", async (req: Request, res: Response) => {
     try {
       const seasons = await fetchTMDBTVSeasons(Number(req.params.tmdbId));
@@ -4595,7 +4590,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
-  // POST /api/requests/discover/request � create a native request from a
+  // POST /api/requests/discover/request — create a native request from a
   // discovered TMDB title. Idempotent: returns the existing request when the
   // same library_key (movie) or key+season (series) is already tracked.
   router.post("/discover/request", (req: Request, res: Response) => {
@@ -4636,7 +4631,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         ).run(cleaned, key, reqSeason);
         requestId = result.lastInsertRowid as number;
       }
-      console.log(`[Discover] Created ${mediaType} request ${requestId}: ${cleaned} (key=${key}, season=${reqSeason ?? "�"})`);
+      console.log(`[Discover] Created ${mediaType} request ${requestId}: ${cleaned} (key=${key}, season=${reqSeason ?? "—"})`);
       res.json({ success: true, request_id: Number(requestId), existed: false, type: mediaType, title: cleaned });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -4725,7 +4720,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       // Attribute library shows to processed shows by shared inode, not title.
       // The two trees use different naming: the library carries localized or
-      // bilingual names ("Kacze opowiesci - DuckTales 2017-2021 [Sezon 01-03]")
+      // bilingual names ("Kacze opowieści - DuckTales 2017-2021 [Sezon 01-03]")
       // while processed keeps the original ("DuckTales"), and separators differ
       // too ("Avatar - The Last Airbender" vs "Avatar: The Last Airbender").
       // File overlap is immune to all of that.
@@ -4916,7 +4911,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const result = executeAdoption(plan);
       // Register identity for the newly adopted processed links. Adoption
-      // targets pre-app library files, so there's no request row in hand � the
+      // targets pre-app library files, so there's no request row in hand — the
       // identity is recovered from the processed path (title + Sxx) matched
       // against media_requests. Best-effort; adoption never fails on a miss.
       let registered = 0;
@@ -5011,7 +5006,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
             if (!alreadyImported) {
               fs.linkSync(filePath, destPath);
-              console.log(`[ImportLibrary] Hardlinked ${fileName} ? processed/filmy`);
+              console.log(`[ImportLibrary] Hardlinked ${fileName} → processed/filmy`);
               results.push({ title: m.title, status: "imported", path: destPath });
             } else {
               results.push({ title: m.title, status: "exists", path: filePath });
@@ -5058,7 +5053,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 if (!alreadyExtra) {
                   try {
                     fs.linkSync(extraPath, extraDest);
-                    console.log(`[ImportLibrary] Hardlinked extra ${entry} ? processed/filmy`);
+                    console.log(`[ImportLibrary] Hardlinked extra ${entry} → processed/filmy`);
                   } catch (e2: any) {
                     console.error(`[ImportLibrary] Failed to hardlink extra ${entry}: ${e2.message}`);
                   }
@@ -5173,7 +5168,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 if (!alreadyImported) {
                   try {
                     fs.linkSync(srcPath, destPath);
-                    console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} ? processed/serialy`);
+                    console.log(`[ImportLibrary] Hardlinked ${s.title} ${entry.name}/${f} → processed/serialy`);
                     results.push({ title: `${s.title} ${entry.name}/${f}`, status: "imported", path: destPath });
                   } catch (linkErr: any) {
                     console.error(`[ImportLibrary] Failed to hardlink ${s.title} ${entry.name}/${f}:`, linkErr.message);
@@ -5219,7 +5214,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               if (!alreadyImported) {
                 try {
                   fs.linkSync(srcPath, destPath);
-                  console.log(`[ImportLibrary] Hardlinked ${s.title} root/${vf.name} ? processed/serialy`);
+                  console.log(`[ImportLibrary] Hardlinked ${s.title} root/${vf.name} → processed/serialy`);
                   results.push({ title: `${s.title} ${vf.name}`, status: "imported", path: destPath });
                 } catch (linkErr: any) {
                   console.error(`[ImportLibrary] Failed to hardlink ${s.title} root/${vf.name}:`, linkErr.message);
@@ -5263,7 +5258,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 if (!alreadyImported) {
                   try {
                     fs.linkSync(srcPath, destPath);
-                    console.log(`[ImportLibrary] Hardlinked ${s.title} ${ud.name}/${f} ? processed/serialy`);
+                    console.log(`[ImportLibrary] Hardlinked ${s.title} ${ud.name}/${f} → processed/serialy`);
                     results.push({ title: `${s.title} ${ud.name}/${f}`, status: "imported", path: destPath });
                   } catch (linkErr: any) {
                     console.error(`[ImportLibrary] Failed to hardlink ${s.title} ${ud.name}/${f}:`, linkErr.message);
@@ -5288,7 +5283,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             }
             if (seasonDirs.length === 0) {
               const allDirs = seriesEntries.filter(e => e.isDirectory()).map(e => e.name);
-              console.log(`[ImportLibrary] ${s.title}: path="${seriesPath}" � no S## dirs found. Dirs: [${allDirs.join(", ")}]`);
+              console.log(`[ImportLibrary] ${s.title}: path="${seriesPath}" — no S## dirs found. Dirs: [${allDirs.join(", ")}]`);
             } else if (seriesFiles === 0) {
               console.log(`[ImportLibrary] ${s.title}: ${seasonDirs.length} season dirs but 0 video files. Checking extensions...`);
               for (const sd of seasonDirs.slice(0, 2)) {
@@ -5410,7 +5405,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     };
 
     if (!process.env.PROWLARR_URL || !process.env.PROWLARR_API_KEY || !prowlarr) {
-      send("error", { success: false, error: "Prowlarr is not configured � set PROWLARR_URL and PROWLARR_API_KEY" });
+      send("error", { success: false, error: "Prowlarr is not configured — set PROWLARR_URL and PROWLARR_API_KEY" });
       send("done", { success: false, totalFound: 0, seasons: 0, errors: 1, skipped: allSeasons.length });
       res.end();
       return;
@@ -5551,7 +5546,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     };
 
     if (!process.env.PROWLARR_URL || !process.env.PROWLARR_API_KEY || !prowlarr) {
-      send("error", { success: false, error: "Prowlarr is not configured � set PROWLARR_URL and PROWLARR_API_KEY" });
+      send("error", { success: false, error: "Prowlarr is not configured — set PROWLARR_URL and PROWLARR_API_KEY" });
       send("done", { success: false, totalFound: 0, movies: 0, errors: 1, skipped: allMovies.length });
       res.end();
       return;
@@ -5776,7 +5771,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       ).get(id);
       const newStatus = hasApproved ? "DOWNLOADING" : "NEW";
       db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, id);
-      console.log(`[Reactivate] Re-activated ${request.title} ? ${newStatus}`);
+      console.log(`[Reactivate] Re-activated ${request.title} → ${newStatus}`);
       res.json({ success: true });
     } catch (error) {
       console.error("Error reactivating request:", error);
@@ -5853,7 +5848,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const season = request.season ?? 0;
       const covered = coveredEpisodesForRequest(db, request);
       // Present files with no parseable episode number (e.g. S00 movies like
-      // "Candace Against the Universe") � TMDB has no special entry, but the
+      // "Candace Against the Universe") — TMDB has no special entry, but the
       // file is there and should show as FILLED.
       const baseTitle = cleanFranchiseTitle(request.title || "");
       const extras: { name: string }[] = [];
@@ -5994,7 +5989,7 @@ let episodes: any[];
         existingSeasons.add(sn);
       }
       // Specials with no request row: inject from cached TMDB season-0, or
-      // actively fetch it when the show has an S00 folder on disk (even empty �
+      // actively fetch it when the show has an S00 folder on disk (even empty —
       // Death in Paradise, The Smurfs, Ninjago all keep placeholder S00 grips).
       if (!existingSeasons.has(0)) {
         let tmdbSpecials = 0;
@@ -6211,7 +6206,7 @@ let episodes: any[];
       }
       const clash = (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'series' AND library_key = ?").get(newKey) as any)?.c || 0;
       if (clash > 0) {
-        return res.status(409).json({ error: `Key ${newKey} is already in use by another franchise � not overwriting` });
+        return res.status(409).json({ error: `Key ${newKey} is already in use by another franchise — not overwriting` });
       }
       db.transaction(() => {
         db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
@@ -6285,7 +6280,7 @@ let episodes: any[];
         }, null, 2));
 
         exported = true;
-        console.log(`[Destroy] Exported torrent+trackers for ${rel.title} ? ${dir}`);
+        console.log(`[Destroy] Exported torrent+trackers for ${rel.title} → ${dir}`);
 
         // If keeping files, move content to processed before removing from qBit
         if (!deleteFiles && rel.torrent_hash) {
@@ -6298,7 +6293,7 @@ let episodes: any[];
             const dest = path.join(destDir, path.basename(srcPath));
             const stat = fs.statSync(srcPath);
             fs.renameSync(srcPath, dest);
-            console.log(`[Destroy] Moved kept files ${srcPath} ? ${dest}`);
+            console.log(`[Destroy] Moved kept files ${srcPath} → ${dest}`);
             registerVideoTree(db, dest, {
               library_key: request.library_key || "",
               title: request.title || "",
@@ -6369,7 +6364,7 @@ let episodes: any[];
       const rUrl = process.env.RADARR_URL || "";
       const rKey = process.env.RADARR_API_KEY || "";
       let destroyArrFailures = 0;
-      // Delete from Sonarr/Radarr (best-effort � local state is removed regardless)
+      // Delete from Sonarr/Radarr (best-effort — local state is removed regardless)
       if (request.sonarr_id && sUrl && sKey) {
         try {
           const r = await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": sKey } });
@@ -6399,7 +6394,7 @@ let episodes: any[];
         destroyArrFailures++;
       }
 
-      // Delete from Seerr (best-effort � a Seerr request left alive re-creates
+      // Delete from Seerr (best-effort — a Seerr request left alive re-creates
       // this row on the next sync poll). Only linked rows propagate; anything
       // without a seerr_request_id is purely local.
       let seerrDelete = null;
@@ -6408,7 +6403,7 @@ let episodes: any[];
         if (seerrDelete.ok) {
           console.log(`[Delete] Removed Seerr request ${request.seerr_request_id} (${seerrDelete.method})`);
         } else {
-          console.warn(`[Delete] Seerr request ${request.seerr_request_id} NOT removed (${seerrDelete.method}: ${seerrDelete.error || seerrDelete.body || `HTTP ${seerrDelete.status}`}) � will re-sync`);
+          console.warn(`[Delete] Seerr request ${request.seerr_request_id} NOT removed (${seerrDelete.method}: ${seerrDelete.error || seerrDelete.body || `HTTP ${seerrDelete.status}`}) — will re-sync`);
         }
       }
 
@@ -6607,7 +6602,7 @@ let episodes: any[];
       ).all(id) as any[];
 
       // Candidate library folders for this request. A request may carry an arr
-      // id, a native library_key, or both (arr services can be down) � try every
+      // id, a native library_key, or both (arr services can be down) — try every
       // identity branch and merge instead of trusting the first.
       const libraryFolders = new Set<string>();
       try {
@@ -6654,7 +6649,7 @@ let episodes: any[];
 
         const torrent = await qbittorrent.getTorrentByHash(release.torrent_hash);
         if (!torrent) {
-          // Stale hash � torrent was deleted from qBittorrent but hash wasn't cleared
+          // Stale hash — torrent was deleted from qBittorrent but hash wasn't cleared
           db.prepare("UPDATE release_candidates SET torrent_hash = '', save_path = '' WHERE id = ?").run(release.release_id);
           results.push({ release_id: release.release_id, title: release.title, found: false });
           continue;
@@ -6895,7 +6890,7 @@ let episodes: any[];
         ).get(id) as any;
         if (!remaining) {
           db.prepare("UPDATE media_requests SET status = 'NEW', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-          console.log(`[Dismiss] Removed release from request #${id}, no active torrents left � set to NEW`);
+          console.log(`[Dismiss] Removed release from request #${id}, no active torrents left — set to NEW`);
         }
       } else {
         // Delete entire request: delete all torrents, unmonitor, then remove from DB
@@ -6941,14 +6936,14 @@ let episodes: any[];
         db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
         console.log(`[Dismiss] Deleted request #${id}: ${request?.title}`);
 
-        // Remove from Seerr too � a surviving Seerr request makes the next sync
+        // Remove from Seerr too — a surviving Seerr request makes the next sync
         // poll re-create this row within a minute.
         if (request?.seerr_request_id) {
           seerrDelete = await seerrRemoveRequest(Number(request.seerr_request_id));
           if (seerrDelete.ok) {
             console.log(`[Dismiss] Removed Seerr request ${request.seerr_request_id} (${seerrDelete.method})`);
           } else {
-            console.warn(`[Dismiss] Seerr request ${request.seerr_request_id} NOT removed (${seerrDelete.method}: ${seerrDelete.error || seerrDelete.body || `HTTP ${seerrDelete.status}`}) � will re-sync`);
+            console.warn(`[Dismiss] Seerr request ${request.seerr_request_id} NOT removed (${seerrDelete.method}: ${seerrDelete.error || seerrDelete.body || `HTTP ${seerrDelete.status}`}) — will re-sync`);
           }
         }
       }
@@ -6980,7 +6975,7 @@ const type = request.type === "series" ? "series" : "movie";
 
         const processedIno = fs.statSync(processedFile).ino;
 
-        // Find library folder � arr id wins when present, but native (arr-free)
+        // Find library folder — arr id wins when present, but native (arr-free)
         // requests resolve by library_key/title against the library roots.
         let libraryDir = "";
         if (request.sonarr_id) {
@@ -7219,7 +7214,7 @@ const type = request.type === "series" ? "series" : "movie";
       if (!result.success) return res.status(500).json({ error: result.error });
 
       // Register identity for the processed inodes (same inode as the download
-      // copy � hardlinked � so this single row also identifies the download twin).
+      // copy — hardlinked — so this single row also identifies the download twin).
       if (result.destination) {
         const registered = registerVideoTree(db, result.destination, {
           library_key: request.library_key || "",
@@ -7287,7 +7282,7 @@ const type = request.type === "series" ? "series" : "movie";
         }
       }
       if (linkedFiles.length > 0) {
-        console.log(`[MoveToProcessed] ${contentPath} ? ${result.destination} (${linkedFiles.length} files linked, not added to DB � tracked via torrent association)`);
+        console.log(`[MoveToProcessed] ${contentPath} → ${result.destination} (${linkedFiles.length} files linked, not added to DB — tracked via torrent association)`);
       } else {
         console.log(`[MoveToProcessed] All files already linked via inode, nothing to add`);
       }
@@ -7402,7 +7397,7 @@ const type = request.type === "series" ? "series" : "movie";
   });
 
   // POST /api/requests/:id/fix-names/preview - P2 proposal rows (processed files
-  // + library twins) with canonical old?new names for the Fix Names modal.
+  // + library twins) with canonical old→new names for the Fix Names modal.
   router.post("/:id/fix-names/preview", async (req: Request, res: Response) => {
     try {
       const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(req.params.id) as any;
@@ -7482,7 +7477,7 @@ const type = request.type === "series" ? "series" : "movie";
       if (!fs.existsSync(processedDir)) return res.json({ files: [] });
 
       // Self-heal stale processed_files entries (manual mv/rename) before they
-      // seed matchedNames � otherwise the panel silently drops renamed files.
+      // seed matchedNames — otherwise the panel silently drops renamed files.
       healProcessedFilesForRequest(db, request);
       backfillRequestIdentity(db, request);
 
@@ -7549,7 +7544,7 @@ const type = request.type === "series" ? "series" : "movie";
         } catch {}
       }
 
-      // Determine library files for per-file in-library checks � match by inode (hardlinks share inode)
+      // Determine library files for per-file in-library checks — match by inode (hardlinks share inode)
       const libraryInodes = new Set<number>();
       const libraryNameByInode = new Map<number, string>();
       const libraryFiles = new Set<string>();
@@ -7597,7 +7592,7 @@ const type = request.type === "series" ? "series" : "movie";
           }
         } catch {}
       } else if (request.library_key && request.type === "series") {
-        // Native (arr-free) series � scan the library season folder the same way
+        // Native (arr-free) series — scan the library season folder the same way
         // move-to-library resolves it (fuzzy show folder, localized season
         // folders like "Sezon I"), matching by inode for hardlinks.
         try {
@@ -7618,7 +7613,7 @@ const type = request.type === "series" ? "series" : "movie";
           }
         } catch {}
       } else if (request.library_key && request.type === "movie") {
-        // Native (arr-free) movie � movies live in a "<Title> (Year)/" subfolder
+        // Native (arr-free) movie — movies live in a "<Title> (Year)/" subfolder
         // under MEDIA_MOVIES, so resolve the folder(s) and scan each.
         try {
           for (const folder of nativeMovieLibraryFolders(request.title || "")) {
@@ -7641,7 +7636,7 @@ const type = request.type === "series" ? "series" : "movie";
 
       const requestTitleNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
-      // Collect all files from processedDir � flat or nested (series use SeriesName/S##/ structure)
+      // Collect all files from processedDir — flat or nested (series use SeriesName/S##/ structure)
       type ProcessedEntry = { name: string; relPath: string; fullPath: string; isDir: boolean };
       const allEntries: ProcessedEntry[] = [];
       const targetSeason = request.type === "series" && request.season != null
@@ -7650,7 +7645,7 @@ const type = request.type === "series" ? "series" : "movie";
         if (entry.name.startsWith(".")) continue;
         const fullPath = path.join(processedDir, entry.name);
         if (entry.isDirectory()) {
-          // Series subfolder � only scan the season dir matching this request (if applicable)
+          // Series subfolder — only scan the season dir matching this request (if applicable)
           for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
             if (!sub.isDirectory()) continue;
             if (!/^S\d+$/i.test(sub.name)) continue;
@@ -7680,7 +7675,7 @@ const type = request.type === "series" ? "series" : "movie";
         } catch {}
 
         // Accept when: explicitly associated (name/relPath), OR the file is a
-        // hardlink of one of the request's library files (inode � authoritative
+        // hardlink of one of the request's library files (inode — authoritative
         // even when a torrent is linked and association bookkeeping is lost),
         // OR registered identity claims it for this request's library_key
         // (survives a remove-from-library dropping the library twin), OR
@@ -7957,7 +7952,7 @@ const type = request.type === "series" ? "series" : "movie";
       const result = moveToWorkspaceSync(filePath, request.id, request.title, workspaceIndex, undefined, undefined, Object.keys(wsConfig).length > 0 ? wsConfig : undefined);
       if (!result.success) return res.status(500).json({ error: result.error });
 
-      console.log(`[ProcessedToWorkspace] ${filePath} ? ${result.destination}`);
+      console.log(`[ProcessedToWorkspace] ${filePath} → ${result.destination}`);
       res.json({ success: true, source: filePath, destination: result.destination });
     } catch (error: any) {
       console.error("Error moving processed to workspace:", error);
@@ -8020,7 +8015,7 @@ const type = request.type === "series" ? "series" : "movie";
 
       const outputBasenames = result.processedPaths.map((p) => path.basename(p));
 
-      // Workspace outputs were MOVED (renameSync) � these are brand-new inodes,
+      // Workspace outputs were MOVED (renameSync) — these are brand-new inodes,
       // so they MUST be registered here or identity is lost forever.
       if (result.processedPaths.length > 0) {
         registerVideoTree(db, path.dirname(result.processedPaths[0]), {
@@ -8154,7 +8149,7 @@ const type = request.type === "series" ? "series" : "movie";
       const result = moveToWorkspaceSync(contentPath, request.id, request.title, req.body?.workspaceIndex, release.id, release.torrent_hash, Object.keys(wsConfig).length > 0 ? wsConfig : undefined);
       if (!result.success) return res.status(500).json({ error: result.error });
 
-      console.log(`[MoveToWorkspace] ${contentPath} ? ${result.destination}`);
+      console.log(`[MoveToWorkspace] ${contentPath} → ${result.destination}`);
       res.json({ success: true, source: contentPath, destination: result.destination });
     } catch (error: any) {
       console.error("Error moving to workspace:", error);
@@ -8179,7 +8174,7 @@ const type = request.type === "series" ? "series" : "movie";
       let destFolder = "";
 
       // A request whose content has reached the library is complete. Only
-      // DOWNLOADING/SEEDING rows are eligible � earlier states still need their
+      // DOWNLOADING/SEEDING rows are eligible — earlier states still need their
       // release fetched, later ones are already final.
       const markCompleted = () => {
         if (request.status === "DOWNLOADING" || request.status === "SEEDING") {
@@ -8188,7 +8183,7 @@ const type = request.type === "series" ? "series" : "movie";
       };
 
       if (fileName) {
-        // Direct file lookup in processed dir � used by processed panel
+        // Direct file lookup in processed dir — used by processed panel
         sourcePath = path.join(processedDir, fileName);
         if (!fs.existsSync(sourcePath)) {
           return res.status(404).json({ error: `Processed file not found: ${fileName}` });
@@ -8202,7 +8197,7 @@ const type = request.type === "series" ? "series" : "movie";
 
         if (!release || !release.torrent_hash) {
           if (request.library_key) {
-            return res.status(400).json({ error: "arr-free request � use the per-file To Library button in the processed panel" });
+            return res.status(400).json({ error: "arr-free request — use the per-file To Library button in the processed panel" });
           }
           return res.status(400).json({ error: "No torrent found for this request" });
         }
@@ -8372,7 +8367,7 @@ const type = request.type === "series" ? "series" : "movie";
       const method = importResult.success ? "imported via Radarr/Sonarr" : (fs.existsSync(destPath) && fs.statSync(destPath).nlink > 1 ? "hardlinked" : "copied");
       console.log(`[MoveToLibrary] ${method} ${sourcePath} -> ${finalDest}`);
 
-      // Register identity on both trees � source (processed) and dest (library);
+      // Register identity on both trees — source (processed) and dest (library);
       // copy fallbacks create a new inode, so both sides are recorded.
       const identity = {
         library_key: request.library_key || "",
@@ -8403,7 +8398,7 @@ const type = request.type === "series" ? "series" : "movie";
       if (error?.code === "EACCES") {
         const folder = typeof error.path === "string" ? path.dirname(error.path) : "";
         return res.status(403).json({
-          error: `Permission denied � the library folder is owned by another user (root from a Sonarr/Radarr import). Fix on the server: sudo chown -R <appuser>:<appuser> "${folder}"`,
+          error: `Permission denied — the library folder is owned by another user (root from a Sonarr/Radarr import). Fix on the server: sudo chown -R <appuser>:<appuser> "${folder}"`,
         });
       }
       res.status(500).json({ error: `Failed to move to library: ${error.message}` });
@@ -8452,7 +8447,7 @@ const type = request.type === "series" ? "series" : "movie";
       const result = await processToLibrary(contentPath, destFolder, options, request.id, request.title);
 
       if (result.success) {
-        console.log(`[Process] ${result.method} ${result.sourceFiles.length} file(s) ? ${destFolder}`);
+        console.log(`[Process] ${result.method} ${result.sourceFiles.length} file(s) → ${destFolder}`);
       }
 
       res.json({
@@ -8647,7 +8642,7 @@ const type = request.type === "series" ? "series" : "movie";
             return res.status(500).json({ error: "Failed to add torrent to qBittorrent", details: String(grabErr) });
           }
         } else {
-          console.log(`[Grab] Prowlarr release has infoHash=${release.torrent_hash} but no magnet URL � torrent must be added manually`);
+          console.log(`[Grab] Prowlarr release has infoHash=${release.torrent_hash} but no magnet URL — torrent must be added manually`);
         }
       } else if (request.radarr_id && release.radarr_release_id) {
         try {
@@ -8889,7 +8884,7 @@ const type = request.type === "series" ? "series" : "movie";
           .run("DOWNLOADING", id);
       }
 
-      console.log(`[Import] ${addedTitle} (${addedHash || "pending"}) ? request #${id} (bypass=${!!bypassApproval})`);
+      console.log(`[Import] ${addedTitle} (${addedHash || "pending"}) → request #${id} (bypass=${!!bypassApproval})`);
       res.json({ success: true, releaseId, title: addedTitle, hash: addedHash });
     } catch (error: any) {
       console.error("Error importing torrent:", error);
