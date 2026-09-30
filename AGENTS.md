@@ -33,6 +33,67 @@ cd frontend && npm run dev   # Frontend on :5173 (proxies to :3000)
 > grabs go straight to qBittorrent via magnet; COMPLETED is a manual
 > move-to-library signal.
 
+## ROADMAP — Processed ⇄ Library standardization (P0–P2)
+
+**Next planned work block.** Goal: stop keying on folder name + filename; make
+identity ride the file, then optionally normalize names. Written down so a fresh
+session can start with P0 without re-deriving the design.
+
+### Design decisions (agreed with user)
+
+- **Identity-first, inode primary**: new `media_files` table keyed by
+  `(dev, inode)` → `{library_key, season, episode_nums, role (numbered |
+  unnumbered special | extra), release_name}`. Registered on every write path
+  (move-to-processed, move-to-library, import-library/adopt, workspace
+  Complete & Import — moves create NEW inodes so register there — and destroy's
+  renameSync). Reads (coverage, pills, episode grids, processed panels) resolve
+  by inode; `approval_history.processed_files` (PROCESSED_TV-relative JSON
+  paths, ~25 read/write sites) **self-heals** on access via inode lookup when a
+  stored path is missing (folder renamed).
+- **Names are the BACKUP, not the source**: matching order = (dev,ino) →
+  canonical-name (IDs embedded) → fuzzy title, so a file that was **copied**
+  instead of hardlinked (doomed inode) still resolves by name. User explicitly
+  wanted this fallback.
+- **Optional xattr mirror** (`user.nad.identity`, JSON) written on
+  processed/library/workspace inodes so identity "ships with the file" (hardlinks
+  share the inode → visible on every link). Best-effort; skip writing to
+  anything under `download/` (immutable); EXDEV/copy breaks do not matter
+  because the DB table is the source of truth and re-writes on next scan.
+- **Canonical naming (both trees, name-for-name so they track visually)** — user
+  confirmed this convention (ID-anchored, Jellyfin-friendly):
+  - Series show dir: `Title (YYYY) [tvdbid-####]`; movie: `Title (YYYY) [imdbid-tt####]`
+    (IDs from TMDB `external_ids`; we already resolve the TMDB id).
+  - Season dirs: `S00`/`S01`/… (`parseSeasonNumber` already accepts
+    `Season N`/`Sezon N` variants too).
+  - S00 movies/specials file: `Title (YYYY) [imdbid-tt####] - [PL] [Src-1080p] ... [GROUP].mkv`
+    (user's example: `Mister Blots Academy (1984) [imdbid-tt0086863] - [PL]
+    [Bluray-1080p][AC3 2.0][x264]-DENDA`). Numbered episodes keep
+    `Show - SxxExx - Name …` style. Tags (language/source/audio/video/group) are
+    already parsed by scoring.
+  - `/download` keeps original release names forever; the original name is also
+    preserved in `release_candidates.title`.
+- **Naming configurable in Settings** (like Sonarr/Radarr name-format): a
+  template with tokens stored in the `settings` table, defaults = above.
+- **"Fix Names" UI (Layer 2, cosmetic)** — user-confirmed shape: a modal listing
+  each processed file + its linked library twin (same inode, shown only if
+  already in the library) + lone processed files; per-row checkbox to apply the
+  canonical name; old→new preview; renames inode-verified (hardlinked entries at
+  different paths each renamed independently, inode unchanged). Manual `mv`/
+  renames are equally safe after P0 (reads recover by inode). The app must never
+  depend on names; this tool only tidies.
+
+### Build order
+
+- **P0 — identity layer (start here)**: `media_files` table + registration on
+  all write paths + switch coverage/pills/grids/panels reads to inode-first,
+  processed_files self-heal. No renames. Deployable alone.
+- **P1 — canonical writes**: path-kernel helpers (`src/config` naming) producing
+  canonical names for NEW files only; naming template honoured from settings.
+- **P2 — standardize tool**: "Fix Names" modal + optional batch renamer for
+  existing trees; optional single maintenance script, not HTTP surface.
+- Verify with `npm run type-check` + deployed coverage counts unchanged for a
+  sample franchise before/after.
+
 ## Folder Structure
 
 ```

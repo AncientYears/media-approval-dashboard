@@ -246,26 +246,41 @@ async function testNtfy(): Promise<{ success: boolean; message: string }> {
   }
 }
 
-// Test connections endpoint
+// Test connections endpoint. Arr-free by default: radarr/sonarr only appear
+// when configured (legacy mode); the Jellyseerr placeholder entry is gone —
+// Seerr is a first-class service now and is probed for real (Settings -> Main
+// -> API Key header, read-only GET).
 app.post("/api/test-connections", async (_req, res) => {
-  const [qbitResult, radarrResult, sonarrResult, prowlarrResult] = await Promise.all([
+  const [qbitResult, prowlarrResult] = await Promise.all([
     qbittorrent.testConnection(),
-    radarr.testConnection(),
-    sonarr.testConnection(),
     prowlarr.testConnection(),
   ]);
-  res.json({
-    radarr: radarrResult,
-    sonarr: sonarrResult,
-    prowlarr: prowlarrResult,
-    // There is no Jellyseerr client in this codebase — it is a frontend-only
-    // integration — so report it as unavailable rather than claiming a link
-    // that was never tested.
-    jellyseerr: { success: false, message: "No backend service configured" },
-    ntfy: await testNtfy(),
+  const result: Record<string, any> = {
     qbittorrent: qbitResult,
-  });
+    prowlarr: prowlarrResult,
+    seerr: await testSeerr(),
+    ntfy: await testNtfy(),
+  };
+  if (radarrConfigured) result.radarr = await radarr.testConnection();
+  if (sonarrConfigured) result.sonarr = await sonarr.testConnection();
+  res.json(result);
 });
+
+async function testSeerr(): Promise<{ success: boolean; message: string }> {
+  const url = String(process.env.SEERR_URL || "").replace(/\/+$/, "");
+  const key = process.env.SEERR_API_KEY || "";
+  if (!url || !key) return { success: false, message: "SEERR_URL/SEERR_API_KEY not set" };
+  try {
+    const r = await axios.get(`${url}/api/v1/request?take=1&skip=0`, {
+      headers: { "X-Api-Key": key },
+      timeout: 5000,
+    });
+    const ok = r.status >= 200 && r.status < 300;
+    return { success: ok, message: ok ? "Reachable" : `HTTP ${r.status}` };
+  } catch (e: any) {
+    return { success: false, message: errorSummary(e) };
+  }
+}
 
 // Serve frontend static files
 const publicPath = path.join(__dirname, "../public");

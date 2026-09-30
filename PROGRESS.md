@@ -117,11 +117,27 @@ settings                - Key-value config storage
 - Internal field names still `radarr_*` / `sonarr_id` in places (legacy DB column compat) — cosmetic only, no functional impact
 - Workspaces have known quirks (not addressed this round — see Workspace picker/manager flows)
 
-### Phase E (next)
+### Roadmap (next)
 
+**Primary — Processed ⇄ Library standardization (P0–P2)** — see the full
+"ROADMAP — Processed ⇄ Library standardization" section in AGENTS.md:
+- **P0 (start here)**: `media_files` inode-keyed identity table, registration on
+  every write path, inode-first reads for coverage/pills/grids/panels,
+  `processed_files` self-heal. No renames; deployable alone.
+- **P1**: canonical naming for new writes only —
+  `Title (YYYY) [tvdbid-####]` series dirs / `Title (YYYY) [imdbid-tt####]`
+  movie dirs, `Sxx` season dirs, ID-anchored file names with loader tags
+  (`Mister Blots Academy (1984) [imdbid-tt0086863] - [PL] [Bluray-1080p]
+  [AC3 2.0][x264]-DENDA`). Naming template configurable in Settings.
+- **P2**: "Fix names" modal — per-file checkbox rename (processed ↔ library
+  twins + lone processed files), inode-verified.
+- Matching order: inode first → canonical-name (IDs embedded) → fuzzy title
+  (backup for copied-not-hardlinked files). Release names stay in `/download`.
+
+**Secondary — Phase E leftovers**
 - Native franchise "Search All Seasons" button (only sonarr `searchAllSeasons` exists)
 - Auto-search for new `NEW` rows
-- Full internal rename of `radarr_*`/`sonarr_id` identifiers
+- Full internal rename of `radarr_*`/`sonarr_id` identifiers (cosmetic)
 
 ### Commands
 
