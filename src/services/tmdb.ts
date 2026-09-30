@@ -316,17 +316,22 @@ export async function resolveExternalIds(
   mediaType: "movie" | "series",
   title: string,
   language: string,
-  opts?: { ignoreCache?: boolean },
+  opts?: { ignoreCache?: boolean; trace?: string[] },
 ): Promise<ExternalIds | null> {
+  const trace = opts?.trace;
   try {
     const cached = db.prepare("SELECT * FROM tmdb_external_ids WHERE library_key = ?").get(libraryKey) as any;
     if (cached) {
       // An all-null row is a negative cache (see below) — `ignoreCache` lets a
       // caller retry the same key with a better title (on-disk folder name).
       if (opts?.ignoreCache && !cached.imdb_id && !cached.tvdb_id) {
-        // fall through to a live lookup
+        trace?.push("id cache: negative, retrying live");
       } else {
-        if (!cached.imdb_id && !cached.tvdb_id) return null;
+        if (!cached.imdb_id && !cached.tvdb_id) {
+          trace?.push("id cache: negative (all null)");
+          return null;
+        }
+        trace?.push(`id cache: hit tvdb=${cached.tvdb_id || "-"} imdb=${cached.imdb_id || "-"}`);
         return {
           tmdbId: cached.tmdb_id || 0,
           imdbId: cached.imdb_id || null,
@@ -335,6 +340,8 @@ export async function resolveExternalIds(
           year: cached.year ?? null,
         };
       }
+    } else {
+      trace?.push("id cache: empty");
     }
   } catch {}
   // Deterministic identity first: if this key's seasons were already fetched,
@@ -344,9 +351,11 @@ export async function resolveExternalIds(
   if (mediaType === "series") {
     const knownId = cachedShowIdForKey(db, libraryKey);
     if (knownId) {
+      trace?.push(`cached show id: ${knownId}`);
       const ext = await fetchExternalIds("series", knownId, language);
       const show = await tmdbGet<any>(`/tv/${knownId}?language=${language}`);
       if (ext) {
+        trace?.push(`external_ids for ${knownId}: tvdb=${ext.tvdbId || "-"} imdb=${ext.imdbId || "-"}`);
         const yr = show?.first_air_date ? parseInt(String(show.first_air_date).slice(0, 4), 10) : null;
         const out: ExternalIds = {
           tmdbId: knownId,
@@ -360,9 +369,15 @@ export async function resolveExternalIds(
             "INSERT OR REPLACE INTO tmdb_external_ids (library_key, media_type, tmdb_id, imdb_id, tvdb_id, title, year, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
           ).run(libraryKey, mediaType, out.tmdbId, out.imdbId, out.tvdbId, out.title, out.year ?? null);
         } catch {}
-        if (!out.imdbId && !out.tvdbId) return null;
+        if (!out.imdbId && !out.tvdbId) {
+          trace?.push("show has no imdb/tvdb id");
+          return null;
+        }
         return out;
       }
+      trace?.push(`external_ids lookup failed for ${knownId}`);
+    } else {
+      trace?.push("no cached show id for key");
     }
   }
   const show =
