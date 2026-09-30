@@ -154,15 +154,14 @@ export default function FixNamesModal({
         }}>
           {row.tree === "processed" ? "PROCESSED" : "LIBRARY"}
         </span>
-        <span style={{ fontFamily: "monospace", fontSize: 12, wordBreak: "break-all", flex: 1 }}>
+        <span style={{ fontFamily: "monospace", fontSize: 12, flex: 1, minWidth: 0 }}>
           {renamable ? (
             <>
-              <span style={{ color: "#cbd5e1", textDecoration: "line-through" }}>{row.currentName}</span>
-              <span style={{ color: "#94a3b8" }}> → </span>
-              <span style={{ color: "#10b981" }}>{row.proposedName}</span>
+              <div style={{ color: "#94a3b8", textDecoration: "line-through", wordBreak: "break-all" }}>{row.currentName}</div>
+              <div style={{ color: "#10b981", wordBreak: "break-all" }}>→ {row.proposedName}</div>
             </>
           ) : (
-            <span style={{ color: "#94a3b8" }}>{row.currentName}</span>
+            <div style={{ color: "#94a3b8", wordBreak: "break-all" }}>{row.currentName}</div>
           )}
         </span>
         {note && <span style={{ fontSize: 11, color: "#f59e0b", flexShrink: 0 }}>{note}</span>}

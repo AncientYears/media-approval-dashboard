@@ -2698,6 +2698,14 @@ body {
   max-width: 640px;
 }
 
+.fixnames-modal {
+  max-width: 760px;
+}
+
+.fixname-row-nested {
+  margin-left: 30px;
+}
+
 .discover-results {
   max-height: 60vh;
   overflow-y: auto;
