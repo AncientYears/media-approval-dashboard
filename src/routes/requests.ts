@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, episodeTitleFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   parseReleaseTags,
@@ -1077,11 +1077,16 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
     (request.library_key
       ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key))
       : null) || episodeTitleFromSourceName(sourceBase);
+  // Per-episode air date, so a template can date a season that aired years after
+  // the show's first season. Optional: default templates never reference it.
+  const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
   return canonicalEpisodeFile(conf, {
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
     season: ep.season,
     episode: ep.episode,
     episodeTitle,
+    airDate,
+    episodeYear: airDate ? airDate.slice(0, 4) : null,
     tags: tags.tags,
     group: tags.group,
   });
@@ -1244,11 +1249,14 @@ async function proposeCanonicalName(
     (request.library_key
       ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode, request.library_key ? franchiseLanguage(db, request.library_key) : null)
       : null) || episodeTitleFromSourceName(base);
+  const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
   const name = canonicalEpisodeFile(conf, {
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
     season: ep.season,
     episode: ep.episode,
     episodeTitle,
+    airDate,
+    episodeYear: airDate ? airDate.slice(0, 4) : null,
     tags: tags.tags,
     group: tags.group,
   });

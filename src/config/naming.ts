@@ -58,6 +58,8 @@ export const NAMING_TOKENS = [
   "{Season}",
   "{Episode}",
   "{EpisodeTitle}",
+  "{AirDate}",
+  "{EpisodeYear}",
   "{Tags}",
   "{Group}",
 ];
@@ -608,6 +610,8 @@ export interface CanonicalFilePieces {
   season?: number | null;
   episode?: number | null;
   episodeTitle?: string | null;
+  airDate?: string | null;
+  episodeYear?: string | null;
   tags?: string;
   group?: string | null;
 }
@@ -620,6 +624,8 @@ const fileVars = (p: CanonicalFilePieces, conf: NamingConf): Record<string, stri
   Season: p.season !== null && p.season !== undefined ? String(p.season) : "",
   Episode: p.episode !== null && p.episode !== undefined ? String(p.episode) : "",
   EpisodeTitle: (p.episodeTitle || "").trim(),
+  AirDate: (p.airDate || "").trim(),
+  EpisodeYear: (p.episodeYear || "").trim(),
   Tags: p.tags || "",
   Group: p.group ? `-${p.group}` : "",
 });
@@ -640,7 +646,13 @@ export function canonicalSpecialFile(conf: NamingConf, p: CanonicalFilePieces): 
 export function canonicalEpisodeFile(conf: NamingConf, p: CanonicalFilePieces): string | null {
   if (!p.title || typeof p.season !== "number" || typeof p.episode !== "number") return null;
   const out = renderNamingTemplate(conf.episode_file, fileVars(p, conf));
-  const cleaned = out.replace(/\s+-\s*$/g, "").replace(/\s{2,}/g, " ").trim();
+  // Drop empty bracket pairs first: an optional token ({AirDate} on an unaired
+  // episode) must not leave a dangling "()" or "[]" behind.
+  const cleaned = out
+    .replace(/[([]\s*[)\]]/g, "")
+    .replace(/\s+-\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   return sanitizeSegment(cleaned);
 }
 

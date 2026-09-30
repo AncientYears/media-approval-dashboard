@@ -404,6 +404,30 @@ export async function resolveExternalIds(
  * to fill {EpisodeTitle} on the write path without hitting the network. The
  * cache is per-language, so a caller with a franchise preference must pass it
  * (or the row is looked up in the default language). */
+/** Per-episode air date (YYYY-MM-DD) from the cached season payload, or null.
+ *  A show's folder year is its *first* season's year, so seasons that air years
+ *  later (S04 in 2026 for a 2023 show) can only be dated per episode. */
+export function episodeAirDateFromCache(
+  db: Database,
+  libraryKey: string,
+  season: number,
+  episode: number,
+  language?: string | null,
+): string | null {
+  const lang = language || process.env.TMDB_LANGUAGE || "en-US";
+  try {
+    const row = db
+      .prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ? AND language = ?")
+      .get(libraryKey, season, lang) as any;
+    if (!row) return null;
+    const meta = JSON.parse(row.payload) as SeasonMeta;
+    const raw = meta.episodes?.find((e) => e.episode_number === episode)?.air_date;
+    return raw ? String(raw).trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function episodeTitleFromCache(
   db: Database,
   libraryKey: string,
