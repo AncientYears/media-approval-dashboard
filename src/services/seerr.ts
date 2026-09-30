@@ -1,0 +1,168 @@
+import axios from "axios";
+import type { Database } from "better-sqlite3";
+import { fetchTMDBById } from "./tmdb";
+import { cleanFranchiseTitle, slugForKeyTitle } from "../routes/requests";
+import { errorSummary } from "../utils/errorSummary";
+
+/**
+ * Seerr API sync — the arr-free bridge from Seerr's own request list into the
+ * app's dashboard requests. Replaces the webhook approach (which had no event
+ * for request deletion) with a full bidirectional-ish reconcile:
+ *
+ *   - Requests present in Seerr are upserted into media_requests as native
+ *     rows (library_key identity, status NEW) — idempotent on key+season.
+ *   - Requests that vanished from Seerr (deleted/cancelled/declined) are
+ *     removed from the app — but ONLY when they are content-less, so a
+ *     request that already has a torrent, processed files or a completed
+ *     library entry is never destroyed by a Seerr-side delete.
+ *
+ * Requires SEERR_URL + SEERR_API_KEY (Seerr Settings → Main → API Key).
+ */
+
+interface SeerrRequest {
+  id: number;
+  status?: number | string | null;
+  seasonNumber?: number | null;
+  createdBy?: { username?: string; email?: string };
+  media?: {
+    mediaType?: "movie" | "tv";
+    tmdbId?: number;
+    tvdbId?: number;
+    seasonNumber?: number | null;
+  };
+}
+
+export function isSeerrConfigured(): boolean {
+  return !!(process.env.SEERR_URL && process.env.SEERR_API_KEY);
+}
+
+export async function fetchSeerrRequests(): Promise<SeerrRequest[]> {
+  const url = String(process.env.SEERR_URL || "").replace(/\/+$/, "");
+  const key = String(process.env.SEERR_API_KEY || "");
+  const out: SeerrRequest[] = [];
+  let skip = 0;
+  const take = 100;
+  for (;;) {
+    const res = await axios.get(`${url}/api/v1/request`, {
+      params: { take, skip },
+      headers: { "X-Api-Key": key },
+      timeout: 15000,
+    });
+    const batch: SeerrRequest[] = Array.isArray(res.data) ? res.data : res.data?.results || [];
+    if (!batch.length) break;
+    out.push(...batch);
+    if (batch.length < take) break;
+    skip += take;
+  }
+  return out;
+}
+
+/** Seerr request statuses that represent an open request. Declined/failed are
+ * inactive — they must not (re)create rows and get removed like deletions. */
+function isActive(req: SeerrRequest): boolean {
+  const s = req.status;
+  if (s === 3 || s === 4) return false;
+  if (typeof s === "string") {
+    const ls = s.toLowerCase();
+    if (["declined", "failed", "cancelled", "canceled", "removed", "deleted"].includes(ls)) return false;
+  }
+  return true;
+}
+
+export interface SeerrSyncResult {
+  enabled: boolean;
+  error?: string;
+  fetched: number;
+  active: number;
+  added: number;
+  backfilled: number;
+  removed: number;
+  contentKept: number;
+}
+
+export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
+  const base: SeerrSyncResult = { enabled: isSeerrConfigured(), fetched: 0, active: 0, added: 0, backfilled: 0, removed: 0, contentKept: 0 };
+  if (!base.enabled) return base;
+
+  let requests: SeerrRequest[];
+  try {
+    requests = await fetchSeerrRequests();
+  } catch (err: any) {
+    console.error("[Seerr] sync failed:", errorSummary(err));
+    return { ...base, error: errorSummary(err) };
+  }
+  base.fetched = requests.length;
+
+  const active = requests.filter(isActive);
+  base.active = active.length;
+  const presentIds = new Set(active.map((r) => r.id));
+
+  for (const req of active) {
+    const rawType = String(req.media?.mediaType || "movie").toLowerCase();
+    const mediaType = rawType === "tv" || rawType === "series" ? "series" : rawType === "movie" ? "movie" : null;
+    const tmdbId = Number(req.media?.tmdbId || 0);
+    if (!mediaType || !tmdbId) continue;
+
+    const t = await fetchTMDBById(mediaType, tmdbId);
+    if (!t?.title) continue;
+
+    const cleaned = cleanFranchiseTitle(t.title);
+    const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${t.year ?? 0}`;
+    const reqSeason = mediaType === "series" ? Number(req.seasonNumber ?? req.media?.seasonNumber ?? 1) : null;
+    const user = String(req.createdBy?.username || "Seerr").trim() || "Seerr";
+
+    let existing: any;
+    if (mediaType === "movie") {
+      existing = db.prepare("SELECT id, seerr_request_id FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+    } else {
+      existing = db.prepare("SELECT id, seerr_request_id FROM media_requests WHERE library_key = ? AND season = ?").get(key, reqSeason) as any;
+    }
+
+    if (existing) {
+      // Row exists — link it back to Seerr if it wasn't created via Seerr.
+      if (!existing.seerr_request_id) {
+        db.prepare("UPDATE media_requests SET seerr_request_id = ? WHERE id = ?").run(req.id, existing.id);
+        base.backfilled++;
+      }
+      continue;
+    }
+
+    const requestedBy = JSON.stringify([user]);
+    if (mediaType === "movie") {
+      const result = db.prepare(
+        "INSERT INTO media_requests (title, type, library_key, status, requested_by, seerr_request_id) VALUES (?, 'movie', ?, 'NEW', ?, ?)"
+      ).run(cleaned, key, requestedBy, req.id);
+      console.log(`[Seerr] Created movie request ${result.lastInsertRowid as number}: ${cleaned} (key=${key} by ${user})`);
+    } else {
+      const result = db.prepare(
+        "INSERT INTO media_requests (title, type, library_key, season, status, requested_by, seerr_request_id) VALUES (?, 'series', ?, ?, 'NEW', ?, ?)"
+      ).run(cleaned, key, reqSeason, requestedBy, req.id);
+      console.log(`[Seerr] Created series request ${result.lastInsertRowid as number}: ${cleaned} (key=${key}, season=${reqSeason} by ${user})`);
+    }
+    base.added++;
+  }
+
+  // Reconcile deletions: rows we created for Seerr requests that Seerr no
+  // longer lists. Remove only content-less rows; keep anything with a torrent,
+  // processed files, or an active/completed status.
+  const linked = db.prepare("SELECT id, seerr_request_id, status FROM media_requests WHERE seerr_request_id IS NOT NULL").all() as any[];
+  for (const row of linked) {
+    if (presentIds.has(Number(row.seerr_request_id))) continue;
+    const hasTorrent = (db.prepare(
+      "SELECT COUNT(*) AS c FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? AND rc.torrent_hash != ''"
+    ).get(row.id) as any)?.c > 0;
+    const hasProcessed = (db.prepare(
+      "SELECT COUNT(*) AS c FROM approval_history WHERE request_id = ? AND release_id IS NULL AND processed_files IS NOT NULL AND processed_files != '[]'"
+    ).get(row.id) as any)?.c > 0;
+    if (hasTorrent || hasProcessed || ["DOWNLOADING", "SEEDING", "COMPLETED", "AWAITING_APPROVAL", "APPROVED"].includes(row.status)) {
+      base.contentKept++;
+      console.log(`[Seerr] Request ${row.id} deleted in Seerr but kept (has content, status=${row.status})`);
+      continue;
+    }
+    db.prepare("DELETE FROM media_requests WHERE id = ?").run(row.id);
+    base.removed++;
+    console.log(`[Seerr] Removed request ${row.id} (deleted in Seerr)`);
+  }
+
+  return base;
+}

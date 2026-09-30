@@ -212,6 +212,13 @@ Download (100% complete)
 - `POST /api/requests/discover/request` `{type, tmdbId, title, year, season?}` — builds `movie:<slug>:<year>` / `series:<slug>:<year>` via `slugForKeyTitle(cleanFranchiseTitle(title))`, inserts a native `media_requests` row with `status='NEW'` (movie) or key+season (series, default S01). **Idempotent**: returns existing `request_id` with `existed: true` when the same key (movie) or key+season (series) is already tracked. Frontend then navigates to `/requests/:id` (RequestDetail) where the existing `POST /:id/search` (Prowlarr, already arr-free) takes over.
 - `searchTMDB` now also returns `poster` (`poster_path`, used for thumbnails; frontend builds `https://image.tmdb.org/t/p/w92{poster}`).
 
+### Seerr Sync (arr-free request portal)
+- Seerr (Upstream of Jellyseerr, port 5055) runs with **zero Sonarr/Radarr** and yet can still create requests; it also has **no webhook event for deleting a request**, so the app uses a periodic **API reconcile** instead of webhooks.
+- `src/services/seerr.ts`: `fetchSeerrRequests()` paginates `GET /api/v1/request` (X-Api-Key header), `syncSeerr(db)` upserts each live request into `media_requests` as a native row — identity resolved via `fetchTMDBById()` (title/year from tmdbId) then `library_key = movie:<slug>:<year>` / `series:<slug>:<year>` (shares `cleanFranchiseTitle`/`slugForKeyTitle` exports from `requests.ts`), status `NEW`, `seerr_request_id` stored. Already-tracked rows are backfilled with `seerr_request_id` (so webhook-era rows get linked retroactively).
+- **Seerr status treatment**: DECLINED/FAILED (status 3/4 or string) are inactive — not created, and removed like deletions. PENDING and APPROVED are active.
+- **Deletion reconcile**: rows with a `seerr_request_id` missing from Seerr's list are deleted **only when content-less** (no torrent RC, no processed files, status not DOWNLOADING/SEEDING/COMPLETED/AWAITING_APPROVAL/APPROVED). Anything with content is kept (`contentKept`) — a Seerr-side delete never destroys downloaded/processed/library data.
+- Wired in `server.ts`: `POST /api/requests/seerr/sync` manual trigger (Dashboard calls it on mount via `syncSeerr()` in `api.ts`) + a background `setInterval` poll (`POLL_INTERVAL_SEERR`, default 60s) guarded on `SEERR_URL && SEERR_API_KEY`. `isSeerrConfigured()` keeps it a no-op when unset.
+
 ### Startup Cleanup
 - Startup iterates all RCs with torrent hashes
 - **Skips title check** for RCs where request has `sonarr_id`/`radarr_id` (ID link trusted)
@@ -444,10 +451,17 @@ MEDIA_TV=/media/Serialy
 POLL_INTERVAL_RADARR=60
 POLL_INTERVAL_SONARR=60
 POLL_INTERVAL_STATUS=30
+# Seerr request-sync poll (seconds). Only used when SEERR_URL + SEERR_API_KEY are set.
+POLL_INTERVAL_SEERR=60
 
 # Notifications
 NTFY_URL=
 NTFY_TOPIC=
+
+# Seerr (arr-free request portal) — the app syncs Seerr's own request list into
+# media_requests. URL + API Key from Seerr Settings -> Main -> API Key.
+SEERR_URL=
+SEERR_API_KEY=
 ```
 
 ## DB Schema Notes

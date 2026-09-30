@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibraryNative, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed } from "../api";
+import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequests, dismissRequest, detectTorrents, importMissingRequests, scanDownloads, importLibraryNative, cleanupDuplicates, deleteRequest, deleteFranchise, scanWorkspaces, cleanupWorkspaces, fetchLibraryAudit, adoptIntoProcessed, syncSeerr } from "../api";
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 import DownloadDirsModal from "../components/DownloadDirsModal";
 import DiscoverModal from "../components/DiscoverModal";
@@ -111,6 +111,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData();
+    syncSeerr().catch(() => {}).then(() => loadData());
     cleanupStaleRequests().then(() => loadData());
   }, [loadData]);
 

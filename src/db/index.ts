@@ -229,6 +229,13 @@ export function initializeDatabase(dbPath: string): DBInstance {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_media_requests_library_key ON media_requests(library_key)`);
     }
 
+    // Migration: add seerr_request_id to media_requests (link used by the
+    // Seerr API sync so deletions/cancellations propagate to the dashboard)
+    if (!mrColNames.includes("seerr_request_id")) {
+      db.exec(`ALTER TABLE media_requests ADD COLUMN seerr_request_id INTEGER`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_requests_seerr_request_id ON media_requests(seerr_request_id)`);
+    }
+
     // Migration: add processed_files to approval_history
     const ahCols = db.prepare("PRAGMA table_info(approval_history)").all() as any[];
     const ahColNames = ahCols.map((c: any) => c.name);

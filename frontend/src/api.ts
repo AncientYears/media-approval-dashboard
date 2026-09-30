@@ -19,6 +19,11 @@ export async function fetchManaged() {
   return response.data;
 }
 
+export async function syncSeerr() {
+  const response = await api.post("/requests/seerr/sync");
+  return response.data;
+}
+
 export async function fetchRequestProcessed(requestId: number) {
   const response = await api.get(`/requests/${requestId}/processed`);
   return response.data;

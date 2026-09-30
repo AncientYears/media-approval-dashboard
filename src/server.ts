@@ -13,6 +13,7 @@ import { ProwlarrService } from "./services/prowlarr";
 import { createRadarrPoller } from "./jobs/pollRadarr";
 import { createSonarrPoller } from "./jobs/pollSonarr";
 import { createStatusPoller } from "./jobs/pollStatus";
+import { syncSeerr, isSeerrConfigured } from "./services/seerr";
 import { errorSummary } from "./utils/errorSummary";
 
 // Load environment variables
@@ -187,6 +188,33 @@ app.get("/api/health", (req, res) => {
 
 // API Routes
 app.use("/api/requests", createRequestRoutes(db, radarr, sonarr, qbittorrent, prowlarr, deletedFranchiseIds));
+
+// Seerr request sync — keeps dashboard requests in step with Seerr additions
+// and (importantly) deletions/cancellations. Manual trigger endpoint + a poll
+// guarded on SEERR_URL + SEERR_API_KEY; unlike the webhook approach there is no
+// notification event for a deleted request, so a periodic reconcile is the only
+// way to observe one.
+app.post("/api/requests/seerr/sync", async (_req, res) => {
+  try {
+    res.json(await syncSeerr(db));
+  } catch (err: any) {
+    res.status(500).json({ error: errorSummary(err) });
+  }
+});
+if (isSeerrConfigured()) {
+  const runSeerrSync = async () => {
+    try {
+      await syncSeerr(db);
+    } catch (err) {
+      console.error("[Seerr] poll error:", errorSummary(err));
+    }
+  };
+  const seerrPollInterval = Math.max(30, parseInt(process.env.POLL_INTERVAL_SEERR || "60", 10)) * 1000;
+  runSeerrSync();
+  setInterval(runSeerrSync, seerrPollInterval);
+} else {
+  console.log("[Seerr] Not configured (set SEERR_URL + SEERR_API_KEY) — request sync disabled");
+}
 
 // DB viewer endpoint - returns all tables, their schema, and rows
 app.get("/api/db", (_req, res) => {
