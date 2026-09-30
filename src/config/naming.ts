@@ -34,7 +34,7 @@ export const DEFAULT_NAMING: NamingConf = {
   movie_dir: "{Title} ({Year}) [imdbid-tt{ImdbId}]",
   season_dir: "S{Season:02}",
   episode_file: "{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}",
-  special_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}",
+  special_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {SpecialCode} {Tags}{Group}",
   movie_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}",
 };
 
@@ -60,6 +60,7 @@ export const NAMING_TOKENS = [
   "{EpisodeTitle}",
   "{AirDate}",
   "{EpisodeYear}",
+  "{SpecialCode}",
   "{Tags}",
   "{Group}",
 ];
@@ -89,10 +90,13 @@ export function saveNamingConf(db: Database, patch: Partial<NamingConf>): void {
   }
 }
 
-/** Render a template, expanding {Token} and zero-padded {Token:NN}. */
+/** Render a template, expanding {Token} and zero-padded {Token:NN}. An empty
+ *  value renders as nothing at all — padding it would turn a missing season into
+ *  a literal "S00"/"00", which reads like real data. */
 export function renderNamingTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)(?::(\d+))?\}/g, (_m, token: string, width?: string) => {
     const v = (vars[token] ?? "").trim();
+    if (!v) return "";
     if (width) return v.padStart(Number(width), "0");
     return v;
   });
@@ -638,6 +642,9 @@ const fileVars = (p: CanonicalFilePieces, conf: NamingConf): Record<string, stri
   EpisodeTitle: (p.episodeTitle || "").trim(),
   AirDate: (p.airDate || "").trim(),
   EpisodeYear: (p.episodeYear || "").trim(),
+  // S00 specials get their whole "S00E03" marker from one token so it can never
+  // half-render (a padded "00" with no episode) when the number is unknown.
+  SpecialCode: p.season === 0 && p.episode ? `S${String(0).padStart(2, "0")}E${String(p.episode).padStart(2, "0")}` : "",
   Tags: p.tags || "",
   Group: p.group ? `-${p.group}` : "",
 });
@@ -648,10 +655,25 @@ export function canonicalMovieFile(conf: NamingConf, p: CanonicalFilePieces): st
   return sanitizeSegment(renderNamingTemplate(conf.movie_file, fileVars(p, conf)));
 }
 
-/** S00 special file — same shape as a movie file. */
+/** Drop empty bracket pairs, an id bracket with no id, and the dangling
+ *  separators an unused token leaves behind, so a template with an optional
+ *  field degrades to a clean name. */
+function tidyTemplate(out: string): string {
+  return out
+    .replace(/\[\s*imdbid-\s*(?:tt)?\s*\]/gi, "")
+    .replace(/[([]\s*[)\]]/g, "")
+    .replace(/\s+-\s+(?=\[)/g, " ")
+    .replace(/\s+-\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** S00 special file. Unlike a movie it may have no year/imdbId — the special is
+ *  often not listed under the show on TMDB — in which case those tokens render
+ *  empty and the on-disk title is kept; the SxxExx marker still keeps it unique. */
 export function canonicalSpecialFile(conf: NamingConf, p: CanonicalFilePieces): string | null {
-  if (!p.title || !p.year || !p.imdbId) return null;
-  return sanitizeSegment(renderNamingTemplate(conf.special_file, fileVars(p, conf)));
+  if (!p.title) return null;
+  return sanitizeSegment(tidyTemplate(renderNamingTemplate(conf.special_file, fileVars(p, conf))));
 }
 
 /** Numbered episode: "Show - S01E01 - Name [tags]-GROUP". Episode title optional. */
@@ -660,12 +682,7 @@ export function canonicalEpisodeFile(conf: NamingConf, p: CanonicalFilePieces): 
   const out = renderNamingTemplate(conf.episode_file, fileVars(p, conf));
   // Drop empty bracket pairs first: an optional token ({AirDate} on an unaired
   // episode) must not leave a dangling "()" or "[]" behind.
-  const cleaned = out
-    .replace(/[([]\s*[)\]]/g, "")
-    .replace(/\s+-\s*$/g, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  return sanitizeSegment(cleaned);
+  return sanitizeSegment(tidyTemplate(out));
 }
 
 /** Series show dir: "Title (YYYY) [tvdbid-####]". */

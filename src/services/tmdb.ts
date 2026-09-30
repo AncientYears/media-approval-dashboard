@@ -97,6 +97,47 @@ export async function resolveShowId(libraryKey: string, title: string, language:
  * when Radarr/Sonarr are unavailable (arr-less request creation). Returns
  * candidate-like objects the unmatched panel can offer the user.
  */
+/** Best-effort own identity for an S00 special. TMDB files most series specials
+ *  as standalone movies rather than under the show's seasons, so the show's
+ *  IMDb id can never be reused for them. Searches the on-disk title as a movie
+ *  and returns null when nothing convincing matches — the caller then keeps the
+ *  on-disk title instead of guessing. */
+export async function resolveSpecialIdentity(title: string): Promise<{ tmdbId: number; imdbId: string | null; title: string; year: number | null } | null> {
+  const q = title.replace(/[[({][^\])}]*[\])}]/g, " ").replace(/\s+/g, " ").trim();
+  if (!q || q.length < 3) return null;
+  let hits: Array<{ id: number; title: string; year: number | null }>;
+  try {
+    hits = await searchTMDB(q, "movie");
+  } catch {
+    return null;
+  }
+  const words = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((w) => w.length >= 3),
+    );
+  const want = words(q);
+  if (!want.size) return null;
+  for (const hit of hits) {
+    // Require real word overlap, else a loose search returns an unrelated film.
+    const got = words(hit.title);
+    let overlap = 0;
+    for (const w of want) if (got.has(w)) overlap++;
+    if (overlap === 0) continue;
+    if (overlap / want.size < 0.5) continue;
+    let imdbId: string | null = null;
+    try {
+      imdbId = (await fetchExternalIds("movie", hit.id))?.imdbId || null;
+    } catch {}
+    return { tmdbId: hit.id, imdbId, title: hit.title, year: hit.year };
+  }
+  return null;
+}
+
 export async function searchTMDB(
   query: string,
   mediaType: "movie" | "series",

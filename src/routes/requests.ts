@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   parseReleaseTags,
@@ -1080,10 +1080,9 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   if (!ep) return null;
   if (ep.episodeEnd) return null;
   if (ep.season === 0) {
-    if (pieces?.imdbId) {
-      return canonicalSpecialFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
-    }
-    return null;
+    const sp = await specialPiecesForFile(db, request, sourceBase, pieces);
+    if (!sp) return null;
+    return canonicalSpecialFile(conf, { title: sp.title, year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group });
   }
   const episodeTitle =
     (request.library_key
@@ -1222,6 +1221,38 @@ function episodeTitleFromSourceName(base: string): string | null {
   return rest;
 }
 
+/** On-disk title for an S00 special, with a leading show-name prefix removed so
+ *  "Fineasz i Ferb S00E01 Kolejka - Original Pitch" offers "Kolejka - Original
+ *  Pitch" rather than the show name glued on the front. */
+function specialTitleFromSourceName(base: string, request: any, showTitle?: string | null): string | null {
+  const raw = episodeTitleFromSourceName(base);
+  if (!raw) return null;
+  let out = raw;
+  for (const p of [request?.title || "", showTitle || ""].filter(Boolean)) {
+    const esc = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    const stripped = out.replace(new RegExp(`^${esc}\\s*[-–—:]?\\s*`, "i"), "").trim();
+    if (stripped.length >= 3 && stripped !== out) out = stripped;
+  }
+  return out.length >= 3 ? out : raw;
+}
+
+/** Resolve an S00 special's own title/year/imdbId, preferring TMDB and falling
+ *  back to the on-disk name. Two sources: the name after the episode code, and
+ *  that with a leading show-name prefix stripped. */
+async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null): Promise<{ title: string; year: number | null; imdbId: string | null } | null> {
+  const rest = episodeTitleFromSourceName(sourceBase);
+  if (!rest) return null;
+  const stripped = specialTitleFromSourceName(sourceBase, request, showPieces?.title);
+  for (const candidate of [stripped, rest]) {
+    if (!candidate) continue;
+    try {
+      const id = await resolveSpecialIdentity(candidate);
+      if (id) return { title: id.title, year: id.year, imdbId: id.imdbId };
+    } catch {}
+  }
+  return { title: stripped || rest, year: null, imdbId: null };
+}
+
 /**
  * Canonical basename proposal for ONE existing file (no extension never applied
  * here — callers keep the original extension). Returns null when nothing should
@@ -1252,10 +1283,23 @@ async function proposeCanonicalName(
     return { name: name === base ? null : name, role: "movie", note: name === base ? null : null };
   }
   if (request.season === 0) {
-    if (!pieces?.imdbId) return { name: null, role: "special", note: "Missing imdbId for special" };
-    const name = canonicalSpecialFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
-    if (!name) return { name: null, role: "special", note: "Missing pivot pieces" };
-    return { name: name === base ? null : name, role: "special", note: null };
+    // A special is usually filed on TMDB as its own movie, never under the show,
+    // so the show's id must not be reused. Resolve the special itself and keep
+    // the S00Exx marker so two specials can never collapse to one name.
+    const sp = await specialPiecesForFile(db, request, base, pieces);
+    if (!sp) return { name: null, role: "special", note: "No title in file name" };
+    const epNo = parseEpisodeCode(base, { knownSeason: 0 });
+    const name = canonicalSpecialFile(conf, {
+      title: sp.title,
+      year: sp.year,
+      imdbId: sp.imdbId,
+      season: 0,
+      episode: epNo?.episode ?? null,
+      tags: tags.tags,
+      group: tags.group,
+    });
+    if (!name) return { name: null, role: "special", note: "Missing title pieces" };
+    return { name: name === base ? null : name, role: "special", note: sp.imdbId ? null : "Not on TMDB - kept the on-disk title" };
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
@@ -1435,11 +1479,10 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     groups.push({ id: `g${gid++}`, ino, processed, library });
   }
 
-  // Jumbled sources (two overlapping numbering runs of one dub, a mis-numbered
-  // file) make two DIFFERENT files claim the same SxxExx, so both propose the
-  // same destination. uniqueDestPath would then silently suffix "-2"/"-3" and
-  // leave you with duplicate-looking files. Flag them instead of proposing a
-  // rename we know is ambiguous — the episode number has to be fixed by hand.
+  // Two DIFFERENT files can legitimately claim one SxxExx — that's just two
+  // versions of an episode. So never block the rename; uniqueDestPath already
+  // stops a clobber by suffixing "-2". Just surface it, because a jumbled source
+  // (two overlapping numbering runs of one dub) looks identical and is not.
   const destCounts = new Map<string, number>();
   for (const g of groups) {
     for (const row of [g.processed, g.library]) {
@@ -1453,9 +1496,8 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       if (!row?.proposedName) continue;
       const key = `${path.dirname(row.path)}\u0000${row.proposedName.toLowerCase()}`;
       if ((destCounts.get(key) || 0) < 2) continue;
-      const clash = "Duplicate episode number in source - fix the file name by hand";
-      row.proposedName = null;
-      row.note = row.note ? `${row.note}; ${clash}` : clash;
+      const warn = "Another file in this folder wants the same name (second version, or a duplicate episode number)";
+      row.note = row.note ? `${row.note}; ${warn}` : warn;
     }
   }
 
