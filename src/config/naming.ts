@@ -549,6 +549,13 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
       out.language = alias;
       return;
     }
+    // "PLDUB", "PL-DUB", "PL.DUB" — the country code glued to a dub marker.
+    // Split on any of the usual separators, or none at all.
+    const dubbed = at.toUpperCase().match(/^([A-Z]{2})[-_.]?(?:DUB|DUBBED|DUBBING)$/);
+    if (dubbed) {
+      out.language = dubbed[1];
+      return;
+    }
     if (LANG_TAGS.has(at.toUpperCase()) && at.length <= 12) {
       const up = at.toUpperCase();
       // "Dubbing" says a track was dubbed, not WHICH language, so it must not
