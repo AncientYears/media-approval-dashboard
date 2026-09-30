@@ -105,19 +105,15 @@ export async function resolveShowId(libraryKey: string, title: string, language:
 export async function resolveSpecialIdentity(title: string, language?: string): Promise<{ tmdbId: number; imdbId: string | null; title: string; year: number | null } | null> {
   const q = title.replace(/[[({][^\])}]*[\])}]/g, " ").replace(/\s+/g, " ").trim();
   if (!q || q.length < 3) return null;
-  let hits: Array<{ id: number; title: string; year: number | null }>;
-  try {
-    hits = await searchTMDB(q, "movie");
-  } catch {
-    hits = [];
-  }
+  let hits: Array<{ id: number; title: string; year: number | null }> = [];
+  const locale = language && /^[a-z]{2}(?:-[A-Z]{2})?$/.test(language) ? language : null;
   // A scene release names the special in its own language ("Fretka kontra
-  // Wszecświat"), which shares no words with the English TMDB title. TMDB
-  // matches translated titles too, so retry in the franchise's language before
-  // giving up on it.
-  if (language) {
+  // Wszecświat"), which shares no words with the English TMDB title, so search
+  // the release locale first (its hit carries the localized title), then the
+  // default locale as a backstop.
+  for (const lang of locale ? [locale, undefined] : [undefined]) {
     try {
-      for (const hit of await searchTMDB(q, "movie", language)) {
+      for (const hit of await searchTMDB(q, "movie", lang)) {
         if (!hits.some((h) => h.id === hit.id)) hits.push(hit);
       }
     } catch {}
@@ -134,19 +130,29 @@ export async function resolveSpecialIdentity(title: string, language?: string): 
     );
   const want = words(q);
   if (!want.size) return null;
-  for (const hit of hits) {
+  const matches = (hit: { title: string }) => {
     // Require real word overlap, else a loose search returns an unrelated film.
     const got = words(hit.title);
     let overlap = 0;
     for (const w of want) if (got.has(w)) overlap++;
-    if (overlap === 0) continue;
-    if (overlap / want.size < 0.5) continue;
+    return overlap > 0 && overlap / want.size >= 0.5;
+  };
+  const accept = async (hit: { id: number; title: string; year: number | null }) => {
     let imdbId: string | null = null;
     try {
       imdbId = (await fetchExternalIds("movie", hit.id))?.imdbId || null;
     } catch {}
     return { tmdbId: hit.id, imdbId, title: hit.title, year: hit.year };
+  };
+  for (const hit of hits) {
+    if (matches(hit)) return accept(hit);
   }
+  // No shared words: TMDB matched the translated query but returned the title in
+  // another locale ("Fretka kontra Wszechświat" → the film titled "Candace
+  // Against the Universe"). When a specific multi-word query produces exactly
+  // one film, trust TMDB's ranking. A looser query ("Original Pitch") returns
+  // several and is still rejected, so it falls through to the series' S00 list.
+  if (hits.length === 1 && want.size >= 2) return accept(hits[0]);
   return null;
 }
 
