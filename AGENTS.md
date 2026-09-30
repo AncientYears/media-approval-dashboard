@@ -134,16 +134,20 @@ session can start with P0 without re-deriving the design.
   4). Names are recomputed server-side on apply (client sends only paths); renames are
   collision-safe (`uniqueDestPath`), inode-verified (`renameSync` + pre/post `stat`),
   refresh `media_files.release_name` + AH `processed_files` basenames. **Folder renames
-  added alongside (files first, then dirs deepest-first)**: processed-tree only (show/season
-  dirs under `PROCESSED_TV`, movie dirs under `PROCESSED_MOVIES`), candidates discovered on
-  the same scan that matched the files; each folder must be owned outright
+  added alongside (files first, then dirs deepest-first)**: processed-tree (show/season
+  dirs under `PROCESSED_TV`, movie dirs under `PROCESSED_MOVIES`) AND library-tree (same
+  shapes under `MEDIA_TV`/`MEDIA_MOVIES` — series via `resolveLibraryShowFolder` + the
+  request's season dir, movies via `nativeMovieLibraryFolders`, never the roots), candidates
+  discovered on the same scan that matched the files; each folder must be owned outright
   (`folderOwnedExclusively` — no registered file inside maps to a DIFFERENT `library_key`),
   canonical dir recomputed server-side from `canonicalSeriesDir`/`canonicalMovieDir`/
-  `canonicalSeasonDir`, `isDirectChildOfRoot` position checks, destination collisions abort
+  `canonicalSeasonDir`, `isDirectChildOfRoot` position checks (library-aware),
+  destination collisions abort
   (never merge), `renameSync` + post-stat verification, and `rewriteProcessedFilesPrefix`
-  relocates AH `processed_files` prefixes for ALL requests living under the moved folder
+  relocates AH `processed_files` prefixes for ALL requests living under the moved PROCESSED
+  folder (library folders have no bookkeeping — Jellyfin rescans)
   (multi-season franchises share the show dir). File-level too; library files remain optional
-  (user-selected); library dirs and movie/series/season NEW dir creation deferred.
+  (user-selected); movie/series/season NEW dir creation deferred.
 - Verify with `npm run type-check` + deployed coverage counts unchanged for a
   sample franchise before/after.
 
