@@ -1203,7 +1203,9 @@ async function probeInodesConcurrently(paths: string[]): Promise<Map<string, Pro
  * Screaming Earth [1080p]...") — used only when TMDB has nothing cached, so a
  * rename can never silently strip a title that is already on disk. */
 function episodeTitleFromSourceName(base: string): string | null {
-  const m = base.match(/\b[sS]\d{1,2}[\s._-]*[eE]\d{1,3}\b[\s._-]+(.+)$/);
+  // "S0XE03" is a season-0 special marker, not a typo — accept it alongside the
+  // normal S00E03 so the title after it is still found.
+  const m = base.match(/\b[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
   if (!m) return null;
   let rest = m[1];
   // Cut the release tail: first bracket group, or a trailing tag word run. A

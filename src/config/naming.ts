@@ -260,6 +260,10 @@ export interface ProbeAudioInfo {
   channels: number | null;
   channelLayout: string | null;
   language: string | null;
+  /** Stream "title" tag. Plenty of rips label the track here ("Polish",
+   *  "Lektor") while leaving `language` empty, so it is a second chance at the
+   *  same fact. */
+  title: string | null;
 }
 
 export interface ProbeInfo {
@@ -469,7 +473,11 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
  *  identifies it — "pol + eng" is a Polish release, so it is [PL], not [EN]. */
 function probeLanguage(probe: ProbeInfo | null): { lang: string | null } | null {
   const streams = probe?.audio || [];
-  const codes = streams.map((a) => String(a.language || "").trim().toLowerCase()).filter((c) => c && c !== "und" && c !== "unknown");
+  // `language` first, then the track's "title" tag — a lot of rips put the
+  // language in one and leave the other empty, and both say the same thing.
+  const codes = streams
+    .map((a) => streamLanguageCode(a.language) || streamLanguageCode(a.title))
+    .filter((c): c is string => !!c);
   if (!codes.length) return null;
   const label = (code: string): string | null => {
     if (code.length === 3) return ISO3_TO_2[code.toUpperCase()] || (/^[a-z]{3}$/.test(code) ? code.toUpperCase() : null);
@@ -482,6 +490,20 @@ function probeLanguage(probe: ProbeInfo | null): { lang: string | null } | null 
 }
 
 const isEnglishCode = (code: string): boolean => code === "en" || code === "eng";
+
+/** Normalise one stream language value to a bare ISO code, or null when it says
+ *  nothing usable. Accepts the code itself ("pl", "pol") and the same words the
+ *  file-name parser knows, because track titles are free text ("Polish dub"). */
+function streamLanguageCode(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value || value === "und" || value === "unknown") return null;
+  const word = value.split(/[\s._-]+/)[0];
+  if (LANG_ALIASES[word.toUpperCase()]) return LANG_ALIASES[word.toUpperCase()].toLowerCase();
+  const dubbed = word.match(/^([a-z]{2})(?:dub|dubbed|dubbing)?$/);
+  if (dubbed) return dubbed[1];
+  if (/^[a-z]{3}$/.test(word)) return word;
+  return null;
+}
 
 const ISO3_TO_2: Record<string, string> = {
   POL: "PL",
@@ -531,7 +553,12 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   // being treated as a release group.
   const editions = collectEditions(base);
   const grp = base.match(/-([A-Z0-9]{2,12})$/i);
-  if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
+  // A release group is an ALLCAPS handle (DENDA, AL3X, R45). A trailing
+  // "-Zima" / "-drzewa" is just the second half of a hyphenated Polish episode
+  // title, not a group, so a plain word carrying any lowercase is rejected
+  // rather than welded onto the end of every canonical name.
+  const looksLikeWord = (s: string): boolean => /^[A-Za-z]+$/.test(s) && s !== s.toUpperCase();
+  if (grp && !looksLikeCodec(grp[1]) && !looksLikeWord(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
   }
@@ -618,7 +645,10 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     }
   };
 
-  for (const m of base.matchAll(/[\[({]([^\])}]+)[\])}]/g)) {
+  // Only SQUARE brackets carry release tags. Parentheses hold disambiguators —
+  // "(Inna historia)", "(2019)" — and reading those as tags emitted junk like
+  // "[Inna]" onto otherwise clean names.
+  for (const m of base.matchAll(/\[([^\][]+)\]/g)) {
     // Split multi-word bracket tags ("[DV HDR10Plus]", "[TrueHD Atmos 7.1]",
     // "[AC3 2.0]") into single tokens so each piece classifies/merges, then
     // re-joins into the canonical shape ([TrueHD Atmos 7.1], [DV HDR10Plus]).
@@ -684,6 +714,13 @@ export function parseEpisodeCode(
     if (Number.isFinite(season) && Number.isFinite(episode) && Number.isFinite(episodeEnd) && episodeEnd > episode) {
       return { season, episode, episodeEnd };
     }
+  }
+  // "S0XE03" is a season-0 special marker used by Polish scene releases, not a
+  // typo — read it as S00E03 so the code and the title after it are both found.
+  const s0x = fileBase.match(/\b[sS]0[xX][\s._-]*[eE](\d{1,3})\b/);
+  if (s0x) {
+    const episode = parseInt(s0x[1], 10);
+    if (Number.isFinite(episode)) return { season: 0, episode };
   }
   const m = fileBase.match(/\b[sS](\d{1,2})\s*[eE](\d{1,3})\b/);
   if (m) {

@@ -62,6 +62,7 @@ export async function probeVideoFile(filePath: string): Promise<ProbeInfo | null
         channels: s.channels ? Number(s.channels) : null,
         channelLayout: s.channel_layout || null,
         language: s.tags?.language || null,
+        title: s.tags?.title || null,
       });
       if (audio.length >= 4) break;
     }
