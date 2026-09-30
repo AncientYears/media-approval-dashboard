@@ -31,24 +31,33 @@ app.use(bodyParser.urlencoded({ extended: true }));
 // Initialize database
 const { db, close: closeDb } = initializeDatabase(DB_PATH);
 
-// Initialize Radarr service and start polling
+// Initialize Radarr service and start polling (only when configured — an
+// unconfigured arr is a supported state now, not an ECONNREFUSED error loop)
+const radarrConfigured = !!(process.env.RADARR_URL && process.env.RADARR_API_KEY);
 const radarr = new RadarrService(
   process.env.RADARR_URL || "http://localhost:7878",
   process.env.RADARR_API_KEY || ""
 );
 const radarrPollInterval = parseInt(process.env.POLL_INTERVAL_RADARR || "60", 10);
-const radarrPoller = createRadarrPoller(db, radarr, radarrPollInterval);
+const radarrPoller = radarrConfigured
+  ? createRadarrPoller(db, radarr, radarrPollInterval)
+  : { stop: () => {} };
+if (!radarrConfigured) console.log("[Radarr] Not configured (set RADARR_URL + RADARR_API_KEY) — discovery poller disabled");
 
 // Track recently deleted franchise IDs to prevent poller from re-importing them
 const deletedFranchiseIds = new Set<number>();
 
-// Initialize Sonarr service and start polling
+// Initialize Sonarr service and start polling (only when configured)
+const sonarrConfigured = !!(process.env.SONARR_URL && process.env.SONARR_API_KEY);
 const sonarr = new SonarrService(
   process.env.SONARR_URL || "http://localhost:8989",
   process.env.SONARR_API_KEY || ""
 );
 const sonarrPollInterval = parseInt(process.env.POLL_INTERVAL_SONARR || "60", 10);
-const sonarrPoller = createSonarrPoller(db, sonarr, sonarrPollInterval, deletedFranchiseIds);
+const sonarrPoller = sonarrConfigured
+  ? createSonarrPoller(db, sonarr, sonarrPollInterval, deletedFranchiseIds)
+  : { stop: () => {} };
+if (!sonarrConfigured) console.log("[Sonarr] Not configured (set SONARR_URL + SONARR_API_KEY) — discovery poller disabled");
 
 const qbittorrent = new QBittorrentService(
   process.env.QBIT_URL || "http://localhost:8080",
@@ -84,7 +93,7 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       "SELECT id, title, radarr_id FROM media_requests WHERE type = 'movie' AND status = 'DOWNLOADING' AND radarr_id IS NOT NULL"
     ).all() as any[];
 
-    if (staleMovies.length > 0) {
+    if (staleMovies.length > 0 && radarrConfigured) {
       const radarrMovies = await radarr.getAllMovies();
       const radarrMap = new Map(radarrMovies.map((m: any) => [m.id, m]));
       let fixed = 0;

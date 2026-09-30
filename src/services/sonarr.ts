@@ -142,6 +142,22 @@ export class SonarrService {
     }
   }
 
+  async unmonitorSeries(seriesId: number) {
+    try {
+      const series = await this.getSeries(seriesId);
+      const seasons = (series.seasons || []).map((s: any) => ({ ...s, monitored: false }));
+      await this.client.put(`/api/v3/series/${seriesId}`, { ...series, seasons });
+      console.log(`[Sonarr] Unmonitored series ${seriesId}`);
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        console.log(`[Sonarr] Series ${seriesId} already deleted from Sonarr, skipping unmonitor`);
+        return;
+      }
+      console.error(`[Sonarr] Failed to unmonitor series ${seriesId}:`, error.message || error);
+      throw error;
+    }
+  }
+
   async deleteSeries(seriesId: number, deleteFiles: boolean = false) {
     try {
       await this.client.delete(`/api/v3/series/${seriesId}`, {

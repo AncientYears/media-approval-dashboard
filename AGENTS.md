@@ -478,6 +478,10 @@ NTFY_TOPIC=
 - **Unmatched match (series) multi-season**: `POST /unmatched/:id/match` for series scans `content_path` for season subdirectories, creates one request per detected season. Response includes `seasons` array.
 - **isSeasonPackTitle range patterns**: Handles `S##-S##` and `S##-##` ranges in torrent names (e.g. `[S01-S03]` covers S01, S02, S03). Used by franchise coverage detection.
 - **Startup title cleanup**: Skips title check for RCs where the request has `sonarr_id` or `radarr_id` — ID-based link is more reliable than string matching (handles bilingual titles). Uses `titlesMatch()` for remaining unlinked RCs.
+- **Arr-less is a supported state**: `pollRadarr`/`pollSonarr` only boot when `RADARR_URL+RADARR_API_KEY` / `SONARR_URL+SONARR_API_KEY` are both set (`server.ts`); otherwise they're no-op pollers with `stop()`. Prowlarr search gates check `PROWLARR_URL` **and** `PROWLARR_API_KEY` (not just the key).
+- **Search-all reports config honestly**: `POST /managed/:sonarrId/search-all` and `/managed/search-all-movies` now short-circuit with an SSE `error` + `done(success:false)` when Prowlarr is unconfigured, instead of flipping every request to AWAITING_APPROVAL, writing a 5-min cooldown, and claiming 0 found.
+- **Arr deletes are best-effort + loud**: cleanup-duplicates, remove-titles, `DELETE /managed/:sonarrId`, and destroy now check `res.ok` on their raw-`fetch` deletes, log `HTTP <status>` on failure, and report `arrDeleteFailures`/`sonarrDeleteFailed` in the response — DB rows are still removed regardless so a down arr never blocks local deletion.
+- **Dismiss never deletes library files**: a season-less series dismiss uses `sonarr.unmonitorSeries()` (unmonitor all seasons, keep files) matching movie dismiss's `unmonitorMovie` — it no longer calls `deleteSeries(..., deleteFiles=true)`.
 
 ## Testing Checklist
 
@@ -487,6 +491,8 @@ NTFY_TOPIC=
 - [ ] Status poller detects Prowlarr-grabbed torrents by infoHash
 - [ ] Dismiss blocked for active downloads
 - [ ] Fallback to Sonarr/Radarr when PROWLARR_API_KEY not set
+- [ ] Search-all reports error (not "0 found") + writes no cooldown when Prowlarr unconfigured
+- [ ] pollRadarr/pollSonarr don't boot when arr URL/key unset
 - [ ] Season regex handles S##E## format correctly
 - [ ] Startup cleanup doesn't nuke valid RCs for same hash
 - [ ] Franchise search-all filters results by season number

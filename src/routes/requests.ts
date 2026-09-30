@@ -1002,26 +1002,43 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       // Delete duplicate Sonarr/Radarr entries
+      let arrDeleteFailures = 0;
       if (!dryRun) {
         const sUrl = process.env.SONARR_URL || "";
         const sKey = process.env.SONARR_API_KEY || "";
         const rUrl = process.env.RADARR_URL || "";
         const rKey = process.env.RADARR_API_KEY || "";
         for (const sid of [...new Set(sonarrIdsToDelete)]) {
+          if (!sUrl || !sKey) { arrDeleteFailures++; continue; }
           try {
-            await fetch(`${sUrl}/api/v3/series/${sid}?deleteFiles=false`, {
+            const r = await fetch(`${sUrl}/api/v3/series/${sid}?deleteFiles=false`, {
               method: "DELETE",
               headers: { "X-Api-Key": sKey },
             });
-          } catch {}
+            if (!r.ok) {
+              console.warn(`[Cleanup] Sonarr DELETE series ${sid} failed: HTTP ${r.status}`);
+              arrDeleteFailures++;
+            }
+          } catch (e: any) {
+            console.warn(`[Cleanup] Sonarr DELETE series ${sid} failed: ${e.message}`);
+            arrDeleteFailures++;
+          }
         }
         for (const rid of [...new Set(radarrIdsToDelete)]) {
+          if (!rUrl || !rKey) { arrDeleteFailures++; continue; }
           try {
-            await fetch(`${rUrl}/api/v3/movie/${rid}?deleteFiles=false&addImportListExclusion=true`, {
+            const r = await fetch(`${rUrl}/api/v3/movie/${rid}?deleteFiles=false&addImportListExclusion=true`, {
               method: "DELETE",
               headers: { "X-Api-Key": rKey },
             });
-          } catch {}
+            if (!r.ok) {
+              console.warn(`[Cleanup] Radarr DELETE movie ${rid} failed: HTTP ${r.status}`);
+              arrDeleteFailures++;
+            }
+          } catch (e: any) {
+            console.warn(`[Cleanup] Radarr DELETE movie ${rid} failed: ${e.message}`);
+            arrDeleteFailures++;
+          }
         }
       }
 
@@ -1040,7 +1057,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const totalDeleted = results.reduce((s, r) => s + r.deleted, 0);
       console.log(`[Cleanup] ${dryRun ? "DRY RUN: " : ""}Removed ${totalDeleted} duplicate request(s), moved RCs, deleted ${sonarrIdsToDelete.length} Sonarr + ${radarrIdsToDelete.length} Radarr entries`);
 
-      res.json({ success: true, dryRun, duplicates: results.length, results });
+      res.json({ success: true, dryRun, duplicates: results.length, results, arrDeleteFailures });
     } catch (error: any) {
       console.error("Error cleaning up duplicates:", error);
       res.status(500).json({ error: error.message });
@@ -1066,21 +1083,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(row.id);
           db.prepare("DELETE FROM media_requests WHERE id = ?").run(row.id);
 
-          if (row.sonarr_id && sUrl) {
+          if (row.sonarr_id && sUrl && sKey) {
             try {
-              await fetch(`${sUrl}/api/v3/series/${row.sonarr_id}?deleteFiles=false`, {
+              const r = await fetch(`${sUrl}/api/v3/series/${row.sonarr_id}?deleteFiles=false`, {
                 method: "DELETE",
                 headers: { "X-Api-Key": sKey },
               });
-            } catch {}
+              if (!r.ok) console.warn(`[RemoveTitles] Sonarr DELETE series ${row.sonarr_id} failed: HTTP ${r.status}`);
+            } catch (e: any) {
+              console.warn(`[RemoveTitles] Sonarr DELETE series ${row.sonarr_id} failed: ${e.message}`);
+            }
           }
-          if (row.radarr_id && rUrl) {
+          if (row.radarr_id && rUrl && rKey) {
             try {
-              await fetch(`${rUrl}/api/v3/movie/${row.radarr_id}?deleteFiles=false`, {
+              const r = await fetch(`${rUrl}/api/v3/movie/${row.radarr_id}?deleteFiles=false`, {
                 method: "DELETE",
                 headers: { "X-Api-Key": rKey },
               });
-            } catch {}
+              if (!r.ok) console.warn(`[RemoveTitles] Radarr DELETE movie ${row.radarr_id} failed: HTTP ${r.status}`);
+            } catch (e: any) {
+              console.warn(`[RemoveTitles] Radarr DELETE movie ${row.radarr_id} failed: ${e.message}`);
+            }
           }
 
           removed.push({ title: row.title, id: row.id, sonarr_id: row.sonarr_id, radarr_id: row.radarr_id });
@@ -1571,9 +1594,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const sUrl = process.env.SONARR_URL || "";
       const sKey = process.env.SONARR_API_KEY || "";
 
-      // Delete from Sonarr
-      if (sUrl) {
-        try { await fetch(`${sUrl}/api/v3/series/${sonarrId}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
+      let sonarrDeleteFailed = false;
+      // Delete from Sonarr (best-effort — DB rows are removed regardless so a
+      // down/unconfigured arr doesn't block the local delete)
+      if (sUrl && sKey) {
+        try {
+          const r = await fetch(`${sUrl}/api/v3/series/${sonarrId}?deleteFiles=false`, { method: "DELETE", headers: { "X-Api-Key": sKey } });
+          if (!r.ok) {
+            console.warn(`[Delete] Sonarr DELETE franchise ${sonarrId} failed: HTTP ${r.status}`);
+            sonarrDeleteFailed = true;
+          }
+        } catch (e: any) {
+          console.warn(`[Delete] Sonarr DELETE franchise ${sonarrId} failed: ${e.message}`);
+          sonarrDeleteFailed = true;
+        }
+      } else {
+        sonarrDeleteFailed = true;
       }
 
       // Delete all requests + RCs + approval history
@@ -1583,9 +1619,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         db.prepare("DELETE FROM media_requests WHERE id = ?").run(row.id);
       }
 
-      console.log(`[Delete] Deleted franchise sonarr_id=${sonarrId}: ${rows[0].title} (${rows.length} requests)`);
+      console.log(`[Delete] Deleted franchise sonarr_id=${sonarrId}: ${rows[0].title} (${rows.length} requests, sonarrDeleteFailed=${sonarrDeleteFailed})`);
       deletedFranchiseIds?.add(sonarrId);
-      res.json({ success: true, deleted: rows.length, title: rows[0].title });
+      res.json({ success: true, deleted: rows.length, title: rows[0].title, sonarrDeleteFailed });
     } catch (error: any) {
       console.error("Error deleting franchise:", error);
       res.status(500).json({ error: error.message });
@@ -3929,6 +3965,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
+    if (!process.env.PROWLARR_URL || !process.env.PROWLARR_API_KEY || !prowlarr) {
+      send("error", { success: false, error: "Prowlarr is not configured — set PROWLARR_URL and PROWLARR_API_KEY" });
+      send("done", { success: false, totalFound: 0, seasons: 0, errors: 1, skipped: allSeasons.length });
+      res.end();
+      return;
+    }
+
     if (seasons.length === 0) {
       send("done", { success: true, totalFound: 0, seasons: 0, errors: 0, skipped: allSeasons.length });
       res.end();
@@ -3956,13 +3999,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       let mappedCount = 0;
       try {
-        const prowlarrApiKey = process.env.PROWLARR_API_KEY;
-        if (prowlarrApiKey && prowlarr) {
-          const query = req.body?.searchTerm || season.title.replace(/\s+S\d+$/, "");
-          const results = await Promise.race([
-            prowlarr.search(query, [5000]),
-            new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
-          ]);
+        const query = req.body?.searchTerm || season.title.replace(/\s+S\d+$/, "");
+        const results = await Promise.race([
+          prowlarr.search(query, [5000]),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
+        ]);
           const allMapped = (results as any[]).map(mapProwlarrToRadarrResult);
           const targetSeason = season.season;
           const mapped = allMapped.filter((r: RadarrSearchResult) => {
@@ -3998,9 +4039,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (!preserveStatus) {
             db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
           }
-        } else if (!preserveStatus) {
-          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
-        }
 
         db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(season.id);
         const data = getSeasonData(season.id);
@@ -4068,6 +4106,13 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
+    if (!process.env.PROWLARR_URL || !process.env.PROWLARR_API_KEY || !prowlarr) {
+      send("error", { success: false, error: "Prowlarr is not configured — set PROWLARR_URL and PROWLARR_API_KEY" });
+      send("done", { success: false, totalFound: 0, movies: 0, errors: 1, skipped: allMovies.length });
+      res.end();
+      return;
+    }
+
     if (movies.length === 0) {
       send("done", { success: true, totalFound: 0, movies: 0, errors: 0, skipped: allMovies.length });
       res.end();
@@ -4096,13 +4141,11 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       let mappedCount = 0;
       try {
-        const prowlarrApiKey = process.env.PROWLARR_API_KEY;
-        if (prowlarrApiKey && prowlarr) {
-          const query = req.body?.searchTerm || movie.title;
-          const results = await Promise.race([
-            prowlarr.search(query, [2000]),
-            new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
-          ]);
+        const query = req.body?.searchTerm || movie.title;
+        const results = await Promise.race([
+          prowlarr.search(query, [2000]),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Search timed out")), 45000)),
+        ]);
           const mapped = (results as any[]).map(mapProwlarrToRadarrResult);
           mappedCount = mapped.length;
 
@@ -4129,9 +4172,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (!preserveStatus) {
             db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
           }
-        } else if (!preserveStatus) {
-          db.prepare("UPDATE media_requests SET status = 'AWAITING_APPROVAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
-        }
 
         db.prepare("UPDATE media_requests SET last_searched_at = CURRENT_TIMESTAMP WHERE id = ?").run(movie.id);
         const data = getMovieData(movie.id);
@@ -4863,23 +4903,46 @@ let episodes: any[];
         try { deleteWorkspace(ws.path); } catch {}
       }
 
-      // Delete from Sonarr/Radarr
       const sUrl = process.env.SONARR_URL || "";
       const sKey = process.env.SONARR_API_KEY || "";
       const rUrl = process.env.RADARR_URL || "";
       const rKey = process.env.RADARR_API_KEY || "";
-      if (request.sonarr_id && sUrl) {
-        try { await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": sKey } }); } catch {}
+      let destroyArrFailures = 0;
+      // Delete from Sonarr/Radarr (best-effort — local state is removed regardless)
+      if (request.sonarr_id && sUrl && sKey) {
+        try {
+          const r = await fetch(`${sUrl}/api/v3/series/${request.sonarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": sKey } });
+          if (!r.ok) {
+            console.warn(`[Delete] Sonarr DELETE series ${request.sonarr_id} failed: HTTP ${r.status}`);
+            destroyArrFailures++;
+          }
+        } catch (e: any) {
+          console.warn(`[Delete] Sonarr DELETE series ${request.sonarr_id} failed: ${e.message}`);
+          destroyArrFailures++;
+        }
+      } else if (request.sonarr_id) {
+        destroyArrFailures++;
       }
-      if (request.radarr_id && rUrl) {
-        try { await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": rKey } }); } catch {}
+      if (request.radarr_id && rUrl && rKey) {
+        try {
+          const r = await fetch(`${rUrl}/api/v3/movie/${request.radarr_id}?deleteFiles=${deleteFiles}`, { method: "DELETE", headers: { "X-Api-Key": rKey } });
+          if (!r.ok) {
+            console.warn(`[Delete] Radarr DELETE movie ${request.radarr_id} failed: HTTP ${r.status}`);
+            destroyArrFailures++;
+          }
+        } catch (e: any) {
+          console.warn(`[Delete] Radarr DELETE movie ${request.radarr_id} failed: ${e.message}`);
+          destroyArrFailures++;
+        }
+      } else if (request.radarr_id) {
+        destroyArrFailures++;
       }
 
       db.prepare("DELETE FROM release_candidates WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM approval_history WHERE request_id = ?").run(id);
       db.prepare("DELETE FROM media_requests WHERE id = ?").run(id);
-      console.log(`[Delete] Deleted request #${id}: ${request.title} (deleteFiles=${deleteFiles})`);
-      res.json({ success: true });
+      console.log(`[Delete] Deleted request #${id}: ${request.title} (deleteFiles=${deleteFiles}, arrDeleteFailures=${destroyArrFailures})`);
+      res.json({ success: true, arrDeleteFailures: destroyArrFailures });
     } catch (error) {
       console.error("Error deleting request:", error);
       res.status(500).json({ error: "Failed to delete request" });
@@ -5390,8 +5453,8 @@ let episodes: any[];
               await sonarr.unmonitorSeason(request.sonarr_id, request.season);
               console.log(`[Dismiss] Unmonitored season ${request.season} in Sonarr: ${request.title}`);
             } else {
-              await sonarr.deleteSeries(request.sonarr_id, true);
-              console.log(`[Dismiss] Deleted series from Sonarr: ${request.title}`);
+              await sonarr.unmonitorSeries(request.sonarr_id);
+              console.log(`[Dismiss] Unmonitored series in Sonarr: ${request.title}`);
             }
           } catch (err: any) {
             console.error(`[Dismiss] Failed to update Sonarr for ${request.title}:`, err.message);
@@ -6771,7 +6834,7 @@ let episodes: any[];
       ]);
 
       const prowlarrApiKey = process.env.PROWLARR_API_KEY;
-      const useProwlarr = !!prowlarrApiKey;
+      const useProwlarr = !!prowlarr && !!process.env.PROWLARR_URL && !!prowlarrApiKey;
 
       try {
         if (useProwlarr) {
@@ -6797,7 +6860,7 @@ let episodes: any[];
           } else if (request.radarr_id) {
             releases = await searchTimeout(radarr.searchReleases(request.radarr_id, searchTerm || undefined), 60000);
           } else {
-            send("error", { error: "No Radarr or Sonarr ID associated with this request" });
+            send("error", { error: "No search backend: native request and Prowlarr is not configured (set PROWLARR_URL and PROWLARR_API_KEY), or no Radarr/Sonarr ID associated" });
             res.end();
             return;
           }
