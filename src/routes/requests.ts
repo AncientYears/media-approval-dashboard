@@ -998,6 +998,316 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   });
 }
 
+// ---- P2: "Fix Names" — standardize existing trees (inode-verified renames) ----
+
+const VIDEO_FILE_RE = /\.(mkv|mp4|avi|mov|ts|wmv)$/i;
+
+interface FixNameRow {
+  id: string;
+  ino: number | null;
+  path: string;
+  tree: "processed" | "library";
+  currentName: string;
+  proposedName: string | null;
+  role: "movie" | "special" | "episode" | null;
+  note: string | null;
+}
+
+interface FixNameGroup {
+  id: string;
+  ino: number | null;
+  processed: FixNameRow | null;
+  library: FixNameRow | null;
+}
+
+function fixNameRoots(): string[] {
+  return [PROCESSED_MOVIES, PROCESSED_TV, MEDIA_MOVIES, MEDIA_TV];
+}
+
+/** True when p is a video file directly under one of the four modifiable trees. */
+function isFixNameTarget(p: string): string | null {
+  for (const root of fixNameRoots()) {
+    const rel = path.relative(root, p);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    if (!VIDEO_FILE_RE.test(path.basename(rel))) continue;
+    return root;
+  }
+  return null;
+}
+
+/**
+ * Whether a processed-panel file belongs to this request: explicit association
+ * (approval_history processed_files / torrent content basenames), registered
+ * identity for the request's library_key, or title fallback only when the
+ * request has zero explicit associations (matches the processed panel).
+ */
+function processedFileMatchesRequest(db: Database, request: any, fullPath: string, matchedNames: Set<string>): boolean {
+  const base = path.basename(fullPath);
+  const processedDir = getProcessedDir(request.type === "series" ? "series" : "movie");
+  const rel = path.relative(processedDir, fullPath);
+  if (matchedNames.has(base) || matchedNames.has(rel)) return true;
+  if (request.library_key) {
+    try {
+      const identityRow = identifyByPath(db, fullPath);
+      if (identityRow && identityRow.library_key === request.library_key) return true;
+    } catch {}
+  }
+  if (matchedNames.size === 0) {
+    try {
+      const requestTitleNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const entryNorm = base.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (titlesMatch(requestTitleNorm, entryNorm)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+/** Probe a set of paths in parallel (capped), cached by dev:ino so hardlinked
+ * twins probe exactly once. Returns a map usable by both processed + library
+ * rows for the same underlying file. */
+async function probeInodesConcurrently(paths: string[]): Promise<Map<string, ProbeInfo | null>> {
+  const map = new Map<string, ProbeInfo | null>();
+  let i = 0;
+  const worker = async () => {
+    while (i < paths.length) {
+      const p = paths[i++];
+      try {
+        const st = fs.statSync(p);
+        const key = `${st.dev}:${st.ino}`;
+        if (map.has(key)) continue;
+        const probe = await probeVideoFile(p);
+        map.set(key, probe);
+      } catch {}
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  return map;
+}
+
+/**
+ * Canonical basename proposal for ONE existing file (no extension never applied
+ * here — callers keep the original extension). Returns null when nothing should
+ * change (already canonical / missing pivots / naming disabled). Mirrors
+ * canonicalFileBase but for on-disk files whose current name is the starting
+ * point, and optionally enriched by an ffprobe probe.
+ */
+async function proposeCanonicalName(
+  db: Database,
+  request: any,
+  sourceBase: string,
+  probe: ProbeInfo | null,
+  cachedPieces?: NamingPieces | null,
+): Promise<{ name: string | null; role: FixNameRow["role"] | null; note: string | null }> {
+  const conf = loadNamingConf(db);
+  if (!conf.enabled) return { name: null, role: null, note: "Naming disabled in Settings" };
+  const pieces = cachedPieces !== undefined ? cachedPieces : await namingPiecesForRequest(db, request);
+  const ext = path.extname(sourceBase);
+  const base = ext ? sourceBase.slice(0, -ext.length) : sourceBase;
+  const tags = assembleCanonicalTags(parseReleaseTags(base), probe || null);
+  if (request.type === "movie") {
+    if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
+    const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
+    if (!name) return { name: null, role: "movie", note: "Missing title/year/imdbId" };
+    return { name: name === base ? null : name, role: "movie", note: name === base ? null : null };
+  }
+  if (request.season === 0) {
+    if (!pieces?.imdbId) return { name: null, role: "special", note: "Missing imdbId for special" };
+    const name = canonicalSpecialFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
+    if (!name) return { name: null, role: "special", note: "Missing pivot pieces" };
+    return { name: name === base ? null : name, role: "special", note: null };
+  }
+  const ep = parseEpisodeCode(sourceBase);
+  if (!ep) return { name: null, role: "episode", note: "No SxxExx code in name" };
+  if (ep.season !== (request.season ?? ep.season)) return { name: null, role: "episode", note: `S${ep.season} does not match request season` };
+  const episodeTitle = request.library_key ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode) : null;
+  const name = canonicalEpisodeFile(conf, {
+    title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
+    season: ep.season,
+    episode: ep.episode,
+    episodeTitle,
+    tags: tags.tags,
+    group: tags.group,
+  });
+  if (!name) return { name: null, role: "episode", note: "Missing title/episode pieces" };
+  return { name: name === base ? null : name, role: "episode", note: null };
+}
+
+/** Build the grouped processed+library proposal rows for one request (native only). */
+async function buildFixNameGroups(db: Database, request: any): Promise<FixNameGroup[]> {
+  const type = request.type === "series" ? "series" : "movie";
+  const processedDir = getProcessedDir(type);
+  if (!fs.existsSync(processedDir)) return [];
+
+  const matchedNames = new Set<string>();
+  const approvals = db.prepare(
+    "SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
+  ).all(request.id) as any[];
+  for (const ah of approvals) {
+    try {
+      for (const n of JSON.parse(ah.processed_files) as string[]) matchedNames.add(n);
+    } catch {}
+  }
+
+  // Processed files, same season-filtered acceptance as the processed panel.
+  const accepted: { fullPath: string }[] = [];
+  const targetSeason =
+    type === "series" && request.season != null ? `S${String(request.season).padStart(2, "0")}` : null;
+  try {
+    for (const entry of fs.readdirSync(processedDir, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = path.join(processedDir, entry.name);
+      if (entry.isDirectory()) {
+        for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
+          if (!sub.isDirectory() || !/^S\d+$/i.test(sub.name)) continue;
+          if (targetSeason && sub.name.toUpperCase() !== targetSeason) continue;
+          const seasonDir = path.join(fullPath, sub.name);
+          for (const f of fs.readdirSync(seasonDir)) {
+            if (!VIDEO_FILE_RE.test(f)) continue;
+            const fp = path.join(seasonDir, f);
+            if (processedFileMatchesRequest(db, request, fp, matchedNames)) accepted.push({ fullPath: fp });
+          }
+        }
+      } else {
+        if (!VIDEO_FILE_RE.test(entry.name)) continue;
+        if (processedFileMatchesRequest(db, request, fullPath, matchedNames)) accepted.push({ fullPath });
+      }
+    }
+  } catch {}
+
+  // Library twin paths by inode (native: movie folders / series season folder).
+  const libraryByIno = new Map<string, string>();
+  const scanLibraryFile = (fp: string) => {
+    try {
+      const st = fs.statSync(fp);
+      const key = `${st.dev}:${st.ino}`;
+      if (st.isFile() && !libraryByIno.has(key)) libraryByIno.set(key, fp);
+    } catch {}
+  };
+  if (type === "movie") {
+    for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+      if (!fs.existsSync(folder)) continue;
+      for (const f of fs.readdirSync(folder)) {
+        if (!VIDEO_FILE_RE.test(f)) continue;
+        scanLibraryFile(path.join(folder, f));
+      }
+    }
+  } else {
+    const libFolder = resolveLibraryFolder(request);
+    if (libFolder && fs.existsSync(libFolder)) {
+      for (const f of fs.readdirSync(libFolder)) {
+        if (!VIDEO_FILE_RE.test(f)) continue;
+        scanLibraryFile(path.join(libFolder, f));
+      }
+    }
+  }
+
+  // Probe all involved files once per dev:ino (parallel, cached).
+  const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
+  const probes = await probeInodesConcurrently(probePaths);
+
+  const groups: FixNameGroup[] = [];
+  let gid = 0;
+  const cachedPieces = await namingPiecesForRequest(db, request);
+  for (const a of accepted) {
+    let ino: number | null = null;
+    let key = "";
+    let probe: ProbeInfo | null = null;
+    try {
+      const st = fs.statSync(a.fullPath);
+      ino = st.ino;
+      key = `${st.dev}:${st.ino}`;
+      probe = probes.get(key) || null;
+    } catch {}
+
+    const pb = await proposeCanonicalName(db, request, path.basename(a.fullPath), probe, cachedPieces);
+    const processed: FixNameRow = {
+      id: `p-${gid}`,
+      ino,
+      path: a.fullPath,
+      tree: "processed",
+      currentName: path.basename(a.fullPath),
+      proposedName: pb.name,
+      role: pb.role,
+      note: pb.note,
+    };
+
+    let library: FixNameRow | null = null;
+    const libPath = key ? libraryByIno.get(key) : null;
+    if (libPath) {
+      const lb = await proposeCanonicalName(db, request, path.basename(libPath), probe, cachedPieces);
+      library = {
+        id: `l-${gid}`,
+        ino,
+        path: libPath,
+        tree: "library",
+        currentName: path.basename(libPath),
+        proposedName: lb.name,
+        role: lb.role,
+        note: lb.note,
+      };
+    }
+
+    groups.push({ id: `g${gid++}`, ino, processed, library });
+  }
+  return groups;
+}
+
+/** Rename a single picked file to its canonical name. Inode-verified: a rename
+ * keeps the inode, so hardlinked twins elsewhere stay linked and identity rows
+ * survive. Only the submitted path is renamed (twins rename independently). */
+function applyFixNameRename(db: Database, request: any, oldPath: string, newName: string): { ok: boolean; skipped?: boolean; error?: string; old?: string; new?: string } {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(oldPath);
+  } catch {
+    return { ok: false, error: "File not found" };
+  }
+  if (!st.isFile()) return { ok: false, error: "Not a file" };
+  if (!isFixNameTarget(oldPath)) return { ok: false, error: "Path is outside the managed trees" };
+
+  const parent = path.dirname(oldPath);
+  const oldBasename = path.basename(oldPath);
+  const dest = uniqueDestPath(path.join(parent, newName), st.ino);
+
+  if (fs.existsSync(dest)) {
+    try {
+      const d = fs.statSync(dest);
+      if (d.ino === st.ino) return { ok: true, skipped: true, old: oldBasename, new: newName };
+    } catch {}
+  }
+  if (dest === oldPath) return { ok: true, skipped: true, old: oldBasename, new: newName };
+
+  fs.renameSync(oldPath, dest);
+  const after = fs.statSync(dest);
+  if (after.ino !== st.ino) return { ok: false, error: "Rename changed the inode — aborting" };
+
+  // Identity rows are keyed by (dev, inode); refresh the stored release_name.
+  try {
+    db.prepare("UPDATE media_files SET release_name = ? WHERE dev = ? AND ino = ?").run(path.basename(dest), st.dev, st.ino);
+  } catch {}
+  // Refresh approval_history.processed_files entries (PROCESSED-relative).
+  try {
+    const rows = db.prepare(
+      "SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
+    ).all(request.id) as any[];
+    const oldBase = path.basename(oldPath);
+    const newBase = path.basename(dest);
+    for (const r of rows) {
+      try {
+        const arr = JSON.parse(r.processed_files) as string[];
+        let changed = false;
+        const next = arr.map((f: string) => {
+          if (f === oldBase || f.endsWith(`/${oldBase}`)) { changed = true; return f.replace(/[^/]+$/, newBase); }
+          return f;
+        });
+        if (changed) db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(next), r.id);
+      } catch {}
+    }
+  } catch {}
+  console.log(`[FixNames] renamed ${oldPath} -> ${dest}`);
+  return { ok: true, old: path.basename(oldPath), new: path.basename(dest) };
+}
+
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
   // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
   if (torrentNorm.startsWith(lookupNorm)) {
@@ -6657,6 +6967,56 @@ const type = request.type === "series" ? "series" : "movie";
       }
 
       res.json({ moves: results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/fix-names/preview - P2 proposal rows (processed files
+  // + library twins) with canonical old→new names for the Fix Names modal.
+  router.post("/:id/fix-names/preview", async (req: Request, res: Response) => {
+    try {
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(req.params.id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (!request.library_key) {
+        return res.status(400).json({ error: "Sonarr/Radarr owns file names for arr-linked requests" });
+      }
+      const groups = await buildFixNameGroups(db, request);
+      res.json({ groups });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/fix-names/apply - Rename the selected files to their
+  // (re)computed canonical names. Names are recomputed server-side, never taken
+  // from the client verbatim; renames are inode-verified and collision-safe.
+  router.post("/:id/fix-names/apply", async (req: Request, res: Response) => {
+    try {
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(req.params.id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (!request.library_key) {
+        return res.status(400).json({ error: "Sonarr/Radarr owns file names for arr-linked requests" });
+      }
+      const paths: string[] = Array.isArray(req.body?.paths) ? req.body.paths.filter((p: unknown) => typeof p === "string") : [];
+      if (paths.length === 0) return res.status(400).json({ error: "No file paths provided" });
+
+      const results: any[] = [];
+      for (const p of paths) {
+        try {
+          const st = fs.statSync(p);
+          if (!st.isFile()) { results.push({ path: p, ok: false, error: "Not a file" }); continue; }
+          if (!isFixNameTarget(p)) { results.push({ path: p, ok: false, error: "Path is outside the managed trees" }); continue; }
+          const probe = await probeVideoFile(p);
+          const pb = await proposeCanonicalName(db, request, path.basename(p), probe);
+          if (!pb.name) { results.push({ path: p, ok: false, error: pb.note || "Nothing to rename" }); continue; }
+          const newName = `${pb.name}${path.extname(p)}`;
+          results.push({ path: p, ...applyFixNameRename(db, request, p, newName) });
+        } catch (err: any) {
+          results.push({ path: p, ok: false, error: err.message });
+        }
+      }
+      res.json({ results });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

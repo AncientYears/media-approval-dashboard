@@ -6,6 +6,7 @@ import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
 import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
 import ImportModal from "../components/ImportModal";
+import FixNamesModal from "../components/FixNamesModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -211,6 +212,7 @@ export default function RequestDetail() {
   const [scanFiles, setScanFiles] = useState<{ name: string; size: number; isDir: boolean }[]>([]);
   const [scanSelected, setScanSelected] = useState<Set<string>>(new Set());
   const [scanning, setScanning] = useState(false);
+  const [fixNamesOpen, setFixNamesOpen] = useState(false);
 
   const refreshMoveStatus = async () => {
     try {
@@ -613,6 +615,9 @@ export default function RequestDetail() {
           <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 8 }} onClick={handleScanProcessed} disabled={scanning}>
             {scanning ? "Scanning..." : "Scan Folder"}
           </button>
+          <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 4 }} onClick={() => setFixNamesOpen(true)} title="Standardize filenames to the canonical naming template">
+            Fix Names
+          </button>
         </div>
         {processedFiles.length > 0 && (
           <>
@@ -908,6 +913,15 @@ export default function RequestDetail() {
         onClose={() => setImportOpen(false)}
         onImported={() => { loadData(); }}
       />
+
+      {fixNamesOpen && (
+        <FixNamesModal
+          requestId={Number(id)}
+          title={request?.title || `Request #${id}`}
+          onClose={() => setFixNamesOpen(false)}
+          onApplied={() => { refreshProcessedAndWorkspaces(); refreshMoveStatus(); }}
+        />
+      )}
     </div>
   );
 }

@@ -385,6 +385,16 @@ export async function adoptIntoProcessed(opts?: { apply?: boolean; includeUnback
   return response.data;
 }
 
+export async function fixNamesPreview(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/fix-names/preview`);
+  return response.data;
+}
+
+export async function fixNamesApply(requestId: number, paths: string[]) {
+  const response = await api.post(`/requests/${requestId}/fix-names/apply`, { paths });
+  return response.data;
+}
+
 export async function fetchUnmatched() {
   const response = await api.get("/requests/unmatched");
   return response.data;
