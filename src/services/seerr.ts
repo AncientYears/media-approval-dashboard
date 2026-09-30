@@ -22,8 +22,16 @@ import { errorSummary } from "../utils/errorSummary";
 interface SeerrRequest {
   id: number;
   status?: number | string | null;
+  type?: "movie" | "tv";
   seasonNumber?: number | null;
-  createdBy?: { username?: string; email?: string };
+  requestedBy?: {
+    displayName?: string;
+    username?: string | null;
+    jellyfinUsername?: string | null;
+    plexUsername?: string | null;
+    email?: string;
+  };
+  seasons?: Array<{ seasonNumber?: number; status?: number | string | null }>;
   media?: {
     mediaType?: "movie" | "tv";
     tmdbId?: number;
@@ -98,8 +106,8 @@ export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
   const presentIds = new Set(active.map((r) => r.id));
 
   for (const req of active) {
-    const rawType = String(req.media?.mediaType || "movie").toLowerCase();
-    const mediaType = rawType === "tv" || rawType === "series" ? "series" : rawType === "movie" ? "movie" : null;
+    const rawType = String(req.type || req.media?.mediaType || "movie").toLowerCase();
+    const mediaType = rawType === "movie" ? "movie" : "series";
     const tmdbId = Number(req.media?.tmdbId || 0);
     if (!mediaType || !tmdbId) continue;
 
@@ -108,38 +116,69 @@ export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
 
     const cleaned = cleanFranchiseTitle(t.title);
     const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${t.year ?? 0}`;
-    const reqSeason = mediaType === "series" ? Number(req.seasonNumber ?? req.media?.seasonNumber ?? 1) : null;
-    const user = String(req.createdBy?.username || "Seerr").trim() || "Seerr";
+    const user = String(
+      req.requestedBy?.displayName ||
+      req.requestedBy?.jellyfinUsername ||
+      req.requestedBy?.plexUsername ||
+      req.requestedBy?.username ||
+      req.requestedBy?.email ||
+      "Seerr"
+    ).trim() || "Seerr";
 
-    let existing: any;
-    if (mediaType === "movie") {
-      existing = db.prepare("SELECT id, seerr_request_id FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
-    } else {
-      existing = db.prepare("SELECT id, seerr_request_id FROM media_requests WHERE library_key = ? AND season = ?").get(key, reqSeason) as any;
+    // Seerr creates one request per requested season and exposes it in the
+    // `seasons` array — not a single seasonNumber — so don't collapse S02+ onto
+    // the S01 key. Fall back to a single season when the shape lacks seasons.
+    let seasonNumbers: number[] = [];
+    if (Array.isArray(req.seasons) && req.seasons.length) {
+      seasonNumbers = req.seasons
+        .filter((s) => !(s.status === 3 || s.status === 4))
+        .map((s) => Number(s.seasonNumber))
+        .filter((n) => Number.isFinite(n));
+    }
+    if (!seasonNumbers.length) {
+      const n = Number(req.seasonNumber ?? req.media?.seasonNumber ?? 1);
+      seasonNumbers = [Number.isFinite(n) ? n : 1];
     }
 
-    if (existing) {
-      // Row exists — link it back to Seerr if it wasn't created via Seerr.
-      if (!existing.seerr_request_id) {
-        db.prepare("UPDATE media_requests SET seerr_request_id = ? WHERE id = ?").run(req.id, existing.id);
-        base.backfilled++;
+    for (const sn of seasonNumbers) {
+      let existing: any;
+      if (mediaType === "movie") {
+        existing = db.prepare("SELECT id, seerr_request_id, requested_by FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+      } else {
+        existing = db.prepare("SELECT id, seerr_request_id, requested_by FROM media_requests WHERE library_key = ? AND season = ?").get(key, sn) as any;
       }
-      continue;
-    }
 
-    const requestedBy = JSON.stringify([user]);
-    if (mediaType === "movie") {
-      const result = db.prepare(
-        "INSERT INTO media_requests (title, type, library_key, status, requested_by, seerr_request_id) VALUES (?, 'movie', ?, 'NEW', ?, ?)"
-      ).run(cleaned, key, requestedBy, req.id);
-      console.log(`[Seerr] Created movie request ${result.lastInsertRowid as number}: ${cleaned} (key=${key} by ${user})`);
-    } else {
-      const result = db.prepare(
-        "INSERT INTO media_requests (title, type, library_key, season, status, requested_by, seerr_request_id) VALUES (?, 'series', ?, ?, 'NEW', ?, ?)"
-      ).run(cleaned, key, reqSeason, requestedBy, req.id);
-      console.log(`[Seerr] Created series request ${result.lastInsertRowid as number}: ${cleaned} (key=${key}, season=${reqSeason} by ${user})`);
+      if (existing) {
+        // Row exists — link it back to Seerr if it wasn't created via Seerr,
+        // and refresh the requested-by label when it was placeholder "Seerr".
+        const needsLink = !existing.seerr_request_id;
+        if (needsLink) {
+          db.prepare("UPDATE media_requests SET seerr_request_id = ? WHERE id = ?").run(req.id, existing.id);
+          base.backfilled++;
+        }
+        try {
+          const cur = JSON.parse(existing.requested_by || "[]") as string[];
+          if (cur.length === 0 || cur.every((u) => (u || "").trim() === "Seerr")) {
+            db.prepare("UPDATE media_requests SET requested_by = ? WHERE id = ?").run(JSON.stringify([user]), existing.id);
+          }
+        } catch {}
+        continue;
+      }
+
+      const requestedBy = JSON.stringify([user]);
+      if (mediaType === "movie") {
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, library_key, status, requested_by, seerr_request_id) VALUES (?, 'movie', ?, 'NEW', ?, ?)"
+        ).run(cleaned, key, requestedBy, req.id);
+        console.log(`[Seerr] Created movie request ${result.lastInsertRowid as number}: ${cleaned} (key=${key} by ${user})`);
+      } else {
+        const result = db.prepare(
+          "INSERT INTO media_requests (title, type, library_key, season, status, requested_by, seerr_request_id) VALUES (?, 'series', ?, ?, 'NEW', ?, ?)"
+        ).run(cleaned, key, sn, requestedBy, req.id);
+        console.log(`[Seerr] Created series request ${result.lastInsertRowid as number}: ${cleaned} (key=${key}, season=${sn} by ${user})`);
+      }
+      base.added++;
     }
-    base.added++;
   }
 
   // Reconcile deletions: rows we created for Seerr requests that Seerr no
