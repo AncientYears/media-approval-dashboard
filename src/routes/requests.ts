@@ -591,6 +591,26 @@ function namedSpecialCount(payload: string): number {
   }
 }
 
+/** Strip parser/release junk from a series title used as the franchise display
+ * name and TMDB lookup base (e.g. "Tajemnica Sagali (2016) S01E01 PL 768p
+ * WEB-DL H.264-AL3X" → "Tajemnica Sagali (2016)"). A bare trailing year in
+ * parens/brackets is preserved; resume-tail patterns are dropped repeatedly. */
+function cleanFranchiseTitle(title: string): string {
+  let t = title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "").trim();
+  // Cut everything after an episode marker ("S##E## <release tags>").
+  t = t.replace(/\sS\d{1,2}[\s._-]*E\d{1,3}\b.*$/i, "").trim();
+  let prev: string;
+  do {
+    prev = t;
+    t = t
+      .replace(/\s+[\w.]*\d{3,4}p\s*$/i, "")
+      .replace(/\s+(?:WEB-?DL|WEB-?RIP|Blu-?Ray|BD-?RIP|BDRip|DVDRip|HDTV|H\.?26[45]|x26[45]|HEVC|10bit|AAC(?:2\.0)?|E-?AC3|DTS(?:-HD)?|TRUEHD|MKV|MULTi|PL|PL-?PL)\s*$/i, "")
+      .replace(/\s+\S*\d\S+-\S{2,8}\s*$/i, "")
+      .trim();
+  } while (t !== prev && t.length > 0);
+  return t;
+}
+
 /** Year embedded in the library_key (`series:<id|slug>:<year>`), if any. */
 function libraryKeyYear(key?: string | null): number | null {
   if (!key) return null;
@@ -1253,7 +1273,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
 
       const franchiseTitleSeason = seasons.find((s: any) => s.season !== 0) || seasons[0];
-      const franchiseTitle = franchiseTitleSeason.title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const franchiseTitle = cleanFranchiseTitle(franchiseTitleSeason.title);
         const firstRequestId = seasons[0].id;
         // Compute total size from processed files (source of truth), fall back to torrent sizes
         const processedTvDir = PROCESSED_TV;
@@ -1311,52 +1331,51 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             extras,
           };
         }).sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
-        // Inject unrequested seasons from Sonarr (e.g., Specials/season 0)
+        const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
+        // Inject unrequested seasons listed by Sonarr (e.g., Specials/season 0)
         if (seriesObj && sonarrId != null) {
-          const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
           for (const sn of (seriesObj.seasons || [])) {
-            if (!existingSeasons.has(sn.seasonNumber)) {
-              const epCount = sn.statistics?.episodeCount || 0;
-              const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(sn.seasonNumber).padStart(2, "0")}`);
-              const coveredEps = new Set<number>();
-              try {
-                if (fs.existsSync(seasonFolder)) {
-                  for (const f of fs.readdirSync(seasonFolder)) {
-                    const epNum = extractEpisodeFromFilename(f);
-                    if (epNum != null) coveredEps.add(epNum);
-                  }
+            if (existingSeasons.has(sn.seasonNumber)) continue;
+            const epCount = sn.statistics?.episodeCount || 0;
+            const seasonFolder = path.join(processedTvDir, franchiseTitle, `S${String(sn.seasonNumber).padStart(2, "0")}`);
+            const coveredEps = new Set<number>();
+            try {
+              if (fs.existsSync(seasonFolder)) {
+                for (const f of fs.readdirSync(seasonFolder)) {
+                  const epNum = extractEpisodeFromFilename(f);
+                  if (epNum != null) coveredEps.add(epNum);
                 }
-              } catch {}
-              let actualEpCount = epCount;
-              try {
-                const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, sn.seasonNumber);
-                actualEpCount = Math.max(sonarrEps.length, coveredEps.size);
-              } catch {
-                if (!actualEpCount && coveredEps.size > 0) actualEpCount = coveredEps.size;
               }
-              mappedSeasons.push({
-                season: sn.seasonNumber,
-                request_id: null,
-                status: null,
-                total_size_mb: 0,
-                release_count: 0,
-                title: franchiseTitle,
-                episode_count: actualEpCount,
-                covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-                extras: unnumberedFilesInSeasonFolder(franchiseTitle, sn.seasonNumber),
-              });
+            } catch {}
+            let actualEpCount = epCount;
+            try {
+              const sonarrEps = await sonarr.getSeasonEpisodes(sonarrId, sn.seasonNumber);
+              actualEpCount = Math.max(sonarrEps.length, coveredEps.size);
+            } catch {
+              if (!actualEpCount && coveredEps.size > 0) actualEpCount = coveredEps.size;
             }
+            mappedSeasons.push({
+              season: sn.seasonNumber,
+              request_id: null,
+              status: null,
+              total_size_mb: 0,
+              release_count: 0,
+              title: franchiseTitle,
+              episode_count: actualEpCount,
+              covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
+              extras: unnumberedFilesInSeasonFolder(franchiseTitle, sn.seasonNumber),
+            });
+            existingSeasons.add(sn.seasonNumber);
           }
-          mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         }
-        // Inject seasons present on disk for native (arr-free) series — the
-        // processed structure is authoritative, so any season folder that has
-        // files but no media_request row shows as an independent, request-id-less
-        // season (fixes library files mis-attributed to Specials when the
-        // library stores episodes loose in the show root).
-        if (sonarrId == null) {
+        // Inject disk season folders absent from request rows. The processed
+        // tree is the source of truth, so any season folder with files shows up
+        // even when Sonarr/Radarr are unreachable or don't list the season
+        // (e.g. Specials folders) — pointed out by Death in Paradise. Sonarr
+        // groups get DOMs driven by disk too; a later Sonarr-listed injection
+        // above simply wins for seasons both sources agree on.
+        {
           const franchiseYear = libraryKeyYear(libraryKey);
-          const existingSeasons = new Set(mappedSeasons.map((s: any) => s.season));
           const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id));
           const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear, fallbackShowDir);
           for (const [sn, files] of diskSeasons) {
@@ -1387,7 +1406,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             existingSeasons.add(sn);
           }
           // Disk-less Specials still appear when cached TMDB season-0 episodes
-          if (!existingSeasons.has(0)) {
+          // exist (native franchises — they carry a library_key for the cache).
+          if (sonarrId == null && !existingSeasons.has(0)) {
             let tmdbSpecials = 0;
             try {
               const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = 0").get(libraryKey) as any;
@@ -1408,8 +1428,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               existingSeasons.add(0);
             }
           }
-          mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         }
+        mappedSeasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
         if (processedBytes === 0) {
           franchiseSize = mappedSeasons.reduce((sum: number, s: any) => sum + (s.total_size_mb || 0), 0);
         }
@@ -4355,7 +4375,7 @@ let episodes: any[];
         .all(seed.library_key) as any[];
       if (!rows.length) return res.status(404).json({ error: "No seasons for this franchise" });
       const titleSeason = rows.find((r: any) => r.season !== 0) || rows[0];
-      const title = (titleSeason.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+      const title = cleanFranchiseTitle(titleSeason.title);
       const seasons = rows.map((s: any) => {
         const baseTitle = (s.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
         const covered = coveredEpisodesForRequest(db, s);
