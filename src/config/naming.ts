@@ -58,6 +58,8 @@ export const NAMING_TOKENS = [
   "{Season}",
   "{Episode}",
   "{EpisodeTitle}",
+  "{EpisodeEnd}",
+  "{EpisodeRange}",
   "{AirDate}",
   "{EpisodeYear}",
   "{SpecialCode}",
@@ -711,7 +713,10 @@ export function parseEpisodeCode(
     const season = parseInt(multi[1], 10);
     const episode = parseInt(multi[2], 10);
     const episodeEnd = parseInt(multi[3], 10);
-    if (Number.isFinite(season) && Number.isFinite(episode) && Number.isFinite(episodeEnd) && episodeEnd > episode) {
+    // A span that wide is not a multi-episode pack, it is a stray year or a
+    // different number entirely ("S01E01-2019"). Only treat it as a range when
+    // the episodes are genuinely close together.
+    if (Number.isFinite(season) && Number.isFinite(episode) && Number.isFinite(episodeEnd) && episodeEnd > episode && episodeEnd - episode <= 50) {
       return { season, episode, episodeEnd };
     }
   }
@@ -759,11 +764,26 @@ export interface CanonicalFilePieces {
   tvdbId?: number | string | null;
   season?: number | null;
   episode?: number | null;
+  /** Set for a multi-episode file ("S01E01-02"). {Episode} then renders the
+   *  whole span, so the default template yields "S01E01-02" with no edit. */
+  episodeEnd?: number | null;
   episodeTitle?: string | null;
   airDate?: string | null;
   episodeYear?: string | null;
   tags?: string;
   group?: string | null;
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+
+/** "01", or "01-02" for a multi-episode file. A bare {Episode} therefore spans
+ *  the whole range, so "{Title} - S{Season:02}E{Episode:02}" keeps working
+ *  untouched for both single and multi-episode files. */
+function episodeToken(p: CanonicalFilePieces): string {
+  if (p.episode === null || p.episode === undefined) return "";
+  const first = pad2(p.episode);
+  if (p.episodeEnd === null || p.episodeEnd === undefined || p.episodeEnd <= p.episode) return first;
+  return `${first}-${pad2(p.episodeEnd)}`;
 }
 
 const fileVars = (p: CanonicalFilePieces, conf: NamingConf): Record<string, string> => ({
@@ -772,8 +792,10 @@ const fileVars = (p: CanonicalFilePieces, conf: NamingConf): Record<string, stri
   ImdbId: p.imdbId ? p.imdbId.replace(/^tt/, "") : "",
   TvdbId: p.tvdbId !== null && p.tvdbId !== undefined ? String(p.tvdbId) : "",
   Season: p.season !== null && p.season !== undefined ? String(p.season) : "",
-  Episode: p.episode !== null && p.episode !== undefined ? String(p.episode) : "",
+  Episode: episodeToken(p),
   EpisodeTitle: (p.episodeTitle || "").trim(),
+  EpisodeEnd: p.episodeEnd ? pad2(p.episodeEnd) : "",
+  EpisodeRange: p.episodeEnd ? `S${pad2(p.season as number)}E${pad2(p.episode as number)}-E${pad2(p.episodeEnd)}` : "",
   AirDate: (p.airDate || "").trim(),
   EpisodeYear: (p.episodeYear || "").trim(),
   // S00 specials get their whole "S00E03" marker from one token so it can never

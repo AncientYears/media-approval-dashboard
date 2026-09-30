@@ -1078,16 +1078,12 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return null;
-  if (ep.episodeEnd) return null;
   if (ep.season === 0) {
     const sp = await specialPiecesForFile(db, request, sourceBase, pieces);
     if (!sp) return null;
     return canonicalSpecialFile(conf, { title: sp.title, year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group });
   }
-  const episodeTitle =
-    (request.library_key
-      ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key))
-      : null) || episodeTitleFromSourceName(sourceBase);
+  const episodeTitle = episodeTitleFor(db, request, sourceBase, ep);
   // Per-episode air date, so a template can date a season that aired years after
   // the show's first season. Optional: default templates never reference it.
   const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
@@ -1095,6 +1091,7 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
     season: ep.season,
     episode: ep.episode,
+    episodeEnd: ep.episodeEnd ?? null,
     episodeTitle,
     airDate,
     episodeYear: airDate ? airDate.slice(0, 4) : null,
@@ -1197,6 +1194,21 @@ async function probeInodesConcurrently(paths: string[]): Promise<Map<string, Pro
   };
   await Promise.all(Array.from({ length: 4 }, worker));
   return map;
+}
+
+/** Episode title for a file, honouring TMDB first and the on-disk name as the
+ *  fallback. A multi-episode file has no single TMDB entry, so its two cached
+ *  titles are joined the way scene releases already write them
+ *  ("S01E01-02 Kolejka - Fretka traci głowę"). */
+function episodeTitleFor(db: Database, request: any, base: string, ep: { season: number; episode: number; episodeEnd?: number }): string | null {
+  const key = request.library_key;
+  const lang = key ? franchiseLanguage(db, key) : null;
+  if (key && ep.episodeEnd && ep.episodeEnd > ep.episode) {
+    const first = episodeTitleFromCache(db, key, ep.season, ep.episode, lang);
+    const last = episodeTitleFromCache(db, key, ep.season, ep.episodeEnd, lang);
+    if (first && last) return `${first} - ${last}`;
+  }
+  return (key ? episodeTitleFromCache(db, key, ep.season, ep.episode, lang) : null) || episodeTitleFromSourceName(base);
 }
 
 /** Episode title already present in an on-disk name ("... - S03E15 - The
@@ -1305,20 +1317,14 @@ async function proposeCanonicalName(
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
-  if (ep.episodeEnd) {
-    const z = (n: number) => String(n).padStart(2, "0");
-    return { name: null, role: "episode", note: `Multi-episode file (S${z(ep.season)}E${z(ep.episode)}-E${z(ep.episodeEnd)}) - rename by hand` };
-  }
   if (ep.season !== (request.season ?? ep.season)) return { name: null, role: "episode", note: `S${ep.season} does not match request season` };
-  const episodeTitle =
-    (request.library_key
-      ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode, request.library_key ? franchiseLanguage(db, request.library_key) : null)
-      : null) || episodeTitleFromSourceName(base);
+  const episodeTitle = episodeTitleFor(db, request, base, ep);
   const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
   const name = canonicalEpisodeFile(conf, {
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
     season: ep.season,
     episode: ep.episode,
+    episodeEnd: ep.episodeEnd ?? null,
     episodeTitle,
     airDate,
     episodeYear: airDate ? airDate.slice(0, 4) : null,
