@@ -176,6 +176,17 @@ export function initializeDatabase(dbPath: string): DBInstance {
       language TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS tmdb_external_ids (
+      library_key TEXT PRIMARY KEY,
+      media_type TEXT NOT NULL,
+      tmdb_id INTEGER,
+      imdb_id TEXT,
+      tvdb_id TEXT,
+      title TEXT,
+      year INTEGER,
+      updated_at TEXT NOT NULL
+    );
+
 CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       torrent_name TEXT NOT NULL,

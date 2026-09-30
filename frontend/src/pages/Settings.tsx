@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState } from "react";
-import { testConnections, fetchSettingsEnv } from "../api";
+import { testConnections, fetchSettingsEnv, fetchNamingSettings, saveNamingSettings } from "../api";
 
 interface EnvEntry {
   key: string;
@@ -8,10 +8,36 @@ interface EnvEntry {
   set: boolean;
 }
 
+interface NamingConf {
+  enabled: boolean;
+  series_dir: string;
+  movie_dir: string;
+  season_dir: string;
+  episode_file: string;
+  special_file: string;
+  movie_file: string;
+}
+
+const NAMING_LABELS: Record<string, string> = {
+  series_dir: "Series show folder",
+  movie_dir: "Movie folder",
+  season_dir: "Season folder",
+  episode_file: "Numbered episode file",
+  special_file: "S00 special file",
+  movie_file: "Movie file",
+};
+
+const NAMING_FIELDS = ["series_dir", "movie_dir", "season_dir", "episode_file", "special_file", "movie_file"] as const;
+
 export default function Settings() {
   const [connectionStatus, setConnectionStatus] = useState<Record<string, any>>({});
   const [envEntries, setEnvEntries] = useState<EnvEntry[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const [naming, setNaming] = useState<NamingConf | null>(null);
+  const [namingTokens, setNamingTokens] = useState<string[]>([]);
+  const [savingNaming, setSavingNaming] = useState(false);
+  const [namingSaved, setNamingSaved] = useState(false);
 
   const handleTestConnections = async () => {
     try {
@@ -30,11 +56,82 @@ export default function Settings() {
     fetchSettingsEnv()
       .then((data) => setEnvEntries(data.entries || []))
       .catch((error) => console.error("Failed to load environment settings", error));
+    fetchNamingSettings()
+      .then((data) => {
+        setNaming(data.conf || null);
+        setNamingTokens(data.tokens || []);
+      })
+      .catch((error) => console.error("Failed to load naming settings", error));
   }, []);
+
+  const handleSaveNaming = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!naming) return;
+    setSavingNaming(true);
+    setNamingSaved(false);
+    try {
+      const res = await saveNamingSettings(naming);
+      setNaming(res.conf);
+      setNamingSaved(true);
+    } catch (error) {
+      console.error("Failed to save naming settings", error);
+      alert("Failed to save naming settings");
+    } finally {
+      setSavingNaming(false);
+    }
+  };
 
   return (
     <div className="container">
       <h2>Settings</h2>
+
+      <section className="settings-section">
+        <h3>Naming Templates (P1)</h3>
+        <p className="section-description">
+          Canonical names applied to NEW processed/library files (existing files are never
+          renamed). Replaces <code>{"{Token}"}</code> placeholders; the year/id tags make
+          the names Jellyfin-friendly and identity-anchored. Disable to keep today's raw
+          release names.
+        </p>
+
+        {naming && (
+          <form className="settings-form" onSubmit={handleSaveNaming}>
+            <label className="naming-toggle">
+              <input
+                type="checkbox"
+                checked={naming.enabled}
+                onChange={(e) => setNaming({ ...naming, enabled: e.target.checked })}
+              />
+              Apply canonical naming to new files
+            </label>
+
+            {NAMING_FIELDS.map((field) => (
+              <div key={field} className="form-group">
+                <label htmlFor={`naming-${field}`}>{NAMING_LABELS[field]}</label>
+                <input
+                  id={`naming-${field}`}
+                  type="text"
+                  value={(naming as any)[field]}
+                  onChange={(e) => setNaming({ ...naming, [field]: e.target.value })}
+                  spellCheck={false}
+                />
+              </div>
+            ))}
+
+            <div className="help-text">
+              Available tokens:{" "}
+              {namingTokens.map((t) => (
+                <code key={t}>{t}</code>
+              ))}
+            </div>
+
+            <button type="submit" className="btn btn-primary" disabled={savingNaming}>
+              {savingNaming ? "Saving..." : "Save naming templates"}
+            </button>
+            {namingSaved && <span className="settings-saved">Saved</span>}
+          </form>
+        )}
+      </section>
 
       <section className="settings-section">
         <h3>Configuration (.env)</h3>

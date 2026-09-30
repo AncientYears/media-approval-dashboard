@@ -11,11 +11,21 @@ import {
   scanLibrary,
   scanProcessed,
   type ScannedFile,
+  parseDirName,
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, type SeasonMeta } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, episodeTitleFromCache, type SeasonMeta } from "../services/tmdb";
+import {
+  loadNamingConf,
+  parseReleaseTags,
+  parseEpisodeCode,
+  canonicalMovieFile,
+  canonicalSpecialFile,
+  canonicalEpisodeFile,
+  uniqueDestPath,
+} from "../config/naming";
 import { seerrRemoveRequest } from "../services/seerr";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
@@ -907,6 +917,80 @@ function folderYear(name: string): number | null {
   if (bracketed) return parseInt(bracketed[1], 10);
   const bare = name.match(/(?:^|[.\s[(])((?:19|20)\d{2})(?=[.\s\]),]|$)/);
   return bare ? parseInt(bare[1], 10) : null;
+}
+
+interface NamingPieces {
+  title: string;
+  year: number | null;
+  imdbId: string | null;
+  tvdbId: string | null;
+}
+
+/**
+ * P1: identity + ids for canonical naming. Primary source is TMDB external_ids
+ * (cached in `tmdb_external_ids`); offline fallback parses an already-canonical
+ * target folder ("Title (Year) [imdbid-ttX]") so the app still names canonically
+ * when TMDB is unset. Returns null when naming is disabled or nothing resolves.
+ */
+async function namingPiecesForRequest(db: Database, request: any, idHintFolder?: string): Promise<NamingPieces | null> {
+  const conf = loadNamingConf(db);
+  if (!conf.enabled) return null;
+  let pieces: NamingPieces | null = null;
+  try {
+    const lang = franchiseLanguage(db, request.library_key) || process.env.TMDB_LANGUAGE || "en-US";
+    const ids = await resolveExternalIds(
+      db,
+      request.library_key,
+      request.type === "series" ? "series" : "movie",
+      cleanFranchiseTitle(request.title || ""),
+      lang,
+    );
+    if (ids) pieces = { title: ids.title, year: ids.year ?? libraryKeyYear(request.library_key), imdbId: ids.imdbId, tvdbId: ids.tvdbId };
+  } catch {}
+  if (!pieces && idHintFolder) {
+    try {
+      const parsed = parseDirName(path.basename(idHintFolder) || "");
+      const year = parsed.year ?? libraryKeyYear(request.library_key);
+      const fallbackTitle = cleanFranchiseTitle(request.title || "");
+      if (request.type === "movie" && parsed.imdbId) {
+        pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: null };
+      } else if (request.type === "series" && (parsed.tvdbId || parsed.imdbId)) {
+        pieces = { title: parsed.title || fallbackTitle, year, imdbId: parsed.imdbId, tvdbId: parsed.tvdbId };
+      }
+    } catch {}
+  }
+  return pieces;
+}
+
+/** Canonical file basename (no extension) for a NEW processed/library file, or
+ * null to keep today's raw release name. Null on disabled naming, missing
+ * pivots (episode code / title / id), or unresolved identity — never guesses. */
+async function canonicalFileBase(db: Database, request: any, sourceBase: string, idHintFolder?: string): Promise<string | null> {
+  const conf = loadNamingConf(db);
+  if (!conf.enabled) return null;
+  const pieces = await namingPiecesForRequest(db, request, idHintFolder);
+  const tags = parseReleaseTags(sourceBase);
+  if (request.type === "movie") {
+    if (!pieces) return null;
+    return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
+  }
+  const ep = parseEpisodeCode(sourceBase);
+  if (!ep) return null;
+  if (ep.season === 0) {
+    if (pieces?.imdbId) {
+      return canonicalSpecialFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
+    }
+    return null;
+  }
+  const episodeTitle = request.library_key ? episodeTitleFromCache(db, request.library_key, ep.season, ep.episode) : null;
+  return canonicalEpisodeFile(conf, {
+    title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),
+    season: ep.season,
+    episode: ep.episode,
+    episodeTitle,
+    tags: tags.tags,
+    group: tags.group,
+  });
 }
 
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
@@ -6375,7 +6459,18 @@ const type = request.type === "series" ? "series" : "movie";
       }
 
       const type = request.type === "series" ? "series" : "movie";
-      const result = moveToProcessedSync(contentPath, type);
+
+      // P1 canonical naming for NEW processed files: single-file torrents get
+      // the naming-template name; folder torrents keep their structure intact.
+      let canonicalName: string | null = null;
+      try {
+        const contentStat = fs.statSync(contentPath);
+        if (request.library_key && contentStat.isFile()) {
+          canonicalName = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV);
+        }
+      } catch {}
+
+      const result = moveToProcessedSync(contentPath, type, canonicalName || undefined);
       if (!result.success) return res.status(500).json({ error: result.error });
 
       // Register identity for the processed inodes (same inode as the download
@@ -6437,7 +6532,7 @@ const type = request.type === "series" ? "series" : "movie";
           }
         }
       } else if (srcStat) {
-        const base = path.basename(contentPath);
+        const base = canonicalName ? path.basename(result.destination || "") || path.basename(contentPath) : path.basename(contentPath);
         const destPath = path.join(processedDir, base);
         if (fs.existsSync(destPath)) {
           try {
@@ -7371,8 +7466,27 @@ const type = request.type === "series" ? "series" : "movie";
         return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
       }
 
-      const destFileName = path.basename(sourcePath);
-      const destPath = path.join(destFolder, destFileName);
+      // P1 canonical naming: for native (arr-free) requests, name NEW library
+      // files per the naming template instead of copying the release basename.
+      // Dirs keep their structure; null means "keep raw name, never guess".
+      let destFileName = path.basename(sourcePath);
+      if (request.library_key && !fs.statSync(sourcePath).isDirectory()) {
+        try {
+          const canonical = await canonicalFileBase(
+            db,
+            request,
+            path.basename(sourcePath),
+            request.type === "series" ? path.dirname(destFolder) : destFolder,
+          );
+          if (canonical) destFileName = `${canonical}${path.extname(sourcePath)}`;
+        } catch {}
+      }
+
+      // Same-inode destination returns unchanged (idempotent already-exists);
+      // a different file at the canonical name gets a "-2" suffix so multiple
+      // versions of a movie/special coexist instead of silently skipping.
+      const srcStat0 = fs.statSync(sourcePath);
+      const destPath = uniqueDestPath(path.join(destFolder, destFileName), srcStat0.ino);
 
       if (fs.existsSync(destPath)) {
         markCompleted();

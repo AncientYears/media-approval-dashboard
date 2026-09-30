@@ -15,6 +15,7 @@ import { createSonarrPoller } from "./jobs/pollSonarr";
 import { createStatusPoller } from "./jobs/pollStatus";
 import { syncSeerr, isSeerrConfigured } from "./services/seerr";
 import { errorSummary } from "./utils/errorSummary";
+import { loadNamingConf, saveNamingConf, DEFAULT_NAMING, NAMING_TOKENS, type NamingConf } from "./config/naming";
 
 // Load environment variables
 dotenv.config();
@@ -321,6 +322,28 @@ app.get("/api/settings/env", (_req, res) => {
     return { key, label, value: raw ? (secret ? maskSecret(raw) : raw) : "", set: !!raw };
   });
   res.json({ entries });
+});
+
+// Naming-template settings (P1). Stored in the `settings` table, read by the
+// canonical-naming kernel at every NEW-file write.
+app.get("/api/settings/naming", (_req, res) => {
+  res.json({ conf: loadNamingConf(db), defaults: DEFAULT_NAMING, tokens: NAMING_TOKENS });
+});
+
+app.put("/api/settings/naming", (req, res) => {
+  try {
+    const body = (req.body || {}) as Record<string, any>;
+    const patch: Partial<NamingConf> = {};
+    if ("enabled" in body) patch.enabled = !!body.enabled;
+    for (const k of ["series_dir", "movie_dir", "season_dir", "episode_file", "special_file", "movie_file"] as const) {
+      if (k in body && typeof body[k] === "string") (patch as any)[k] = body[k] as string;
+    }
+    saveNamingConf(db, patch);
+    res.json({ ok: true, conf: loadNamingConf(db) });
+  } catch (err: any) {
+    console.error("Error saving naming settings:", err);
+    res.status(500).json({ error: "Failed to save naming settings" });
+  }
 });
 
 // Serve frontend static files

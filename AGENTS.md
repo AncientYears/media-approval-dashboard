@@ -94,11 +94,31 @@ session can start with P0 without re-deriving the design.
   in `src/routes/requests.ts`, wired into `GET /:id/processed` and every coverage
   read). No renames performed. Verify with the deployed coverage counts unchanged
   for a sample franchise before/after. Optional leftover: `user.nad.identity`
-  xattr mirror (best-effort, skip `download/`).
-- **P1 — canonical writes**: path-kernel helpers (`src/config` naming) producing
-  canonical names for NEW files only; naming template honoured from settings.
+  xattr mirror (best-effort, skip `download/`). — **superseded: xattr was dropped
+  on user request; identity is DB-only.**
+- **P1 — canonical writes (DONE, pending VM verification)**: naming kernel
+  `src/config/naming.ts` (token templates, tag/group extraction, canonical dir +
+  file builders, collision-safe `uniqueDestPath`) + tmdb external-id resolution
+  (`resolveExternalIds` in `src/services/tmdb.ts`, `tmdb_external_ids` cache,
+  offline fallback parses ids from an already-canonical target folder) + naming
+  templates stored in the `settings` table and editable at
+  `GET`/`PUT /api/settings/naming` (Settings → Naming Templates). Applied to NEW
+  files only: single-file `move-to-processed` and native (arr-free)
+  `move-to-library` (per-file + torrent paths) name files per template
+  (`{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}`,
+  `{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}`);
+  `{EpisodeTitle}` fills from `tmdb_season_cache` (offline). Folders keep their
+  structure; `move-to-library` dirs, workspace outputs, adopt and library-import
+  are NOT renamed (P2's Fix Names owns existing trees). Native requests only —
+  arr-linked moves still defer naming to Radarr/Sonarr. `uniqueDestPath`
+  idempotently reuses same-inode destinations and suffixes `-2/-3` different
+  ones so multiple versions of a movie/special coexist. Naming stays cosmetic:
+  reads remain inode-keyed and request.library_key-driven.
 - **P2 — standardize tool**: "Fix Names" modal + optional batch renamer for
-  existing trees; optional single maintenance script, not HTTP surface.
+  existing trees; optional single maintenance script, not HTTP surface. Movie
+  dir creation (`{Title} ({Year}) [imdbid-tt{ImdbId}]`) also lands here (the
+  kernel's `canonicalMovieDir`/`canonicalSeriesDir`/`canonicalSeasonDir` already
+  exist).
 - Verify with `npm run type-check` + deployed coverage counts unchanged for a
   sample franchise before/after.
 
@@ -463,6 +483,7 @@ resolution inherits the pref through every call site.
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
+| `src/config/naming.ts` | Naming kernel (P1): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/video/group), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |

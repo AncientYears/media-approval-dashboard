@@ -79,6 +79,8 @@ Also: TMDB Discover (button → native request → Prowlarr), Scan Downloads
 | GET | /api/requests/test-connections | Test Prowlarr/qBittorrent/Seerr (+ optional arrs) connectivity |
 | GET | /api/requests/db/:table | Any DB table, read-only |
 | GET | /api/db | All tables, columns, rows (DB viewer) |
+| GET | /api/settings/naming | Naming templates + defaults + tokens (P1) |
+| PUT | /api/settings/naming | Save naming templates (P1) |
 | POST | /api/test-connections | Connection testing (legacy) |
 
 ### DB Schema
@@ -92,8 +94,10 @@ release_group_scores    - Release group bias (v2)
 custom_rules            - Custom require/exclude/prefer rules (v2)
 tmdb_season_cache       - Per-key season/episode metadata (works offline)
 tmdb_franchise_prefs    - Language preference keyed by library_key
+tmdb_external_ids       - Per-key TMDB external_ids cache (imdb/tvdb for canonical naming)
 unmatched_torrents      - Torrents with no match + pre-fetched TMDB candidates
-settings                - Key-value config storage
+settings                - Key-value config storage (incl. naming.* templates)
+media_files             - Identity layer (dev,inode) → library_key/season/episodes/role/release_name
 ```
 
 ### Key Technical Decisions
@@ -136,13 +140,22 @@ settings                - Key-value config storage
   deployable alone. REMAINING: verify on the VM (coverage counts unchanged for
   a sample franchise before/after), then P1/P2 below. No xattr mirror — identity
   is DB-only; `/download` stays 100% isolated (never written to, ever).
-- **P1**: canonical naming for new writes only —
-  `Title (YYYY) [tvdbid-####]` series dirs / `Title (YYYY) [imdbid-tt####]`
-  movie dirs, `Sxx` season dirs, ID-anchored file names with loader tags
-  (`Mister Blots Academy (1984) [imdbid-tt0086863] - [PL] [Bluray-1080p]
-  [AC3 2.0][x264]-DENDA`). Naming template configurable in Settings.
+- **P1 (implemented, pending VM verification)**: canonical naming for NEW writes
+  only — `src/config/naming.ts` kernel (`parseReleaseTags` import, canonical
+  movie/special/episode/dir builders, `uniqueDestPath`, token templates),
+  naming templates stored in `settings` + `GET`/`PUT /api/settings/naming`
+  (Settings → Naming Templates, token list, disable toggle), TMDB
+  `resolveExternalIds` (`tmdb_external_ids` cache, offline fallback reuses ids
+  embedded in an already-canonical target folder). Applied at single-file
+  `move-to-processed` and native `move-to-library` (per-file + torrent paths):
+  movies/specials → `Title (YYYY) [imdbid-tt####] - [PL] [Bluray-1080p]...-GRP`;
+  episodes → `Show - SxxExx - Name [tags]-GRP` (`{EpisodeTitle}` from
+  `tmdb_season_cache`, offline). Dirs/workspace outputs/adopt/import keep their
+  names. Native-only; arr-linked moves still defer to Radarr/Sonarr. Naming is
+  cosmetic (reads stay inode-keyed).
 - **P2**: "Fix names" modal — per-file checkbox rename (processed ↔ library
-  twins + lone processed files), inode-verified.
+  twins + lone processed files), inode-verified. Movie/series/season dir
+  creation (kernel builders exist) also lands here.
 - Matching order: inode first → canonical-name (IDs embedded) → fuzzy title
   (backup for copied-not-hardlinked files). Release names stay in `/download`.
 

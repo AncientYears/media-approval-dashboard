@@ -1104,6 +1104,20 @@ body {
   gap: 1rem;
 }
 
+.naming-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-saved {
+  color: var(--success, #22c55e);
+  font-weight: 600;
+  margin-left: 0.75rem;
+}
+
 .form-group {
   display: flex;
   flex-direction: column;

@@ -95,7 +95,7 @@ export function getDownloadDir(type: "movie" | "series"): string {
   return type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
 }
 
-export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"): { success: boolean; destination?: string; error?: string } {
+export function moveToProcessedSync(sourcePath: string, type: "movie" | "series", destFileName?: string): { success: boolean; destination?: string; error?: string } {
   const destDir = getProcessedDir(type);
   fs.mkdirSync(destDir, { recursive: true });
 
@@ -120,7 +120,7 @@ export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"
     return { success: true, destination: dest };
   }
 
-  const dest = path.join(destDir, path.basename(sourcePath));
+  const dest = path.join(destDir, destFileName || path.basename(sourcePath));
   if (fs.existsSync(dest)) {
     return { success: true, destination: dest };
   }

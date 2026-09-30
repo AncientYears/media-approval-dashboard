@@ -340,6 +340,16 @@ export async function fetchSettingsEnv() {
   return response.data;
 }
 
+export async function fetchNamingSettings() {
+  const response = await api.get("/settings/naming");
+  return response.data;
+}
+
+export async function saveNamingSettings(patch: Record<string, any>) {
+  const response = await api.put("/settings/naming", patch);
+  return response.data;
+}
+
 export async function searchAllSeasons(sonarrId: number, searchTerm?: string) {
   const response = await api.post(`/requests/managed/${sonarrId}/search-all`, { searchTerm });
   return response.data;

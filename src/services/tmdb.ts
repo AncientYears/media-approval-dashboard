@@ -243,3 +243,127 @@ export async function fetchTMDBSeason(
   );
   return meta;
 }
+
+/** Movie mirror of `resolveShowIdentity` — same ID/year-less-retry behaviour,
+ * but against /search/movie (movies carry no seasons, so the series resolver
+ * does not apply). Uses the library_key's embedded imdb id when present. */
+export async function resolveMovieIdentity(libraryKey: string, title: string, language: string): Promise<ResolvedShow | null> {
+  const ext = extractExternalId(libraryKey);
+  if (ext) {
+    const data = await tmdbGet<any>(`/find/${encodeURIComponent(ext.id)}?external_source=${ext.source}&language=${language}`);
+    const hit = data?.movie_results?.[0];
+    if (hit?.id) {
+      const yr = hit.release_date ? parseInt(String(hit.release_date).slice(0, 4), 10) : null;
+      return { id: hit.id, name: hit.title || title, year: Number.isFinite(yr) ? yr : null, via: ext.source };
+    }
+  }
+  const year = libraryKeyYear(libraryKey);
+  const q = title.replace(/[\[(]\d{4}[\])]/g, "").trim() || title;
+  const query = `/search/movie?query=${encodeURIComponent(q)}${year ? `&year=${year}` : ""}&language=${language}`;
+  const data = await tmdbGet<any>(query);
+  const hit = data?.results?.[0];
+  if (hit?.id) {
+    const yr = hit.release_date ? parseInt(String(hit.release_date).slice(0, 4), 10) : null;
+    return { id: hit.id, name: hit.title || title, year: Number.isFinite(yr) ? yr : null, via: "search" };
+  }
+  if (year) {
+    const retry = await tmdbGet<any>(`/search/movie?query=${encodeURIComponent(q)}&language=${language}`);
+    const retryHit = retry?.results?.[0];
+    if (retryHit?.id) {
+      const yr = retryHit.release_date ? parseInt(String(retryHit.release_date).slice(0, 4), 10) : null;
+      return { id: retryHit.id, name: retryHit.title || title, year: Number.isFinite(yr) ? yr : null, via: "search" };
+    }
+  }
+  return null;
+}
+
+/** TMDB /external_ids for a title: the tvdbid (series dirs) / imdbid (movie +
+ * series special files, movie dirs) the canonical names embed. */
+export async function fetchExternalIds(
+  mediaType: "movie" | "series",
+  tmdbId: number,
+  language?: string,
+): Promise<{ imdbId: string | null; tvdbId: string | null } | null> {
+  const data = await tmdbGet<any>(`/${mediaType}/${tmdbId}/external_ids?language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
+  if (!data) return null;
+  return {
+    imdbId: data.imdb_id ? String(data.imdb_id) : null,
+    tvdbId: data.tvdb_id ? String(data.tvdb_id) : null,
+  };
+}
+
+export interface ExternalIds {
+  tmdbId: number;
+  imdbId: string | null;
+  tvdbId: string | null;
+  title: string;
+  year: number | null;
+}
+
+/**
+ * Resolve a request's TMDB identity + external ids for canonical naming,
+ * cached in `tmdb_external_ids`. Returns null when TMDB is unset, nothing can
+ * be resolved, or the title simply has no ids — callers then fall back to the
+ * raw basename (never rename blind). A cached all-null row is treated as a
+ * negative cache so unresolved titles do not hammer TMDB on every move.
+ */
+export async function resolveExternalIds(
+  db: Database,
+  libraryKey: string,
+  mediaType: "movie" | "series",
+  title: string,
+  language: string,
+): Promise<ExternalIds | null> {
+  try {
+    const cached = db.prepare("SELECT * FROM tmdb_external_ids WHERE library_key = ?").get(libraryKey) as any;
+    if (cached) {
+      if (!cached.imdb_id && !cached.tvdb_id) return null;
+      return {
+        tmdbId: cached.tmdb_id || 0,
+        imdbId: cached.imdb_id || null,
+        tvdbId: cached.tvdb_id ? String(cached.tvdb_id) : null,
+        title: cached.title || title,
+        year: cached.year ?? null,
+      };
+    }
+  } catch {}
+  const show =
+    mediaType === "series"
+      ? await resolveShowIdentity(libraryKey, title, language)
+      : await resolveMovieIdentity(libraryKey, title, language);
+  if (!show?.id || !apiKey()) return null;
+  const ext = await fetchExternalIds(mediaType, show.id, language);
+  if (!ext) return null;
+  const out: ExternalIds = {
+    tmdbId: show.id,
+    imdbId: ext.imdbId,
+    tvdbId: ext.tvdbId,
+    title: show.name || title,
+    year: show.year,
+  };
+  // Persist even when no ids exist — an all-null row acts as a negative cache so
+  // an unresolvable title does not hammer TMDB on every subsequent move.
+  try {
+    db.prepare(
+      "INSERT OR REPLACE INTO tmdb_external_ids (library_key, media_type, tmdb_id, imdb_id, tvdb_id, title, year, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+    ).run(libraryKey, mediaType, out.tmdbId, out.imdbId, out.tvdbId, out.title, out.year ?? null);
+  } catch {}
+  if (!out.imdbId && !out.tvdbId) return null;
+  return out;
+}
+
+/** Read-only lookup of a numbered episode's name from tmdb_season_cache — used
+ * to fill {EpisodeTitle} on the write path without hitting the network. */
+export function episodeTitleFromCache(db: Database, libraryKey: string, season: number, episode: number): string | null {
+  try {
+    const row = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?").get(libraryKey, season) as any;
+    if (!row) return null;
+    const meta = JSON.parse(row.payload) as SeasonMeta;
+    const ep = meta.episodes?.find((e) => e.episode_number === episode);
+    const name = ep?.name?.trim();
+    if (!name || /^(Episode|Odcinek|Folge|Épisode|Episodio|Episódio)\s+\d+$/i.test(name)) return null;
+    return name;
+  } catch {
+    return null;
+  }
+}
