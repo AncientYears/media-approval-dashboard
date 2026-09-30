@@ -104,11 +104,12 @@ export function renderNamingTemplate(template: string, vars: Record<string, stri
   });
 }
 
-/** Sanitize a name segment: drop path separators / Windows-illegal chars,
- * collapse whitespace, trim trailing dots/spaces. Keeps unicode letters. */
+/** Sanitize a name segment: drop path separators and other unsafe chars,
+ * collapse whitespace, trim trailing dots/spaces. Keeps unicode letters and
+ * colons (the target filesystems are Linux, where ":" is legal). */
 export function sanitizeSegment(name: string): string {
   return name
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+    .replace(/[<>"/\\|?*\x00-\x1f]/g, "")
     .replace(/\.\.+/g, ".")
     .replace(/\s+/g, " ")
     .trim()
