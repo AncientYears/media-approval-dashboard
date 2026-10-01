@@ -261,8 +261,17 @@ fuzzy signal:
 - `nameImdbId(name)` — pull an embedded id out of a name (`[imdbid-tt0110357]`
   or a bare `tt0110357`). `requestImdbId(db, request)` — the request's own id,
   offline: `tmdb_external_ids` cache → id-anchored `library_key`
-  (`movie:tt0110357:1994`) → id in the stored title. `imdbIdOwnerKey(db, id)` —
-  the key that **owns** an id (cache, then any id-anchored `library_key`).
+  (`movie:tt0110357:1994`) → id in the stored title →
+  `requestImdbIdFromProcessedNames` (last resort, see below).
+  `imdbIdOwnerKey(db, id)` — the key that **owns** an id (cache, then any
+  id-anchored `library_key`).
+- **A canonical FILE NAME is the final offline id source.** A slug-keyed row
+  whose title is localized can find no id in its key or its title, and losing
+  the id is not cosmetic: the folder veto, the canonical name and "in library"
+  all key off it. `requestImdbIdFromProcessedNames` reads the ids embedded in
+  the request's own accepted file names and returns one **only if they all
+  agree** — conflicting ids mean attribution was wrong, so it stays inert rather
+  than picking one. This is also the heal for a row whose cache was lost.
 - `nameContradictsRequest(...)` — a name pinning a DIFFERENT film is rejected
   **before** identity, `approval_history` names and title fallback. **Symmetric
   by design**: comparing ids only when *both* sides are known made the veto inert
@@ -652,10 +661,20 @@ differences:
   series repair keys off the stored one). A movie's key is what Fix Names mints
   the canonical filename and folder from, so keying it off a localized/mangled
   title would only relocate the junk.
-- It **deletes** the `tmdb_external_ids` rows for both the old and new key. That
-  cache holds the RESOLVED TITLE per key, so carrying the old row across would
-  keep the next preview printing the pre-fix title. Series never had this because
-  it re-resolves from `tmdb_season_cache`.
+- It **deletes** the `tmdb_external_ids` row for the OLD key and then
+  re-resolves under the new one. Carrying the old row across is wrong (it holds
+  the pre-fix resolved title, so the next preview would keep printing it), but
+  simply deleting it and leaving the new key bare is worse: a slug-keyed row for
+  a localized movie (`Niekonczaca sie opowiesc III` →
+  `movie:the-neverending-story-iii:1994`) can find no id in its key or its stored
+  title, and losing the id silently cost the card its library folder and its
+  "in library" state. So `resolveExternalIds(db, newKey, …, { ignoreCache: true })`
+  repopulates it. Series never needed this because it re-resolves from
+  `tmdb_season_cache`.
+- The **button only appears when the key is visibly malformed** — the `:0` (or
+  missing) year a failed slug lookup leaves behind (`keyNeedsIdentityRepair`).
+  Identity repair is for broken keys, not a standing chore, and hiding it on a
+  well-formed key is also what a *successful* repair looks like.
 Its disk fallback is `processedMovieDirFromFiles` — which returns a folder only
 when the movie is **foldered**, since movies are mostly flat in
 `PROCESSED_MOVIES` and that root names nothing.

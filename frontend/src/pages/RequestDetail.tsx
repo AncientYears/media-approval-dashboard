@@ -172,6 +172,17 @@ function Breakdown({ r, profile }: { r: any; profile: ScoreProfile }) {
   );
 }
 
+/** The identity repair is for BROKEN keys, not a standing chore, so the button
+ *  only appears when the key is visibly malformed - the `:0` year (or missing
+ *  year) a failed slug lookup leaves behind. A well-formed key hides it, which
+ *  is also what a successful repair looks like. */
+function keyNeedsIdentityRepair(libraryKey?: string | null): boolean {
+  if (!libraryKey) return false;
+  const m = libraryKey.match(/^movie:(.+):(\d*)$/);
+  if (!m) return true;
+  return m[2] === "0" || m[2] === "";
+}
+
 export default function RequestDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -661,14 +672,14 @@ export default function RequestDetail() {
               so it only shows where the pref is actually honoured. */}
           {request.library_key && (
             <>
-              {/* Series repairs live on the franchise page (native-franchise
-                  fix-identity); this endpoint is the movie counterpart and
-                  rejects anything else. */}
-              {request.type !== "series" && (
+              {/* Only when the key is actually broken - see keyNeedsIdentityRepair.
+                  Series repairs live on the franchise page; this endpoint is the
+                  movie counterpart and rejects anything else. */}
+              {keyNeedsIdentityRepair(request.library_key) && (
                 <button
                   className="btn btn-secondary btn-tiny"
                   style={{ marginLeft: 8 }}
-                  title={`Re-resolve this movie on TMDB and rewrite its library_key to a clean \`movie:<slug>:<year>\` (fixes junk slugs and zero years minted from raw release names). Migrates requests, TMDB cache and language pref.`}
+                  title="This movie's library_key is malformed (usually a `:0` year from a failed slug lookup). Re-resolve it on TMDB and rewrite it to `movie:<slug>:<year>`, migrating requests, the TMDB cache and the language pref."
                   onClick={handleFixIdentity}
                 >
                   Fix identity

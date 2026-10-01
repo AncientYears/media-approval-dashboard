@@ -661,7 +661,7 @@ function linkTorrentToRequest(db: Database, torrent: any, entryName: string, typ
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
 function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | null): string[] {
   const want = normalizeFolder((requestTitle || "").replace(/ \(\d{4}\)$/i, ""));
-  if (!want) return [MEDIA_MOVIES];
+  const idMatch: string[] = [];
   const exact: string[] = [];
   const fuzzy: string[] = [];
   try {
@@ -673,20 +673,30 @@ function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | nu
         continue;
       }
       // Our canonical movie dirs embed the film's real IMDb id, so a folder
-      // carrying a DIFFERENT one is a different film that merely shares a title
-      // ("Mufasa The Lion King (2024)" vs "The Lion King (1994)"). Never let it
-      // match, no matter how well the titles line up.
+      // carrying one states its identity outright. That outranks every title
+      // signal, and it is the ONLY signal left once the folder has been renamed
+      // to its canonical name: a localized stored title can no longer match an
+      // English folder ("Niekonczaca sie opowiesc III" vs "The NeverEnding
+      // Story III"), so without this the folder vanishes from its own card the
+      // moment Fix Names cleans it up. A folder carrying a DIFFERENT id is a
+      // different film that merely shares a title ("Mufasa The Lion King
+      // (2024)" vs "The Lion King (1994)") - never let it match.
       const folderImdb = nameImdbId(d);
-      if (ownImdbId && folderImdb && folderImdb !== ownImdbId) continue;
+      if (ownImdbId && folderImdb) {
+        if (folderImdb === ownImdbId) idMatch.push(full);
+        continue;
+      }
       const norm = normalizeFolder(d);
       const normNoYear = normalizeFolder(d.replace(/\(\d{4}\)[-\s].*$/i, "").replace(/\(\d{4}\)$/i, ""));
-      if (normNoYear === want || norm === want) {
+      if (want && (normNoYear === want || norm === want)) {
         exact.push(full);
-      } else if ((want.length >= 6 && includesTitleNorm(want, norm)) || (norm.length >= 6 && includesTitleNorm(norm, want))) {
+      } else if (want && ((want.length >= 6 && includesTitleNorm(want, norm)) || (norm.length >= 6 && includesTitleNorm(norm, want)))) {
         fuzzy.push(full);
       }
     }
   } catch {}
+  if (idMatch.length) return idMatch;
+  if (!want) return [MEDIA_MOVIES];
   return exact.length ? exact : fuzzy.length ? fuzzy : [MEDIA_MOVIES];
 }
 
@@ -1289,7 +1299,45 @@ function requestImdbId(db: Database, request: any): string | null {
   // this works offline and before TMDB has ever been asked.
   const fromKey = String(request?.library_key || "").match(/\b(tt\d{6,9})\b/i);
   if (fromKey) return fromKey[1].toLowerCase();
-  return nameImdbId(request?.title || "");
+  const fromTitle = nameImdbId(request?.title || "");
+  if (fromTitle) return fromTitle;
+  // Last resort, and deliberately offline: a canonical FILE NAME states identity
+  // outright, so the request's own accepted files can name the film when the
+  // cache is cold and neither the key nor a localized title carries an id. This
+  // is what heals a request whose id became unattributable - losing it is not
+  // cosmetic, because the folder veto and the canonical name both key off it.
+  // Conflicting ids across the files mean attribution was wrong, so stay inert
+  // rather than pick one.
+  return requestImdbIdFromProcessedNames(db, request);
+}
+
+/** The single IMDb id embedded in this request's accepted processed file names,
+ * or null when there is none, none is registered, or they disagree. */
+function requestImdbIdFromProcessedNames(db: Database, request: any): string | null {
+  if (!request?.id) return null;
+  let rows: any[];
+  try {
+    rows = db
+      .prepare("SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'")
+      .all(request.id) as any[];
+  } catch {
+    return null;
+  }
+  const seen = new Set<string>();
+  for (const r of rows) {
+    let arr: string[] = [];
+    try {
+      arr = JSON.parse(r.processed_files || "[]") as string[];
+    } catch {
+      continue;
+    }
+    for (const p of arr) {
+      const id = nameImdbId(String(p).split(/[/\\]+/).pop() || "");
+      if (id) seen.add(id);
+    }
+  }
+  if (seen.size !== 1) return null;
+  return [...seen][0];
 }
 
 /** The library_key that OWNS an IMDb id, resolved offline. The cache is the fast
@@ -6744,10 +6792,18 @@ let episodes: any[];
         db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'movie'").run(newKey, oldKey);
         db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
         db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-        // The cache holds the RESOLVED TITLE per key, so the old row's title must
-        // not follow the new key or the next preview keeps printing it.
-        db.prepare("DELETE FROM tmdb_external_ids WHERE library_key IN (?, ?)").run(oldKey, newKey);
+        // The stale row must NOT follow the key across: it holds the pre-fix
+        // resolved title, so the next preview would keep printing it. Drop it and
+        // let the repopulate below write the correct one instead.
+        db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
       })();
+      // Re-resolve under the NEW key so the cache carries the post-fix title AND
+      // the IMDb id. Seeding it is not optional: requestImdbId reads this table
+      // first, and a slug-keyed row for a localized movie ("Niekonczaca sie
+      // opowiesc III" -> movie:the-neverending-story-iii:1994) can find no id in
+      // its key or its stored title, so without this the request silently loses
+      // the id that the folder veto and the canonical name both depend on.
+      await resolveExternalIds(db, newKey, "movie", resolved.name, lang, { ignoreCache: true }).catch(() => null);
       res.json({
         fixed: true,
         old_key: oldKey,
