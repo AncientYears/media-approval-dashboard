@@ -1497,13 +1497,34 @@ function siblingRequestClaimsYear(db: Database, request: any, base: string): boo
  *
  *  Returns null when the twin is unknown or its folder states no year, so this
  *  can only ever exclude, never admit. */
-function libraryFolderYear(libraryPath: string | null | undefined): string | null {
-  if (!libraryPath) return null;
-  const dirName = path.basename(path.dirname(libraryPath));
-  if (dirName === "." || dirName === path.sep || !dirName) return null;
+function libraryFolderYearOfDir(dir: string | null | undefined): string | null {
+  if (!dir) return null;
+  const dirName = path.basename(path.normalize(dir));
+  if (!dirName || dirName === "." || dirName === path.sep) return null;
   // A bare media root ("filmy", "Filmy") names nothing and must not be read.
   if (!/[(\s-]/.test(dirName)) return null;
   return nameYear(dirName);
+}
+
+/** The sibling movie request that owns `dir`'s stated year, or null.
+ *
+ *  A year alone is not enough to name an owner: there is always some unrelated
+ *  film from the same year in the table, so matching on the year alone handed a
+ *  Hobbit file to whichever 2012 movie happened to be inserted first. The folder
+ *  must ALSO share a significant word with that sibling's title, which is what
+ *  makes it a same-franchise rival rather than a coincidence. */
+function siblingOwningYear(db: Database, request: any, dir: string | null | undefined): any | null {
+  if (request?.type !== "movie" || !request?.library_key) return null;
+  const theirYear = libraryFolderYearOfDir(dir);
+  if (!theirYear || !dir) return null;
+  const rows = db
+    .prepare("SELECT id, title, library_key, type, season FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL")
+    .all() as any[];
+  return rows.find((r) => r.id !== request.id && requestYear(r) === theirYear && sharedTitleWords(String(r.title || ""), path.basename(dir)) >= 1) || null;
+}
+
+function libraryFolderYear(libraryPath: string | null | undefined): string | null {
+  return libraryPath ? libraryFolderYearOfDir(path.dirname(libraryPath)) : null;
 }
 
 /** True when a file's own library twin is filed under a year this request does
@@ -1516,13 +1537,10 @@ function libraryFolderContradicts(db: Database, request: any, libraryPath: strin
   const myYear = requestYear(request);
   const theirYear = libraryFolderYear(libraryPath);
   if (!myYear || !theirYear || myYear === theirYear) return false;
-  // Only veto when a sibling movie request actually owns that year, so a folder
-  // named for a re-release ("Dune (2021)") cannot strip a legitimate file from a
-  // card that has not been re-keyed yet.
-  const rows = db
-    .prepare("SELECT id, title, library_key, type FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL")
-    .all() as any[];
-  return rows.some((r) => r.id !== request.id && requestYear(r) === theirYear && sharedTitleWords(String(r.title || ""), path.basename(libraryPath || "")) >= 1);
+  // Only veto when a sibling movie request actually owns that year AND is the
+  // same franchise, so a folder named for a re-release ("Dune (2021)") or an
+  // unrelated same-year film cannot strip a legitimate file from a card.
+  return !!siblingOwningYear(db, request, libraryPath ? path.dirname(libraryPath) : null);
 }
 
 /** True when a name pins a DIFFERENT film than this request, and how we know:
@@ -1567,14 +1585,12 @@ function nameContradictsRequest(db: Database, request: any, base: string): boole
  *  and every later read would trust it. Re-registering under the owning key fixes
  *  the attribution at its source rather than filtering it out at every read.
  *  Bookkeeping only — never touches the filesystem. */
-function reassignFileByLibraryFolder(db: Database, fullPath: string, libraryPath: string | null | undefined): void {
+function reassignFileByLibraryFolder(db: Database, request: any, fullPath: string, libraryPath: string | null | undefined): void {
   try {
-    const theirYear = libraryFolderYear(libraryPath);
-    if (!theirYear) return;
-    const owner = db
-      .prepare("SELECT library_key, title, type, season FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL")
-      .all()
-      .find((r: any) => requestYear(r) === theirYear) as any;
+    // The owner must be the same-franchise SIBLING that claims the folder's year,
+    // never merely some movie released that year — otherwise a Hobbit dub gets
+    // handed to whichever unrelated 2012 film sits earlier in the table.
+    const owner = siblingOwningYear(db, request, libraryPath ? path.dirname(libraryPath) : null);
     if (!owner?.library_key) return;
     registerVideoTree(db, fullPath, {
       library_key: owner.library_key,
@@ -1617,7 +1633,7 @@ function reassignContradictedFile(db: Database, fullPath: string, storedName: st
  * identity for the request's library_key, or title fallback only when the
  * request has zero explicit associations (matches the processed panel).
  */
-function processedFileMatchesRequest(db: Database, request: any, fullPath: string, matchedNames: Set<string>): boolean {
+function processedFileMatchesRequest(db: Database, request: any, fullPath: string, matchedNames: Set<string>, libraryPath?: string | null): boolean {
   const base = path.basename(fullPath);
   const processedDir = getProcessedDir(request.type === "series" ? "series" : "movie");
   const rel = path.relative(processedDir, fullPath);
@@ -1625,6 +1641,16 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
   // identity: a name can only carry an id because something wrote the film's real
   // id there, so a mismatch is proof the file is not this request's.
   if (nameContradictsRequest(db, request, base)) return false;
+  // ...and so is a file whose own library twin is filed under a year a sibling
+  // owns. Checked BEFORE the identity branch, because a stale media_files row must
+  // not outrank a folder that plainly says otherwise — and healing it here is what
+  // keeps this read consistent with the processed panel, which vetoes the same way.
+  if (libraryPath !== undefined && libraryPath) {
+    if (libraryFolderContradicts(db, request, libraryPath)) {
+      reassignFileByLibraryFolder(db, request, fullPath, libraryPath);
+      return false;
+    }
+  }
   // Identity (dev, inode) is the source of truth and outranks everything else —
   // including the approval_history association, which can be stale: a same-named
   // franchise (DuckTales 1987 vs 2017) may hold the other's basenames after an
@@ -1638,6 +1664,9 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
     } catch {}
   }
   if (matchedNames.has(base) || matchedNames.has(rel)) return true;
+  // A twin of one of this request's own library files IS this request's file,
+  // even with no media_files row at all (adoption leaves the inode unregistered).
+  if (libraryPath) return true;
   if (matchedNames.size === 0) {
     try {
       const requestTitleNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -1849,50 +1878,10 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     } catch {}
   }
 
-  // Processed files, same season-filtered acceptance as the processed panel.
-  // Accepted files also pin the folders this request owns (movie subdir, show
-  // dir + Sxx dir for series) — the basis for the directory rename rows below.
-  const accepted: { fullPath: string }[] = [];
-  const showSeasons = new Map<string, Set<string>>();
-  const movieDirs = new Set<string>();
-  const targetSeason =
-    type === "series" && request.season != null ? `S${String(request.season).padStart(2, "0")}` : null;
-  try {
-    for (const entry of fs.readdirSync(processedDir, { withFileTypes: true })) {
-      if (entry.name.startsWith(".")) continue;
-      const fullPath = path.join(processedDir, entry.name);
-      if (entry.isDirectory()) {
-        if (type === "movie") {
-          // Foldered movie: PROCCESSED_MOVIES/<MovieDir>/<file>.
-          for (const f of fs.readdirSync(fullPath)) {
-            if (!VIDEO_FILE_RE.test(f)) continue;
-            const fp = path.join(fullPath, f);
-            if (processedFileMatchesRequest(db, request, fp, matchedNames)) { accepted.push({ fullPath: fp }); movieDirs.add(fullPath); }
-          }
-          continue;
-        }
-        for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
-          if (!sub.isDirectory() || !/^S\d+$/i.test(sub.name)) continue;
-          if (targetSeason && sub.name.toUpperCase() !== targetSeason) continue;
-          const seasonDir = path.join(fullPath, sub.name);
-          for (const f of fs.readdirSync(seasonDir)) {
-            if (!VIDEO_FILE_RE.test(f)) continue;
-            const fp = path.join(seasonDir, f);
-            if (processedFileMatchesRequest(db, request, fp, matchedNames)) {
-              accepted.push({ fullPath: fp });
-              if (!showSeasons.has(fullPath)) showSeasons.set(fullPath, new Set());
-              showSeasons.get(fullPath)!.add(seasonDir);
-            }
-          }
-        }
-      } else {
-        if (!VIDEO_FILE_RE.test(entry.name)) continue;
-        if (processedFileMatchesRequest(db, request, fullPath, matchedNames)) accepted.push({ fullPath });
-      }
-    }
-  } catch {}
-
   // Library twin paths by inode (native: movie folders / series season folder).
+  // Built BEFORE the processed scan because acceptance needs it: a twin of this
+  // request's own library file IS this request's file, and a twin filed under a
+  // year a sibling owns is decisive against it (see processedFileMatchesRequest).
   const libraryByIno = new Map<string, string>();
   const scanLibraryFile = (fp: string) => {
     try {
@@ -1919,6 +1908,57 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       scanVideoTreeFiles(showFolder, scanLibraryFile);
     }
   }
+  const twinFor = (fp: string): string | null => {
+    try {
+      const st = fs.statSync(fp);
+      return libraryByIno.get(`${st.dev}:${st.ino}`) || null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Processed files, same season-filtered acceptance as the processed panel.
+  // Accepted files also pin the folders this request owns (movie subdir, show
+  // dir + Sxx dir for series) — the basis for the directory rename rows below.
+  const accepted: { fullPath: string }[] = [];
+  const showSeasons = new Map<string, Set<string>>();
+  const movieDirs = new Set<string>();
+  const targetSeason =
+    type === "series" && request.season != null ? `S${String(request.season).padStart(2, "0")}` : null;
+  try {
+    for (const entry of fs.readdirSync(processedDir, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = path.join(processedDir, entry.name);
+      if (entry.isDirectory()) {
+        if (type === "movie") {
+          // Foldered movie: PROCCESSED_MOVIES/<MovieDir>/<file>.
+          for (const f of fs.readdirSync(fullPath)) {
+            if (!VIDEO_FILE_RE.test(f)) continue;
+            const fp = path.join(fullPath, f);
+            if (processedFileMatchesRequest(db, request, fp, matchedNames, twinFor(fp))) { accepted.push({ fullPath: fp }); movieDirs.add(fullPath); }
+          }
+          continue;
+        }
+        for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
+          if (!sub.isDirectory() || !/^S\d+$/i.test(sub.name)) continue;
+          if (targetSeason && sub.name.toUpperCase() !== targetSeason) continue;
+          const seasonDir = path.join(fullPath, sub.name);
+          for (const f of fs.readdirSync(seasonDir)) {
+            if (!VIDEO_FILE_RE.test(f)) continue;
+            const fp = path.join(seasonDir, f);
+            if (processedFileMatchesRequest(db, request, fp, matchedNames, twinFor(fp))) {
+              accepted.push({ fullPath: fp });
+              if (!showSeasons.has(fullPath)) showSeasons.set(fullPath, new Set());
+              showSeasons.get(fullPath)!.add(seasonDir);
+            }
+          }
+        }
+      } else {
+        if (!VIDEO_FILE_RE.test(entry.name)) continue;
+        if (processedFileMatchesRequest(db, request, fullPath, matchedNames, twinFor(fullPath))) accepted.push({ fullPath });
+      }
+    }
+  } catch {}
 
   // Probe all involved files once per dev:ino (parallel, cached).
   const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
@@ -2104,6 +2144,13 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
       if (!folder || path.normalize(folder) === path.normalize(MEDIA_MOVIES)) continue;
       if (!fs.existsSync(folder)) continue;
+      // Never even LIST a folder a sibling film owns. nativeMovieLibraryFolders
+      // matches the whole franchise, so a one-word title returns every Hobbit
+      // folder — and offering "Hobbit (2014)" on the 2012 card, even struck
+      // through with a refusal, reads as "this card should own it". The refusal
+      // note stays for a folder that really is ambiguous; a sibling's folder is
+      // simply not this request's business.
+      if (siblingOwningYear(db, request, folder)) continue;
       const name = path.basename(folder);
       const owned = folderOwnedExclusively(db, folder, request.library_key, requestImdbId(db, request));
       const canonical = namingEnabled && cachedPieces ? canonicalMovieDir(conf, cachedPieces) : null;
@@ -2222,6 +2269,12 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
   const folderYear = nameYear(path.basename(folder));
   const myYear = requestYear({ title: "", library_key: libraryKey });
   for (const f of videoFiles) {
+    // An id written INTO a file is a deliberate statement of what it is, and it
+    // outranks the folder's year: a folder can be mis-filed, a name minted by this
+    // app cannot name the wrong film. Checked before the year-trust below, which
+    // otherwise re-registers an id-bearing file into the folder's year.
+    const named = nameImdbId(path.basename(f));
+    if (ownImdbId && named && named !== ownImdbId) return false;
     try {
       const ident = identifyByPath(db, f);
       if (ident && ident.library_key && ident.library_key !== libraryKey) {
@@ -2234,10 +2287,6 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
         return false;
       }
     } catch {}
-    // No media_files row means "unknown", and unknown used to read as "mine" -
-    // which let one card rename a sibling's folder. An embedded id settles it.
-    const named = nameImdbId(path.basename(f));
-    if (ownImdbId && named && named !== ownImdbId) return false;
   }
   return true;
 }
@@ -8716,7 +8765,7 @@ const type = request.type === "series" ? "series" : "movie";
         // down. Checked BEFORE the identity/inode branches below, because a stale
         // media_files row must not outrank a folder that plainly says otherwise.
         if (libraryFolderContradicts(db, request, libraryNameByInode.get(ino) || null)) {
-          reassignFileByLibraryFolder(db, fullPath, libraryNameByInode.get(ino) || null);
+          reassignFileByLibraryFolder(db, request, fullPath, libraryNameByInode.get(ino) || null);
           continue;
         }
         if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary && !identityHit) {

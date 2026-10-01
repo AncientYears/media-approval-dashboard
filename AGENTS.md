@@ -769,12 +769,36 @@ ever exclude. `reassignFileByLibraryFolder` then re-points the stale `media_file
 row at the owning key, so the misattribution is fixed at its source instead of
 being filtered at every read.
 
+**The year alone never names an owner** — `siblingOwningYear` requires the
+sibling's title to share a significant word with the *folder* as well. There is
+always an unrelated film from the same year in the table, and matching on the
+year alone handed a Hobbit file to whichever 2012 movie was inserted first
+(Skyfall), which then dropped the file from Fix Names entirely because a
+registered `media_files` row is an absolute veto there. The word test is what
+makes it a same-franchise rival rather than a coincidence.
+
+**Fix Names must read exactly what the panel reads.** The twin map is built
+*before* the processed scan and threaded into `processedFileMatchesRequest`, so
+both surfaces veto on the same folder evidence. Otherwise the panel lists a file
+its Fix Names refuses to propose — the divergence that made the Polish dub
+"disappear" from the 2012 card while still being listed on it. An unregistered
+twin of one of this request's own library files also counts as *ours* (adoption
+leaves inodes unregistered), which is the panel's `linkedToLibrary` rule.
+
+**A sibling's folder is not listed at all.** `nativeMovieLibraryFolders` matches
+the whole franchise, so a one-word title returns every Hobbit folder — and
+offering `Hobbit (2014)` on the 2012 card, even struck through with a refusal,
+reads as "this card should own it". The refusal note stays for a folder that is
+genuinely ambiguous; a sibling's folder is simply not this request's business.
+
 `folderOwnedExclusively` was the same bug one level up: a file inside
 `Hobbit (2014)/` still registered to the 2012 key made the **2014** card refuse to
 rename its own folder ("Folder holds files of another franchise"). A folder whose
 name states the request's year now **re-registers** the stale rows instead of
 refusing — the folder is the better evidence there, since the rename is about that
-folder's contents specifically.
+folder's contents specifically. But a file carrying **its own embedded id** still
+outranks that year: a folder can be mis-filed, a name this app minted cannot name
+the wrong film, so the id check moved ahead of the year-trust.
 
 #### Word overlap cannot separate a flat franchise — the year can
 `siblingRequestClaimsYear` is the id-less branch of `nameContradictsRequest`. The
@@ -1049,4 +1073,8 @@ SEERR_API_KEY=
 - [ ] A bare media root (`Filmy/`) and an unyeared folder are NOT read as evidence (otherwise every flat file would be vetoed)
 - [ ] `folderOwnedExclusively`: a folder whose name states the request's year RE-REGISTERS stale `media_files` rows instead of refusing, so the rightful card can rename `Hobbit (2014)/`
 - [ ] Re-attaching to the key the row already holds does NOT 409 (the clash count excludes the row's own key)
+- [ ] `siblingOwningYear` requires a shared title WORD with the folder, so an unrelated same-year film (Skyfall 2012) never claims a Hobbit file
+- [ ] Fix Names and the processed panel veto on the SAME folder-year evidence (a file listed on the card is never refused as a rename proposal)
+- [ ] A sibling's library folder is not listed as a candidate at all (no `Hobbit (2014)` row on the 2012 card)
+- [ ] A file with an embedded id still blocks folder ownership even when the folder's year matches the request's
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
