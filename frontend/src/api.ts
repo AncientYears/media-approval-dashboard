@@ -85,8 +85,10 @@ export async function fixMovieIdentity(requestId: number) {
  *  because fix-identity only returns a shortlist when it REFUSES to act, and a
  *  card whose key was repaired while its title stayed mangled would otherwise
  *  have no way to correct the title card matching still reads. */
-export async function getIdentityCandidates(requestId: number) {
-  const response = await api.get(`/requests/${requestId}/identity-candidates`);
+export async function getIdentityCandidates(requestId: number, term?: string) {
+  const response = await api.get(`/requests/${requestId}/identity-candidates`, {
+    params: term ? { q: term } : {},
+  });
   return response.data;
 }
 

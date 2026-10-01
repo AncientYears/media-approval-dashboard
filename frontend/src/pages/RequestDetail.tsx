@@ -233,6 +233,8 @@ export default function RequestDetail() {
   const [retitlingId, setRetitlingId] = useState<number | null>(null);
   /** Set when fix-identity refuses to guess: the films a human could have meant. */
   const [identityPicker, setIdentityPicker] = useState<{ reason: string; candidates: any[] } | null>(null);
+  const [identitySearch, setIdentitySearch] = useState("");
+  const [searchingIdentity, setSearchingIdentity] = useState(false);
 
   const refreshMoveStatus = async () => {
     try {
@@ -348,18 +350,19 @@ export default function RequestDetail() {
     }
   };
 
-  const handleOpenReattach = async () => {
-    setFixingIdentity(true);
+  const handleOpenReattach = async (term?: string) => {
+    setSearchingIdentity(true);
     try {
-      const res = await getIdentityCandidates(Number(id));
+      const res = await getIdentityCandidates(Number(id), term);
+      setIdentitySearch(term || "");
       setIdentityPicker({
-        reason: `Current identity: ${res.current_key || "(none)"} — searched "${res.query}"`,
+        reason: `Current identity: ${res.current_key || "(none)"} — searched "${term || res.query || ""}"`,
         candidates: res.candidates || [],
       });
     } catch (e: any) {
       toast(e.response?.data?.error || e.message || "Could not load candidates", "error");
     } finally {
-      setFixingIdentity(false);
+      setSearchingIdentity(false);
     }
   };
 
@@ -670,8 +673,50 @@ export default function RequestDetail() {
                 <code>library_key</code> to that film — and its files stop being offered to sibling films
                 that merely share a title.
               </p>
+              {/* TMDB indexes a film under its ORIGINAL name, so a localized card
+                  title can be unsearchable no matter how we spell it. Searching by
+                  the film's real name is the only way to reach it. */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleOpenReattach(identitySearch.trim() || undefined);
+                }}
+                style={{ display: "flex", gap: 6, marginBottom: 10 }}
+              >
+                <input
+                  value={identitySearch}
+                  onChange={(e) => setIdentitySearch(e.target.value)}
+                  placeholder="Search TMDB by another name…"
+                  style={{
+                    flex: 1,
+                    padding: "6px 8px",
+                    background: "var(--card-bg, #1e293b)",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    color: "#e2e8f0",
+                    fontSize: 13,
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={searchingIdentity || identitySearch.trim().length < 2}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#334155",
+                    border: "1px solid #475569",
+                    borderRadius: 6,
+                    color: "#e2e8f0",
+                    cursor: searchingIdentity ? "wait" : "pointer",
+                    opacity: identitySearch.trim().length < 2 ? 0.5 : 1,
+                  }}
+                >
+                  {searchingIdentity ? "Searching…" : "Search"}
+                </button>
+              </form>
               {identityPicker.candidates.length === 0 ? (
-                <div style={{ padding: 16, color: "var(--text-muted)" }}>No candidates found on TMDB.</div>
+                <div style={{ padding: 16, color: "var(--text-muted)" }}>
+                  No candidates found on TMDB. Try the film&apos;s original-language title above.
+                </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   {identityPicker.candidates.map((c) => (
@@ -819,7 +864,7 @@ export default function RequestDetail() {
                 className="btn btn-secondary btn-tiny"
                 style={{ marginLeft: 4 }}
                 title="Search TMDB for this movie and pick the right film by hand. Use this when the stored title is mangled even though the key looks fine (e.g. a card still titled 'Hobbit' after its key was repaired) — card matching reads the title, so only a retitle can fix it."
-                onClick={handleOpenReattach}
+                onClick={() => handleOpenReattach()}
                 disabled={fixingIdentity}
               >
                 Re-attach

@@ -1083,6 +1083,8 @@ SEERR_API_KEY=
 - [ ] `slugForKeyTitle` folds diacritics: `Niezwykła podróż` → `niezwykla-podroz` (incl. `ł`), and leaves ASCII keys unchanged
 - [ ] `GET /:id/identity-candidates` lists candidate films, and "Re-attach" applies one via `POST /:id/retitle` (a card whose key was repaired but whose TITLE stayed mangled has no other route to a correct title)
 - [ ] The candidate picker searches the stored TITLE **and** the key slug, merging both — never picks the slug merely because it is longer (a slug is lossy: `służbie` → `s u bie`, which found nothing for `Asterix … W służbie Jej Królewskiej Mości`)
+- [ ] The picker accepts a free-text `?q=` term, because TMDB indexes a film under its ORIGINAL name — a localized card title can be unsearchable in any spelling we derive (`Asterix … W służbie Jej Królewskiej Mości` → TMDB's "Asterix & Obelix: Mission Britain")
+- [ ] `SDR UPSCALING` is ONE tag: a multi-word MISC phrase re-joins across the bracket whitespace split, so `[10Bit SDR UPSCALING]` does not print `[SDR][UPSCALING]` (the upscale staying SDR is the whole claim)
 - [ ] Re-attaching to the film the key already names still rewrites the title (`applyMovieIdentity` is a no-op on the key only when `alsoSetTitle` is off)
 - [ ] Cross-franchise veto: a 2014 Hobbit file is never attributed to the 2012 card even when it shares only ONE title word — the Polish name translates the subtitle, so `siblingRequestClaimsYear` (sibling request states the same year) is what vetoes it
 - [ ] A lone one-word franchise with no sibling is NOT over-vetoed (no sibling claims the year ⇒ falls through to the old `>= 2` shared-word rule)

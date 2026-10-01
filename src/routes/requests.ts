@@ -7125,7 +7125,16 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       const fromKey = seed.library_key
         ? cleanFranchiseTitle(String(seed.library_key).replace(/^movie:/, "").replace(/:\d{4}$/, "").replace(/-/g, " "))
         : "";
-      const queries = Array.from(new Set([fromTitle, fromKey].map((q) => q.trim()).filter((q) => q.length > 2)));
+      // A term the user typed wins outright. TMDB indexes a film under its
+      // ORIGINAL name, so a localized stored title can be unsearchable no
+      // matter how many spellings of it we try: "Asterix i Obelix W sluzbie
+      // Jej Krolewskiej Mosci" returns nothing for the film TMDB calls
+      // "Asterix & Obelix: Mission Britain". Only someone who recognises the
+      // film can supply the term TMDB knows it by, so give them a way to say it.
+      const manual = String(req.query.q || "").trim();
+      const queries = Array.from(
+        new Set((manual ? [manual] : [fromTitle, fromKey]).map((q) => q.trim()).filter((q) => q.length > 1)),
+      );
       const seen = new Set<number>();
       const candidates: any[] = [];
       for (const q of queries) {

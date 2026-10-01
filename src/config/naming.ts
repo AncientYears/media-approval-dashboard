@@ -355,6 +355,11 @@ const MISC_PHRASES: Record<string, string> = {
   "complete series": "Complete Series",
   "season pack": "Season Pack",
   "limited series": "Limited Series",
+  // A release that says "SDR UPSCALING" is making ONE claim: it was upscaled,
+  // and the upscale stayed SDR. "[UPSCALING]" alone says nothing about what was
+  // upscaled or to what, so splitting the pair printed two tags where the name
+  // had one — and the SDR half is what makes the upscale honest to advertise.
+  "sdr upscaling": "SDR UPSCALING",
 };
 
 function collectEditions(base: string): string[] {
@@ -1252,8 +1257,19 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     // Split on whitespace, and on a dot that is NOT between digits, so
     // "[UHD.BluRay]" becomes two recognizable tags while channel numbers
     // ("[AC3 2.0]", "[DD+5.1]") stay in one piece and never get torn apart.
-    for (const piece of m[1].split(/(?<!\d)\.(?!\d)|\s+/)) {
-      if (piece.trim()) tryToken(piece, true);
+    // A multi-word MISC phrase can straddle the split ("[10Bit SDR UPSCALING]"),
+    // so adjacent pieces are re-joined before each is classified - otherwise
+    // the whole-bracket lookup above never sees "SDR UPSCALING" as a unit.
+    const pieces = m[1].split(/(?<!\d)\.(?!\d)|\s+/);
+    for (let i = 0; i < pieces.length; i++) {
+      if (!pieces[i].trim()) continue;
+      const pair = MISC_PHRASES[`${pieces[i]} ${pieces[i + 1] || ""}`.trim().toLowerCase()];
+      if (pair) {
+        if (!misc.includes(pair)) misc.push(pair);
+        i++;
+        continue;
+      }
+      tryToken(pieces[i], true);
     }
   }
   // Loose dotted/separated release tail. Re-join known multi-word compounds
