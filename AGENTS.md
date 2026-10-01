@@ -117,7 +117,10 @@ session can start with P0 without re-deriving the design.
    source/language/group. Multi-word brackets (`[DV HDR10+]`,
    `[TrueHD Atmos 7.1]`, `[AC3 2.0]`) are split and merged, channel numbers are
    kept intact (`DD+5.1`), and a bracketed `[Unknown]`/`[Group]` tail becomes the
-   release group.** Language is the exception to "title keeps language": a Polish
+   release group.** One tag per fact: the HDR bracket prints `[DV HDR10]` or
+   `[HDR10+]`, never a redundant member — a bare `HDR` is the umbrella word and
+   is dropped once any specific flag is present (the title claiming `HDR` next
+   to a probed `HDR10` used to render `[HDR10 HDR]`). Language is the exception to "title keeps language": a Polish
    dub says nothing in its file NAME, so the stream tag outranks it — but ONLY
    while exactly one foreign language sits beside English (`pol + eng` → `[PL]`).
    Two or more foreign languages is a **multi** release: no single one
