@@ -1485,6 +1485,46 @@ function siblingRequestClaimsYear(db: Database, request: any, base: string): boo
   return false;
 }
 
+/** The year a movie's LIBRARY folder states, which is the last resort for a file
+ *  whose own name carries none.
+ *
+ *  "Hobbit Niezwykla podroz Dubbing PL - Video w Resetoff.pl.mp4" says nothing
+ *  about which film it is: no IMDb id, no year, and a Polish title that shares
+ *  exactly one word with both Hobbit films. Its library twin does say so —
+ *  `Hobbit (2012)/` — and that folder is where a human (or an arr) already put
+ *  the film. The name-based veto has nothing to work with, so without this the
+ *  file is admitted to every same-franchise card at once.
+ *
+ *  Returns null when the twin is unknown or its folder states no year, so this
+ *  can only ever exclude, never admit. */
+function libraryFolderYear(libraryPath: string | null | undefined): string | null {
+  if (!libraryPath) return null;
+  const dirName = path.basename(path.dirname(libraryPath));
+  if (dirName === "." || dirName === path.sep || !dirName) return null;
+  // A bare media root ("filmy", "Filmy") names nothing and must not be read.
+  if (!/[(\s-]/.test(dirName)) return null;
+  return nameYear(dirName);
+}
+
+/** True when a file's own library twin is filed under a year this request does
+ *  not claim. Movies only, and only when BOTH years are known: the folder has to
+ *  state one and the request has to state a different one. A file with no year in
+ *  its name and a twin in an unyeared folder stays admissible — this is the
+ *  strongest signal available for those, not a licence to guess. */
+function libraryFolderContradicts(db: Database, request: any, libraryPath: string | null | undefined): boolean {
+  if (request?.type !== "movie" || !request?.library_key) return false;
+  const myYear = requestYear(request);
+  const theirYear = libraryFolderYear(libraryPath);
+  if (!myYear || !theirYear || myYear === theirYear) return false;
+  // Only veto when a sibling movie request actually owns that year, so a folder
+  // named for a re-release ("Dune (2021)") cannot strip a legitimate file from a
+  // card that has not been re-keyed yet.
+  const rows = db
+    .prepare("SELECT id, title, library_key, type FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL")
+    .all() as any[];
+  return rows.some((r) => r.id !== request.id && requestYear(r) === theirYear && sharedTitleWords(String(r.title || ""), path.basename(libraryPath || "")) >= 1);
+}
+
 /** True when a name pins a DIFFERENT film than this request, and how we know:
  *  the request's own id, the id's real owner, or a conflicting year.
  *
@@ -1519,6 +1559,29 @@ function nameContradictsRequest(db: Database, request: any, base: string): boole
   // reachable once the years actually disagree, so the scan stays off the hot path.
   if (siblingRequestClaimsYear(db, request, base)) return true;
   return sharedTitleWords(String(request.title || ""), base) >= 2;
+}
+
+/** Re-attribute a file from the library folder that plainly says it belongs to a
+ *  sibling's year. The id-based `reassignContradictedFile` above cannot help a
+ *  release whose name states no year, so the stale media_files row would survive
+ *  and every later read would trust it. Re-registering under the owning key fixes
+ *  the attribution at its source rather than filtering it out at every read.
+ *  Bookkeeping only — never touches the filesystem. */
+function reassignFileByLibraryFolder(db: Database, fullPath: string, libraryPath: string | null | undefined): void {
+  try {
+    const theirYear = libraryFolderYear(libraryPath);
+    if (!theirYear) return;
+    const owner = db
+      .prepare("SELECT library_key, title, type, season FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL")
+      .all()
+      .find((r: any) => requestYear(r) === theirYear) as any;
+    if (!owner?.library_key) return;
+    registerVideoTree(db, fullPath, {
+      library_key: owner.library_key,
+      title: owner.title || "",
+      season: owner.season ?? 0,
+    });
+  } catch {}
 }
 
 /** Re-register a wrongly-attributed file under the library_key that owns its
@@ -2151,12 +2214,27 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
     }
   };
   walk(folder, 0);
+  // The folder's own name is the strongest statement of what it holds. A file
+  // inside `Hobbit (2014)/` whose media_files row still points at the 2012 key is
+  // a stale row from before the franchise was split, not a squatter: the folder
+  // says 2014, so trust the folder and re-register rather than refusing to let
+  // the rightful card own it.
+  const folderYear = nameYear(path.basename(folder));
+  const myYear = requestYear({ title: "", library_key: libraryKey });
   for (const f of videoFiles) {
     try {
       const ident = identifyByPath(db, f);
-      if (ident && ident.library_key && ident.library_key !== libraryKey) return false;
+      if (ident && ident.library_key && ident.library_key !== libraryKey) {
+        if (folderYear && myYear === folderYear) {
+          // This folder IS the year the registered key's owner does not claim, so
+          // the row is wrong. Re-point it at us and keep going.
+          registerVideoTree(db, f, { library_key: libraryKey, title: "", season: 0 });
+          continue;
+        }
+        return false;
+      }
     } catch {}
-    // No media_files row means "unknown", and unknown used to read as "mine" —
+    // No media_files row means "unknown", and unknown used to read as "mine" -
     // which let one card rename a sibling's folder. An embedded id settles it.
     const named = nameImdbId(path.basename(f));
     if (ownImdbId && named && named !== ownImdbId) return false;
@@ -6856,11 +6934,17 @@ async function applyMovieIdentity(
   // matching reads, so leaving it behind would preserve the exact misattribution
   // the repair was for.
   if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
+  // A clash only counts when ANOTHER film holds the key. When newKey === oldKey the
+  // request's own row is the sole holder, and re-attaching to the film it already
+  // names is precisely the legitimate case (the key was repaired while the stored
+  // title stayed mangled) — counting itself there made every such repair 409.
   const clash =
-    (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ?").get(newKey) as any)?.c || 0;
+    (db
+      .prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ? AND library_key != ?")
+      .get(newKey, oldKey) as any)?.c || 0;
   if (clash > 0) {
-    // Two requests claiming one film is the misattribution this whole feature
-    // exists to prevent, so never merge them silently.
+    // Two DIFFERENT films claiming one key is the misattribution this whole
+    // feature exists to prevent, so never merge them silently.
     return { error: `Key ${newKey} is already in use by another movie — not overwriting`, status: 409 };
   }
   db.transaction(() => {
@@ -8625,6 +8709,16 @@ const type = request.type === "series" ? "series" : "movie";
         // King (2024)" is not a file of "The Lion King (1994)" no matter which
         // names, inode or title heuristic happens to line up.
         if (nameContradictsRequest(db, request, e.name)) continue;
+        // ...and so is a file whose own library twin is filed under a year a
+        // sibling request owns. Some releases state no year at all, so the name
+        // veto above is silent for them and every same-franchise card would
+        // claim the file. The twin's folder is the only place the year is written
+        // down. Checked BEFORE the identity/inode branches below, because a stale
+        // media_files row must not outrank a folder that plainly says otherwise.
+        if (libraryFolderContradicts(db, request, libraryNameByInode.get(ino) || null)) {
+          reassignFileByLibraryFolder(db, fullPath, libraryNameByInode.get(ino) || null);
+          continue;
+        }
         if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary && !identityHit) {
           if (!hasExplicitAssociations) {
             const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();

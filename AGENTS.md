@@ -751,6 +751,31 @@ re-running the repair.
   showed why it has to exist: a flat, one-word franchise means folder ownership
   is only ever established by what is inside.
 
+#### The twin's folder is the last place the year is written down
+`siblingRequestClaimsYear` needs the file to state a year. Some releases do not:
+`Hobbit Niezwykła podróż Dubbing PL - Video w Resetoff.pl.mp4` has no year, no
+IMDb id, and a Polish title sharing one word with both Hobbit films, so every
+name-based signal is silent and the file lands on all three cards at once. Its
+library twin is in `Hobbit (2012)/` — a folder whose name states the film outright,
+which is where a human (or an arr) already put it.
+
+`libraryFolderYear` reads that year, and `libraryFolderContradicts` vetoes a file
+whose twin's year a *sibling* owns. Guarded hard, because a folder name is weaker
+evidence than a deliberate `(YYYY)`: a bare media root (`Filmy/`) and any folder
+without a bracket/space/dash yield null, both the folder year and the request's
+own year must be known and must differ, a sibling must actually claim that year,
+and series are exempt entirely. Null on any signal means admitted, so it can only
+ever exclude. `reassignFileByLibraryFolder` then re-points the stale `media_files`
+row at the owning key, so the misattribution is fixed at its source instead of
+being filtered at every read.
+
+`folderOwnedExclusively` was the same bug one level up: a file inside
+`Hobbit (2014)/` still registered to the 2012 key made the **2014** card refuse to
+rename its own folder ("Folder holds files of another franchise"). A folder whose
+name states the request's year now **re-registers** the stale rows instead of
+refusing — the folder is the better evidence there, since the rename is about that
+folder's contents specifically.
+
 #### Word overlap cannot separate a flat franchise — the year can
 `siblingRequestClaimsYear` is the id-less branch of `nameContradictsRequest`. The
 pre-existing year fallback needed `>= 2` shared title words to confirm the two
@@ -1019,4 +1044,9 @@ SEERR_API_KEY=
 - [ ] Cross-franchise veto: a 2014 Hobbit file is never attributed to the 2012 card even when it shares only ONE title word — the Polish name translates the subtitle, so `siblingRequestClaimsYear` (sibling request states the same year) is what vetoes it
 - [ ] A lone one-word franchise with no sibling is NOT over-vetoed (no sibling claims the year ⇒ falls through to the old `>= 2` shared-word rule)
 - [ ] Sibling-year veto is movies-only: two `series` seasons never take each other's files
+- [ ] `libraryFolderYear` reads the year off a twin's folder (`Hobbit (2012)/`) — the only signal left for a release that states no year in its own name
+- [ ] The 2012 Polish dub (`Hobbit Niezwykła podróż … Resetoff.pl.mp4`) appears on the 2012 card ONLY, not the 2014 or 2013 cards
+- [ ] A bare media root (`Filmy/`) and an unyeared folder are NOT read as evidence (otherwise every flat file would be vetoed)
+- [ ] `folderOwnedExclusively`: a folder whose name states the request's year RE-REGISTERS stale `media_files` rows instead of refusing, so the rightful card can rename `Hobbit (2014)/`
+- [ ] Re-attaching to the key the row already holds does NOT 409 (the clash count excludes the row's own key)
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
