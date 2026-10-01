@@ -1107,10 +1107,23 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     if (retry) retry[1] = retry[1].replace(/-+$/, "");
     if (retry && retry[1] && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase()) && !isPlaceholderWord(retry[1])) {
       out.group = retry[1];
+      // Same precedence as the bracket path above: a dub marker names the audio
+      // SOURCE, not a language, and must be caught before the LANG_TAGS check —
+      // DUB/DUBBED/DUBBING are members of LANG_TAGS, so testing tags first turned
+      // a trailing "- Dubbing" into the bogus language "[DUBBING]" (the very
+      // rendering the bracket path's guard exists to prevent). A "Lektor" tail,
+      // by contrast, DOES carry its language, so it must set both.
       const up = langWord.word.toUpperCase();
-      const code = LANG_ALIASES[up] || (LANG_TAGS.has(up) ? up : null);
-      if (code) out.language = code;
-      else out.dubKind = LEKTOR_WORDS.has(langWord.word.toUpperCase()) ? "LEKTOR" : "DUB";
+      const alias = LANG_ALIASES[up];
+      if (alias) {
+        out.language = alias;
+        if (LEKTOR_WORDS.has(up)) out.dubKind = "LEKTOR";
+        else if (DUB_WORDS.has(up)) out.dubKind = "DUB";
+      } else if (DUB_MARKERS.has(up)) {
+        out.dubKind = "DUB";
+      } else if (LANG_TAGS.has(up)) {
+        out.language = up;
+      }
       base = trimmed.slice(0, retry.index).replace(/[-.\s]+$/g, "");
     }
   }
