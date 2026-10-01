@@ -118,18 +118,33 @@ session can start with P0 without re-deriving the design.
   the code only consulted the probe when the title was *silent* — Soul's Polish
   dub was named after the 43.6 GB remux and kept `[Remux-2160p]` at 1.9 GB /
   measured 720p. Fixed in two parts:
-  - **Resolution**: real pixel height now **overrides** a title claim
-    (`probeResolution(v?.height) ?? t.resolution`). A measured height is ground
-    truth; a name is not. No probe ⇒ title still used, since then it's all we have.
+  - **Resolution**: the measured frame now **overrides** a title claim
+    (`probeResolution(v?.width, v?.height) ?? t.resolution`). A measurement is
+    ground truth; a name is not. No probe ⇒ title still used, since then it's all we have.
+  - **The tier is read from WIDTH, with height only able to raise it.** Height
+    alone cannot classify: a 2.40:1 scope film is letterboxed inside a 1080p or
+    2160p transfer, so the cropped height lands a full tier or two low, and the
+    old height-only ladder called 1920×800 a `720p` — ranking **1.54 megapixels
+    below 1280×720's 0.92** — and a 3840×800 4K scope remux a `480p`. A name
+    states the release's resolution *class*, not its pixel count. Each dimension
+    is classified independently (`resolutionFromWidth` /
+    `resolutionFromHeight`) and **the higher estimate wins** (`RES_RANK`): a
+    cropped height may understate the tier, but the width still states it, and a
+    format only height can identify (2560×1440) is not lost to a width ladder
+    with no 1440p band. Reference outcomes: 1920×800 → `1080p`, 3840×1610 →
+    `2160p`, 1280×532 → `720p`, 2560×1440 → `1440p`, 720×576 → `480p`. Missing
+    width falls back to height, so nothing regresses for streams that report one.
   - **`Remux` is a claim about provenance, and provenance has consequences**: a
     remux is a bit-exact copy of a disc's main track, so it is never below 1080 and
     its main audio is always a disc codec. `sourceRefutedByProbe` drops the label
-    when the stream measures `< 1080` or its primary audio is one of
-    `NON_DISC_AUDIO` (`aac|mp3|opus|vorbis|flac|alac|amr|wmav`). It is **dropped,
+    when the stream's measured **tier** is under 1080, or its primary audio is one
+    of `NON_DISC_AUDIO` (`aac|mp3|opus|vorbis|flac|alac|amr|wmav`). It is **dropped,
     not replaced** — deriving Bluray/WEBDL from a contradiction would be inventing
     provenance. Deliberately scoped to `Remux` only: `Bluray` alone survives a
     720p transcode (720p BDs exist, and discs may carry an AAC secondary), and
-    `AC3`/`DD` is mandatory on Blu-ray so it refutes nothing.
+    `AC3`/`DD` is mandatory on Blu-ray so it refutes nothing. The tier test (not a
+    raw `height < 1080`) matters here: a letterboxed 1920×800 or 3840×800 remux is
+    exactly the kind of file the claim is about, and raw height discarded it.
   - The check runs **again after `inheritReleaseFacts`**, because a `Remux` arriving
     from a same-inode twin lands after the reconciliation inside
     `assembleCanonicalTags` and would otherwise re-label a transcode. The probe is
@@ -168,7 +183,8 @@ session can start with P0 without re-deriving the design.
   `{EpisodeTitle}` fills from `tmdb_season_cache` (offline). **P1b: playback
   tags are probed from the source file with ffprobe
   (`src/services/mediaProbe.ts` → `assembleCanonicalTags`) before title
-  inference — resolution from real pixel height, video codec + bit depth, HDR
+   inference — resolution TIER from the measured frame (width-primary, so a
+   letterbox crop cannot lower it), video codec + bit depth, HDR
   flags (DV/HDR10+/HDR10/HLG from `side_data_list`/`color_transfer`), primary
      audio codec + channel layout (TrueHD → TrueHD 7.1 / "Atmos" still only from
    the title). Probe wins for codec/resolution/channels; title keeps
@@ -699,7 +715,7 @@ resolution inherits the pref through every call site.
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
 | `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge; probe language enumerates 2+ foreign streams in track order, dub only when exactly one), `inheritReleaseFacts` (fills source/group/edition gaps from a same-inode twin's name — never overriding, never inheriting probe facts), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment`. `xvid`/`divx`/`mpeg-4` are MPEG-4 Part 2 (`videoFamilyOf`), so a title-branded label is kept instead of being flattened to the probe's generic `Xvid` — which used to render `[Xvid][Xvid]`. **Encode-quality modifiers** (`Proper`, `Repack`, `Rerip`, `Reencode`/`Reenc`) are held in `ReleaseTags.qualityMods` and rendered *inside* the source-resolution bracket (`[Remux-2160p Proper]`), because that is where groups write them: they claim the encode was fixed, which is a property of the resolution group, so isolating them in their own bracket mis-ranks them as an unrelated edition. They are name-only, so they are inherited from a same-inode twin — but as a *set*, not per item, since a repack is not a proper release and a name that states its own keeps it whole (`[Proper Repack]` is never synthesized). With no resolution anywhere the modifier is dropped rather than orphaned as a bare `[Proper]` |
-| `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — resolution/height, video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG), and **every** audio track's `language`/`title` (the language tag reads all of them — never truncate, a 12-track remux read as 4 tracks looked like a single-language dub) |
+| `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — frame width/height (the resolution TIER is read from width; height only raises it), video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG), and **every** audio track's `language`/`title` (the language tag reads all of them — never truncate, a 12-track remux read as 4 tracks looked like a single-language dub) |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |

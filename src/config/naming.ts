@@ -536,19 +536,50 @@ function probeChannelLabel(channels: number | null, layout: string | null): stri
   return null;
 }
 
-function probeResolution(height: number | null | undefined): string | null {
-  if (!height) return null;
-  if (height >= 2000) return "2160p"; // 2160 / 3840 / 4320
-  if (height >= 1700) return "1080p"; // 1920 (2K DCI)
+/** Conventional release tiers, lowest first. Used to compare two estimates. */
+const RES_RANK = ["360p", "480p", "720p", "1080p", "1440p", "2160p"];
+
+/** Tier implied by the WIDTH alone. Letterboxing and scope crops shrink height
+ *  but never width, so width is the dimension that still carries the encode's
+ *  real class. */
+function resolutionFromWidth(width: number): string | null {
+  if (width >= 2800) return "2160p"; // 3200x1800, 3840x2160, 4096x2160 (DCI)
+  if (width >= 1800) return "1080p"; // 1920, 2048x1080 (DCI 2K)
+  if (width >= 1200) return "720p"; // 1280
+  if (width >= 620) return "480p"; // 720x576 PAL-DVD, 640x480
+  return null;
+}
+
+/** Tier implied by the HEIGHT alone - only the taller formats can be recognised
+ *  this way (2560x1440, 4096x2160), and a cropped frame understates the rest. */
+function resolutionFromHeight(height: number): string | null {
+  if (height >= 2000) return "2160p";
+  if (height >= 1700) return "1080p"; // 2048x1080 (DCI)
   if (height >= 1300) return "1440p";
   if (height >= 900) return "1080p";
   if (height >= 700) return "720p";
-  // Anamorphic and letterboxed encodes land BELOW the nominal tier: a real
-  // 1280x534 transfer is a 480p source, and a 550 floor left those files with no
-  // resolution at all — the one case where naming the tier is still honest.
   if (height >= 400) return "480p";
   if (height >= 200) return "360p";
   return null;
+}
+
+/** The release's resolution TIER, from measured frame size.
+ *
+ *  Height alone cannot classify this. A 2.40:1 scope film is letterboxed inside
+ *  a 1080p or 2160p transfer, so the cropped height lands a full tier or two
+ *  low, and a height-only ladder called 1920x800 a "720p" - ranking 1.54
+ *  megapixels BELOW 1280x720's 0.92. Naming claims the release resolution, not
+ *  the pixel count, so the crop must not lower the answer.
+ *
+ *  Each dimension is classified independently and the HIGHER estimate wins: a
+ *  cropped height may understate the tier, but the width still states it, and a
+ *  format only height can identify (2560x1440) is not thrown away by a width
+ *  ladder that has no 1440p band. A 3840x800 scope remux is 2160p, not 480p. */
+function probeResolution(width: number | null | undefined, height: number | null | undefined): string | null {
+  const byW = width ? resolutionFromWidth(width) : null;
+  const byH = height ? resolutionFromHeight(height) : null;
+  if (byW && byH) return RES_RANK.indexOf(byW) >= RES_RANK.indexOf(byH) ? byW : byH;
+  return byW || byH;
 }
 
 function audioFamilyOf(l: string): string {
@@ -670,7 +701,7 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   // Real pixel height is the ground truth for resolution, so it OVERRIDES a title
   // claim rather than only filling a blank: Soul's Polish dub was named after the
   // 43.6 GB remux and still says "2160p", while the stream measures 720p in 1.9 GB.
-  const resolution = probeResolution(v?.height) ?? t.resolution;
+  const resolution = probeResolution(v?.width, v?.height) ?? t.resolution;
 
   // "Remux" is a claim about provenance, but it makes checkable promises, and the
   // probe can refute them: a remux is a bit-exact copy of a disc's main track, so
@@ -715,8 +746,13 @@ const NON_DISC_AUDIO = /^(aac|mp3|opus|vorbis|flac|alac|amr|wmav\d?)$/i;
  *  Anything else is a transcode that merely inherited the word. */
 function sourceRefutedByProbe(source: string | null | undefined, v: ProbeVideoInfo | null, primary: ProbeAudioInfo | null): boolean {
   if (!source || String(source).toLowerCase() !== "remux") return false;
-  const height = v?.height || 0;
-  if (height > 0 && height < 1080) return true;
+  // A remux is never below 1080, so a measured TIER under 1080 refutes it. This
+  // tests the tier, not the raw height, for the same reason the resolution
+  // classifier does: a 1920x800 or 3840x800 scope film is a letterboxed 1080p /
+  // 2160p transfer, and a raw height test would have discarded the remux claim
+  // on exactly the files a remux is supposed to be.
+  const tier = probeResolution(v?.width, v?.height);
+  if (tier && RES_RANK.indexOf(tier) < RES_RANK.indexOf("1080p")) return true;
   if (primary?.codecName && NON_DISC_AUDIO.test(String(primary.codecName))) return true;
   return false;
 }
