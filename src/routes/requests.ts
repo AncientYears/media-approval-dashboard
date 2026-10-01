@@ -1535,11 +1535,20 @@ async function proposeCanonicalName(
   // The probe rides along so an inherited "Remux" is still checked against the
   // measurements — it arrives after the reconciliation inside assembleCanonicalTags.
   const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base, vendorList(conf)), probe || null), siblingBase, vendorList(conf), probe || null);
+  // A resolution the probe contradicted is the one proposal a human has to
+  // second-guess (1080p -> 720p can be real, or letterboxing), so say what the
+  // stream actually measures instead of leaving the change unexplained.
+  const claimedRes = parseReleaseTags(base, vendorList(conf)).resolution;
+  const resNote =
+    probe && claimedRes && tags.resolution && claimedRes !== tags.resolution
+      ? `Stream measures ${probe.video?.width ?? "?"}x${probe.video?.height ?? "?"} (${tags.resolution}); name said ${claimedRes}`
+      : null;
+  const merge = (note: string | null) => (resNote ? (note ? `${note}; ${resNote}` : resNote) : note);
   if (request.type === "movie") {
     if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
     const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
     if (!name) return { name: null, role: "movie", note: "Missing title/year/imdbId" };
-    return { name: name === base ? null : name, role: "movie", note: name === base ? null : null };
+    return { name: name === base ? null : name, role: "movie", note: merge(name === base ? null : null) };
   }
   if (request.season === 0) {
     // A special is usually filed on TMDB as its own movie, never under the show,
@@ -1559,7 +1568,7 @@ async function proposeCanonicalName(
       vendor: tags.vendor,
     });
     if (!name) return { name: null, role: "special", note: "Missing title pieces" };
-    return { name: name === base ? null : name, role: "special", note: sp.onTmdb ? null : "Not on TMDB - kept the on-disk title" };
+    return { name: name === base ? null : name, role: "special", note: merge(sp.onTmdb ? null : "Not on TMDB - kept the on-disk title") };
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
@@ -1579,7 +1588,7 @@ async function proposeCanonicalName(
     vendor: tags.vendor,
   });
   if (!name) return { name: null, role: "episode", note: "Missing title/episode pieces" };
-  return { name: name === base ? null : name, role: "episode", note: null };
+  return { name: name === base ? null : name, role: "episode", note: merge(null) };
 }
 
 /** Build the grouped processed+library proposal rows + folder rows for one request (native only). */
