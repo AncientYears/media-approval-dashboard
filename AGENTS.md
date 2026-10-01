@@ -746,6 +746,30 @@ identity path (fix-identity, retitle, discover, seerr sync, import), so a key
 minted before the fix may be junk for a diacritic title and is repaired by
 re-running the repair.
 
+- The **folder veto** (`folderOwnedExclusively`) is the same idea at directory
+  level, and the two Hobbit library folders (`Hobbit (2012)` / `Hobbit (2014)`)
+  showed why it has to exist: a flat, one-word franchise means folder ownership
+  is only ever established by what is inside.
+
+#### Word overlap cannot separate a flat franchise — the year can
+`siblingRequestClaimsYear` is the id-less branch of `nameContradictsRequest`. The
+pre-existing year fallback needed `>= 2` shared title words to confirm the two
+names were about the same franchise, and that threshold is wrong for exactly the
+case this feature exists for: `Hobbit Bitwa Pięciu Armii 2014 …` shares **one**
+word (`hobbit`) with `The Hobbit: An Unexpected Journey`, because a Polish release
+*translates the subtitle* and every distinguishing English word is gone. So the
+veto stayed silent and Fix Names offered to rename a Five Armies file to the
+Unexpected Journey name — the destructive outcome a veto exists to prevent.
+The fix is not to lower the threshold but to add a **stronger** signal beside the
+year: if a *sibling* movie request (different `id`, same stated year) shares even
+one word with the file, that sibling owns this year and the file contradicts.
+One word suffices **because the year already agrees** — the pair is what carries
+the decision, and lowering the shared-word threshold alone would have started
+vetoing unrelated films. Guarded so it stays off the hot path: it is only reached
+once the years actually disagree, is movies-only (a series' seasons share the
+show's title and must not steal each other's files), and never fires without a
+sibling (a lone one-word franchise still falls through to the `>= 2` rule).
+
 ### Language pref
 `tmdb_franchise_prefs` is keyed by `library_key` (post-fix-identity key, i.e.
 the message handles both row data and cache/prefs migration). `set-language`
@@ -990,4 +1014,9 @@ SEERR_API_KEY=
 - [ ] `POST /:id/retitle` rewrites title + key, migrates requests/cache/prefs, and repopulates `tmdb_external_ids`
 - [ ] `retitle` and `fix-identity` 409 when the target key is already owned by another movie (never merge)
 - [ ] `slugForKeyTitle` folds diacritics: `Niezwykła podróż` → `niezwykla-podroz` (incl. `ł`), and leaves ASCII keys unchanged
+- [ ] `GET /:id/identity-candidates` lists candidate films, and "Re-attach" applies one via `POST /:id/retitle` (a card whose key was repaired but whose TITLE stayed mangled has no other route to a correct title)
+- [ ] Re-attaching to the film the key already names still rewrites the title (`applyMovieIdentity` is a no-op on the key only when `alsoSetTitle` is off)
+- [ ] Cross-franchise veto: a 2014 Hobbit file is never attributed to the 2012 card even when it shares only ONE title word — the Polish name translates the subtitle, so `siblingRequestClaimsYear` (sibling request states the same year) is what vetoes it
+- [ ] A lone one-word franchise with no sibling is NOT over-vetoed (no sibling claims the year ⇒ falls through to the old `>= 2` shared-word rule)
+- [ ] Sibling-year veto is movies-only: two `series` seasons never take each other's files
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb

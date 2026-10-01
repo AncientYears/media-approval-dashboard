@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, fixMovieIdentity, retitleMovie, LANGUAGES } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, fixMovieIdentity, retitleMovie, getIdentityCandidates, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -343,6 +343,21 @@ export default function RequestDetail() {
       }
     } catch (e: any) {
       toast(e.response?.data?.error || e.message || "Fix identity failed", "error");
+    } finally {
+      setFixingIdentity(false);
+    }
+  };
+
+  const handleOpenReattach = async () => {
+    setFixingIdentity(true);
+    try {
+      const res = await getIdentityCandidates(Number(id));
+      setIdentityPicker({
+        reason: `Current identity: ${res.current_key || "(none)"} — searched "${res.query}"`,
+        candidates: res.candidates || [],
+      });
+    } catch (e: any) {
+      toast(e.response?.data?.error || e.message || "Could not load candidates", "error");
     } finally {
       setFixingIdentity(false);
     }
@@ -799,6 +814,15 @@ export default function RequestDetail() {
                 disabled={fixingIdentity}
               >
                 {fixingIdentity ? "Fixing…" : "Fix identity"}
+              </button>
+              <button
+                className="btn btn-secondary btn-tiny"
+                style={{ marginLeft: 4 }}
+                title="Search TMDB for this movie and pick the right film by hand. Use this when the stored title is mangled even though the key looks fine (e.g. a card still titled 'Hobbit' after its key was repaired) — card matching reads the title, so only a retitle can fix it."
+                onClick={handleOpenReattach}
+                disabled={fixingIdentity}
+              >
+                Re-attach
               </button>
               <select
                 className="lang-select"

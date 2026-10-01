@@ -1458,6 +1458,33 @@ function sharedTitleWords(a: string, b: string): number {
   return seen.size;
 }
 
+/** True when another MOVIE request claims the year this file states, and that
+ *  request is about the same film series. The franchise is the flat, one-word
+ *  kind where word overlap cannot help: "Hobbit Bitwa Pieciu Armii 2014" shares
+ *  exactly one word with "The Hobbit: An Unexpected Journey", because the Polish
+ *  release translates the subtitle and drops every distinguishing English word.
+ *  The YEAR is the signal that still separates them, and the sibling request is
+ *  what turns a bare year into evidence rather than a coincidence.
+ *
+ *  Kept deliberately narrow: the sibling must be a movie (a series' seasons share
+ *  the show's title and must not steal each other's files), must state the same
+ *  year the file does, must be a different request, and must share at least one
+ *  significant word with the file. One word is enough here precisely BECAUSE the
+ *  year already agrees — the pair of signals is what carries the decision. */
+function siblingRequestClaimsYear(db: Database, request: any, base: string): boolean {
+  const theirYear = nameYear(base);
+  if (request?.type !== "movie" || !theirYear || !request?.library_key) return false;
+  const rows = db
+    .prepare("SELECT id, title, library_key, type FROM media_requests WHERE type = 'movie' AND library_key IS NOT NULL")
+    .all() as any[];
+  for (const r of rows) {
+    if (r.id === request.id) continue;
+    if (requestYear(r) !== theirYear) continue;
+    if (sharedTitleWords(String(r.title || ""), base) >= 1) return true;
+  }
+  return false;
+}
+
 /** True when a name pins a DIFFERENT film than this request, and how we know:
  *  the request's own id, the id's real owner, or a conflicting year.
  *
@@ -1487,6 +1514,10 @@ function nameContradictsRequest(db: Database, request: any, base: string): boole
   const myYear = requestYear(request);
   const theirYear = nameYear(base);
   if (!myYear || !theirYear || myYear === theirYear) return false;
+  // A sibling request already owns the year this file states: the flat, one-word
+  // franchise case, where the file's own words cannot tell the films apart. Only
+  // reachable once the years actually disagree, so the scan stays off the hot path.
+  if (siblingRequestClaimsYear(db, request, base)) return true;
   return sharedTitleWords(String(request.title || ""), base) >= 2;
 }
 
@@ -6819,7 +6850,12 @@ async function applyMovieIdentity(
     return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
   }
   const newKey = `movie:${slug}:${resolved.year ?? 0}`;
-  if (newKey === oldKey) return { error: "already canonical", status: 200 };
+  // Re-attaching to the film the key ALREADY names is not a no-op: the stored
+  // title is a separate column and is frequently still mangled ("Hobbit" beside
+  // movie:the-hobbit-an-unexpected-journey:2012). That title is what card
+  // matching reads, so leaving it behind would preserve the exact misattribution
+  // the repair was for.
+  if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
   const clash =
     (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ?").get(newKey) as any)?.c || 0;
   if (clash > 0) {
@@ -6930,6 +6966,32 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
   // path that rewrites `title`, because a mangled title is the input that caused
   // the bad identity in the first place; repairing only the key would leave the
   // card matching its sibling's files all over again.
+  // GET /api/requests/:id/identity-candidates - films this card could be, for
+  // the explicit "Re-attach" control. Separate from fix-identity's shortlist
+  // because that one only appears when the resolver REFUSES to act; a card whose
+  // key was already repaired while its stored title stayed mangled ("Hobbit"
+  // -> movie:the-hobbit-an-unexpected-journey:2012) reports "already canonical"
+  // and would otherwise have no way to correct the title it still matches on.
+  router.get("/:id/identity-candidates", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed) return res.status(404).json({ error: "Request not found" });
+      if (seed.type !== "movie") return res.status(400).json({ error: "Native movie request required" });
+      const lang = franchiseLanguage(db, seed.library_key) || process.env.TMDB_LANGUAGE || "en-US";
+      // Prefer a search term that can actually find the film: the canonical name
+      // behind the current key beats a stored title that is known to be junk.
+      let query = cleanFranchiseTitle(seed.title || "");
+      const fromKey = seed.library_key ? cleanFranchiseTitle(String(seed.library_key).replace(/^movie:/, "").replace(/:\d{4}$/, "").replace(/-/g, " ")) : "";
+      if (fromKey && fromKey.length > query.length) query = fromKey;
+      const candidates = query ? await searchTMDB(query, "movie", lang).catch(() => []) : [];
+      res.json({ query, current_key: seed.library_key, candidates });
+    } catch (error: any) {
+      console.error("Error listing identity candidates:", error.message || error);
+      res.status(500).json({ error: "Failed to list identity candidates" });
+    }
+  });
+
   router.post("/:id/retitle", async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);

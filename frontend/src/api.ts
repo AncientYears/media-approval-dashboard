@@ -81,6 +81,15 @@ export async function fixMovieIdentity(requestId: number) {
   return response.data;
 }
 
+/** Films this card could be, for the explicit "Re-attach" control. Needed
+ *  because fix-identity only returns a shortlist when it REFUSES to act, and a
+ *  card whose key was repaired while its title stayed mangled would otherwise
+ *  have no way to correct the title card matching still reads. */
+export async function getIdentityCandidates(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/identity-candidates`);
+  return response.data;
+}
+
 /** Apply the film the user picked from the identity shortlist. Unlike fix-identity
  *  this also rewrites the stored `title`, which is the mangled input that caused
  *  the wrong identity in the first place. */
