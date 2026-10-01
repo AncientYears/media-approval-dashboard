@@ -77,7 +77,7 @@ session can start with P0 without re-deriving the design.
     preserved in `release_candidates.title`.
 - **Naming configurable in Settings** (like Sonarr/Radarr name-format): a
   template with tokens stored in the `settings` table, defaults = above, plus a
-  `naming.vendors` list (comma-separated, default `Bajeczki24`) for platform
+  `naming.vendors` list (comma-separated, default `Bajeczki24,FGT`) for platform
   watermarks. A vendor arrives as a **bare trailing word** — no hyphen, no
   bracket — which is why it was silently dropped: the group rule only matches a
   `-WORD` tail and the tokenizer discards unknown words. It's matched
@@ -93,6 +93,30 @@ session can start with P0 without re-deriving the design.
   would silently do nothing on any deployment that already saved a template.
   Clearing the list persists as **empty** rather than snapping back to the
   default, so "attach none" is expressible.
+- **What sits AFTER the group hides it** — both tail rules anchor at
+  end-of-string. A ` (1)` collision suffix (bare parenthesised digits only, so
+  `(2015)` and an edition in parentheses are safe) is peeled first. A trailing
+  **language/dub word** (` - polish`, `-polish`) is never peeled blindly, because
+  it is real evidence: it is consumed *only* when removing it actually uncovers a
+  group, and is then applied as the language it is; otherwise it stays for the
+  tokenizer. That also stops `-GRP-polish` being read as a group named "polish".
+- **`Atmos` belongs to TrueHD and nothing else.** There is no `DTS-HD MA Atmos`:
+  a bare `Atmos` used to attach to the first family entry matching by exact name,
+  which in Soul was the DTS track. It now targets TrueHD only and is inserted
+  *before* any channel number (`TrueHD Atmos 7.1`, not `TrueHD 7.1 Atmos`); with
+  no TrueHD present it stays a standalone tag.
+- **One stream cannot have two video codecs.** Only the first video stream is
+  probed, so a title codec from a *different* family is dropped rather than kept
+  beside the probed one (a Polish mp4 inherited `[HEVC]` from the remux it was
+  dubbed from, printing `[x264][HEVC]`). Within a family the title still refines
+  the probe (`DivX` over generic `mpeg4`), and same-family labels collapse to
+  one. `mediaProbe` reports `video.streamCount` so a genuinely two-stream file —
+  where the title's second codec is the only evidence of it — keeps both; cover
+  art (`mjpeg` `attached_pic`) is excluded from that count.
+- **Known cosmetic gap**: `source` is title-only and is never reconciled against
+  measured facts, so a 720p x264/AAC transcode dubbed from a remux keeps
+  `[Remux-2160p]`. This follows the documented rule (probe wins for
+  codec/resolution/channels, title keeps source) and is left alone deliberately.
 - **"Fix Names" UI (Layer 2, cosmetic)** — user-confirmed shape: a modal listing
   each processed file + its linked library twin (same inode, shown only if
   already in the library) + lone processed files; per-row checkbox to apply the
