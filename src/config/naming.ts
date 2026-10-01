@@ -237,6 +237,15 @@ const EDITION_SINGLE = new Set([
   "remastered", "anniversary", "limited", "edition", "cut",
 ]);
 
+/** "Not stated" placeholders. They carry no information, so they may never
+ *  become a tag OR a group. This matters beyond tidiness: an older version read a
+ *  bracketed `[Unknown]` as the release group and wrote it to disk as `-Unknown`,
+ *  and once a name carries that tail it re-parses as a group on every later pass —
+ *  and is then handed to the same-inode twin by `inheritReleaseFacts` — so the
+ *  rename could never converge and every preview kept proposing the same tail. */
+const PLACEHOLDER_WORDS = new Set(["unknown", "group", "nogrp", "nogroup", "none", "na"]);
+const isPlaceholderWord = (w: string) => PLACEHOLDER_WORDS.has(w.toLowerCase());
+
 function editionLabel(word: string): string {
   const key = word.toLowerCase().replace(/'/g, "");
   if (key === "directors cut") return "Director's Cut";
@@ -1041,13 +1050,13 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // reads it as the language it is — which is the only reason to touch it at all.
   const langWord = trailingLanguageWord(base);
   const grp = langWord ? null : base.match(/-([A-Za-z0-9]{2,12})$/);
-  if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
+  if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase()) && !isPlaceholderWord(grp[1])) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
   } else if (langWord) {
     const trimmed = base.slice(0, langWord.index).replace(/[-.\s]+$/g, "");
     const retry = trimmed.match(/-([A-Za-z0-9]{2,12})$/);
-    if (retry && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase())) {
+    if (retry && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase()) && !isPlaceholderWord(retry[1])) {
       out.group = retry[1];
       const up = langWord.word.toUpperCase();
       const code = LANG_ALIASES[up] || (LANG_TAGS.has(up) ? up : null);
@@ -1173,10 +1182,10 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
         return;
       }
       if (fromBracket && /^[A-Z][A-Za-z0-9.+-]{0,12}$/.test(at)) {
-        // "[Unknown]"/"[Group]"/"[NoGrp]" are placeholders that carry no
-        // information, so they are dropped outright — promoting them to the
-        // group only ever produced junk like "-Unknown" on the new name.
-        if (!/^(unknown|nogrp|group)$/i.test(at)) misc.push(at);
+        // Placeholders ("[Unknown]", "[Group]", "[NoGrp]") say "not stated", so
+        // they are dropped outright — neither a tag nor a group. See
+        // PLACEHOLDER_WORDS for why the group case is not merely cosmetic.
+        if (!isPlaceholderWord(at)) misc.push(at);
       }
     }
   };
