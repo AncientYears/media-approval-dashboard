@@ -1191,17 +1191,19 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
   const base = path.basename(fullPath);
   const processedDir = getProcessedDir(request.type === "series" ? "series" : "movie");
   const rel = path.relative(processedDir, fullPath);
-  if (matchedNames.has(base) || matchedNames.has(rel)) return true;
+  // Identity (dev, inode) is the source of truth and outranks everything else —
+  // including the approval_history association, which can be stale: a same-named
+  // franchise (DuckTales 1987 vs 2017) may hold the other's basenames after an
+  // earlier fuzzy match. A registered file belongs to exactly one library_key.
+  // Names/association are only a backup for files that carry no identity (a
+  // copied, doomed inode still resolves by name).
   if (request.library_key) {
     try {
       const identityRow = identifyByPath(db, fullPath);
-      // Identity is authoritative: a file registered under a library_key belongs
-      // to exactly that franchise. Never fall through to the title guess below —
-      // same-named franchises (DuckTales 1987 vs 2017) would otherwise each
-      // claim the other's files because the filenames overlap.
       if (identityRow) return identityRow.library_key === request.library_key;
     } catch {}
   }
+  if (matchedNames.has(base) || matchedNames.has(rel)) return true;
   if (matchedNames.size === 0) {
     try {
       const requestTitleNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
