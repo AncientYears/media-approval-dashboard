@@ -367,7 +367,27 @@ export interface ReleaseTags {
   hdr: string[];
   video: string[];
   misc: string[];
+  /** Scene ENCODE-QUALITY modifiers ("Proper", "Repack", "Rerip"). They qualify
+   *  the resolution and are written right after it ("2160p Proper"), so they
+   *  render inside the source/resolution bracket rather than as standalone tags
+   *  — see QUALITY_MODIFIERS. Name-only, like the group, so never measured. */
+  qualityMods: string[];
 }
+
+/** Encode-quality modifiers a group appends to the resolution. These say the
+ *  encode was fixed/re-done, which is a claim about the resolution group, so
+ *  isolating them in their own bracket both mis-ranks them (they read as an
+ *  unrelated edition) and loses the association the name states. */
+const QUALITY_MODIFIERS = new Map<string, string>([
+  ["proper", "Proper"],
+  ["realproper", "Proper"],
+  ["repack", "Repack"],
+  ["rerip", "Rerip"],
+  ["reenc", "Reencode"],
+  ["reencode", "Reencode"],
+]);
+/** Render order, so a name carrying two prints them canonically. */
+const QUALITY_MOD_RANK = ["Proper", "Repack", "Rerip", "Reencode"];
 
 /** Raw ffprobe facts for one video stream (see services/mediaProbe). */
 export interface ProbeVideoInfo {
@@ -439,15 +459,24 @@ function renderTags(f: {
   hdr: string[];
   video: string[];
   misc: string[];
+  qualityMods?: string[];
 }): string {
   // Language and dub share ONE bracket ("[PL DUB]") because they describe the
   // same track: the same Polish language covers a dubbed and an original one,
   // and splitting them read as two unrelated tags.
   const lang = f.language ? (f.dubbed ? `${f.language} DUB` : f.language) : f.dubbed ? "DUB" : null;
   let tags = lang ? `[${lang}] ` : "";
-  if (f.source && f.resolution) tags += `[${f.source}-${f.resolution}]`;
+  // Encode-quality modifiers ride inside the resolution group ("[Remux-2160p
+  // Proper]"), which is where groups write them. They are dropped rather than
+  // orphaned into their own bracket when there is no resolution to attach to -
+  // a bare "[Proper]" says less than the name it came from.
+  const mods = [...(f.qualityMods || [])]
+    .filter((m) => QUALITY_MOD_RANK.includes(m))
+    .sort((a, b) => QUALITY_MOD_RANK.indexOf(a) - QUALITY_MOD_RANK.indexOf(b));
+  const res = f.resolution ? [f.resolution, ...mods].join(" ") : null;
+  if (f.source && res) tags += `[${f.source}-${res}]`;
   else if (f.source) tags += `[${f.source}]`;
-  else if (f.resolution) tags += `[${f.resolution}]`;
+  else if (res) tags += `[${res}]`;
   for (const a of f.audio) tags += `[${a}]`;
   // One bracket, and never a redundant member. HDR10+ implies the HDR10 base
   // layer, and a plain "HDR" is only the umbrella: once a specific flag is
@@ -878,11 +907,22 @@ export function inheritReleaseFacts(
 ): ReleaseTags {
   if (!siblingBase) return target;
   const sibling = parseReleaseTags(siblingBase.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, ""), vendors);
-  const out: ReleaseTags = { ...target, misc: [...target.misc] };
+  const out: ReleaseTags = { ...target, misc: [...target.misc], qualityMods: [...(target.qualityMods || [])] };
   let changed = false;
   if (!out.source && sibling.source) { out.source = sibling.source; changed = true; }
   if (!out.group && sibling.group) { out.group = sibling.group; changed = true; }
   if (!out.vendor && sibling.vendor) { out.vendor = sibling.vendor; changed = true; }
+  // Encode-quality modifiers are a NAME claim (nothing measures them), exactly
+  // like the group, so a twin's name stating "Proper" fills the gap. But they
+  // describe ONE encode rather than accumulating like editions do: a name that
+  // states its own is kept whole, and the twin's set is only adopted when the
+  // name is silent. Merging instead would invent "[Proper Repack]" - a repack is
+  // not a proper release, and a pair that contradicts is worse than either alone.
+  if (!out.qualityMods.length) {
+    for (const q of sibling.qualityMods || []) {
+      if (!out.qualityMods.includes(q)) { out.qualityMods.push(q); changed = true; }
+    }
+  }
   // Only EDITION labels are inherited. Misc also holds unrecognized bracket tags
   // preserved verbatim, and those belong to the file whose name carried them.
   for (const ed of sibling.misc.filter(isEditionLabel)) {
@@ -914,7 +954,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // `?? DEFAULT_VENDORS` rather than a parameter default: a caller passing an
   // explicit null would otherwise skip the default and crash on `.length`.
   const vList = vendors ?? DEFAULT_VENDORS;
-  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
+  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [], qualityMods: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
   // Editions ("International", "Extended", "Director's Cut", …) are preserved
@@ -1154,7 +1194,24 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     tryToken(t, false);
   }
 
-  out.misc = [...editions, ...misc];
+  // Split encode-quality modifiers out of misc before they render: they belong
+  // to the resolution group, not in a bracket of their own. Collected AFTER the
+  // bracket tokenizer because that is where they currently land (an unrecognized
+  // square-bracket word), and matching whole words only - "properly" is not a
+  // release tag and must not be truncated into one.
+  const qualityMods: string[] = [];
+  const keptMisc: string[] = [];
+  for (const m of misc) {
+    const canon = QUALITY_MODIFIERS.get(m.trim().toLowerCase());
+    if (canon) {
+      if (!qualityMods.includes(canon)) qualityMods.push(canon);
+    } else {
+      keptMisc.push(m);
+    }
+  }
+
+  out.misc = [...editions, ...keptMisc];
+  out.qualityMods = qualityMods;
   out.tags = renderTags(out);
   return out;
 }
