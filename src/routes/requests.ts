@@ -686,7 +686,38 @@ function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | nu
         if (folderImdb === ownImdbId) idMatch.push(full);
         continue;
       }
-      const norm = normalizeFolder(d);
+      // A folder whose NAME says nothing usable can still be identified by what
+      // is inside it. "Akademia pana Kleksa (2023)" shares no word with the
+      // card titled "Kleks Academy" and states the wrong year, so no title test
+      // can reach it - yet the file it holds is canonical and embeds this film's
+      // own id, which settles it. Only an id carried by a file DIRECTLY in the
+      // folder counts (a nested id belongs to some other film), and a folder
+      // holding a DIFFERENT film's id is excluded outright rather than left for
+      // the fuzzy pass, which is what stops a shared title from claiming it.
+      if (ownImdbId && !folderImdb) {
+        let owns = false;
+        let foreign = false;
+        let sawFile = false;
+        try {
+          for (const f of fs.readdirSync(full)) {
+            if (!VIDEO_FILE_RE.test(f)) continue;
+            sawFile = true;
+            const fid = nameImdbId(f);
+            if (!fid) continue;
+            if (fid === ownImdbId) owns = true;
+            else foreign = true;
+          }
+        } catch {}
+        // A folder with no readable video files says nothing about identity, so
+        // fall through to the title tests rather than claiming (or rejecting) it.
+        if (sawFile) {
+          if (owns) {
+            if (!foreign) idMatch.push(full);
+            continue;
+          }
+          if (foreign) continue;
+        }
+      }      const norm = normalizeFolder(d);
       const normNoYear = normalizeFolder(d.replace(/\(\d{4}\)[-\s].*$/i, "").replace(/\(\d{4}\)$/i, ""));
       if (want && (normNoYear === want || norm === want)) {
         exact.push(full);
@@ -2268,6 +2299,14 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
   // the rightful card own it.
   const folderYear = nameYear(path.basename(folder));
   const myYear = requestYear({ title: "", library_key: libraryKey });
+  // A file that names OUR id is proof of ownership, and it is exactly as
+  // refutable as the folder's year is trustworthy - in the other direction. The
+  // folder can be mis-titled ("Akademia pana Kleksa (2023)" holding the 2024
+  // film), but a canonical name this app minted cannot name the wrong film, so
+  // when the two disagree the id wins. Remembered across the walk and applied
+  // to any disagreeing row below, which is what lets a mis-titled folder be
+  // repaired instead of blocking the card that owns its contents forever.
+  let namedOwnId = false;
   for (const f of videoFiles) {
     // An id written INTO a file is a deliberate statement of what it is, and it
     // outranks the folder's year: a folder can be mis-filed, a name minted by this
@@ -2275,9 +2314,15 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
     // otherwise re-registers an id-bearing file into the folder's year.
     const named = nameImdbId(path.basename(f));
     if (ownImdbId && named && named !== ownImdbId) return false;
+    if (ownImdbId && named === ownIMDbLower(ownImdbId)) namedOwnId = true;
     try {
       const ident = identifyByPath(db, f);
       if (ident && ident.library_key && ident.library_key !== libraryKey) {
+        if (namedOwnId) {
+          // This file states it is ours, so the row pointing elsewhere is stale.
+          registerVideoTree(db, f, { library_key: libraryKey, title: "", season: 0 });
+          continue;
+        }
         if (folderYear && myYear === folderYear) {
           // This folder IS the year the registered key's owner does not claim, so
           // the row is wrong. Re-point it at us and keep going.
@@ -2289,6 +2334,11 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
     } catch {}
   }
   return true;
+}
+
+/** nameImdbId lower-cases its result, so compare in the same alphabet. */
+function ownIMDbLower(id: string): string {
+  return id.toLowerCase();
 }
 
 /** Rewrite the directory prefix of every AH processed_files entry across ALL
@@ -7008,6 +7058,15 @@ async function applyMovieIdentity(
     }
     db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
     db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The identity layer must move WITH the key. media_files is keyed by
+    // (dev, inode) and every read is inode-first, so a row left on the old key
+    // keeps claiming the file for a library_key no request owns any more: after
+    // a re-attach the file vanished from its own card ("Nothing to rename in this
+    // layer") while still sitting in /Processed, because the row resolved to the
+    // dead key. It also blocks the rename itself - a registered row is an
+    // absolute veto in Fix Names. Re-attaching is a statement that these inodes
+    // belong to the new film, so the attribution follows.
+    db.prepare("UPDATE media_files SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
     // The stale row must NOT follow the key across: it holds the pre-fix
     // resolved title, so the next preview would keep printing it. Drop it and
     // let the repopulate below write the correct one instead.

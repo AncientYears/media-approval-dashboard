@@ -1077,14 +1077,21 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // When nothing is found behind it the word stays in the name and the tokenizer
   // reads it as the language it is — which is the only reason to touch it at all.
   const langWord = trailingLanguageWord(base);
-  const grp = langWord ? null : base.match(/-([A-Za-z0-9]{2,12})$/);
-  if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase()) && !isPlaceholderWord(grp[1])) {
+  // A group may itself be hyphenated ("AS76-FT"), and the canonical form ENDS in
+  // one. With the old single-segment class the round-trip re-read "-AS76-FT" as
+  // the group "FT", so every later pass would shorten it again and the rename
+  // would never converge - the same failure mode as the vendor tail. The last
+  // hyphen is the separator; everything before it is the group.
+  const grp = langWord ? null : base.match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
+  if (grp) grp[1] = grp[1].replace(/-+$/, "");
+  if (grp && grp[1] && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase()) && !isPlaceholderWord(grp[1])) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
   } else if (langWord) {
     const trimmed = base.slice(0, langWord.index).replace(/[-.\s]+$/g, "");
-    const retry = trimmed.match(/-([A-Za-z0-9]{2,12})$/);
-    if (retry && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase()) && !isPlaceholderWord(retry[1])) {
+    const retry = trimmed.match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
+    if (retry) retry[1] = retry[1].replace(/-+$/, "");
+    if (retry && retry[1] && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase()) && !isPlaceholderWord(retry[1])) {
       out.group = retry[1];
       const up = langWord.word.toUpperCase();
       const code = LANG_ALIASES[up] || (LANG_TAGS.has(up) ? up : null);
@@ -1242,6 +1249,31 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // "(Inna historia)", "(2019)" — and reading those as tags emitted junk like
   // "[Inna]" onto otherwise clean names.
   for (const m of base.matchAll(/\[([^\][]+)\]/g)) {
+    // A group written INSIDE the bracket, after the tags: "[...H265.AC3-AS76-FT]".
+    // The anchored tail rule only ever sees the end of the name, so a bracket
+    // followed by more brackets ("[...AS76-FT] [Dubbing PL] [Alusia]") hid the
+    // group completely and the rename dropped the release group out of
+    // existence. It is the same "-WORD" shape the tail rule accepts, read in the
+    // one position that rule was blind to.
+    if (!out.group) {
+      // The tail rule is `/-(WORD)$/`, but a bracketed group may itself be
+      // hyphenated ("H265.AC3-AS76-FT") - there the LAST hyphen is the separator
+      // and everything before it is the group, so allow internal hyphens. The
+      // class stays strict so a trailing year or a resolution cannot qualify.
+      const inner = m[1].match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
+      const cand = inner ? inner[1].replace(/-+$/, "") : null;
+      // "[imdbid-tt13622970]" is not a group: a bare IMDb id is our own id tag,
+      // and the widened class above would otherwise read it as one.
+      if (cand && /^tt\d{6,9}$/i.test(cand)) continue;
+      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand)) {
+        out.group = cand;
+        // Peel it out of the bracket so the tokenizer does not ALSO read it as
+        // an unknown tag, which would print a second [AS76] bracket.
+        const stripped = m[0].replace(/-[A-Za-z0-9][A-Za-z0-9-]{1,20}$/, "");
+        base = base.slice(0, m.index) + stripped + base.slice(m.index + m[0].length);
+        m[0] = stripped;
+      }
+    }
     // Split multi-word bracket tags ("[DV HDR10Plus]", "[TrueHD Atmos 7.1]",
     // "[AC3 2.0]") into single tokens so each piece classifies/merges, then
     // re-joins into the canonical shape ([TrueHD Atmos 7.1], [DV HDR10Plus]).
