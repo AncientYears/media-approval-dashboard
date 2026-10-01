@@ -398,6 +398,22 @@ function backfillRequestIdentity(db: Database, request: any): number {
 // move-to-library resolution: fuzzy show folder under MEDIA_TV + existing
 // localized season folder (Sezon I, etc.), movies map flat to MEDIA_MOVIES.
 // Returns null when the library folder cannot be located.
+/** Substring title match that refuses the sequel-prefix trap. As raw text
+ *  "…opowiesc iii" CONTAINS "…opowiesc ii", so a plain `includes()` hands a card
+ *  its predecessor's folder — the same prefix collision `titlesMatch` learned
+ *  about, one layer down in a matcher that never goes through it. Whatever
+ *  follows the shared prefix must not be a sequel numeral. */
+function includesTitleNorm(a: string, b: string): boolean {
+  if (!a.includes(b)) return false;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (longer.startsWith(shorter)) {
+    const suffix = longer.slice(shorter.length).trimStart();
+    if (suffix && SEQUEL_EXTENSION.test(suffix)) return false;
+  }
+  return true;
+}
+
 /** Every library show folder under MEDIA_TV that fuzzy-matches a title, in
  *  readdir order (an exact-name dir, when present, is returned first). Year is
  *  ignored here — callers disambiguate same-named franchises. */
@@ -411,7 +427,7 @@ function matchLibraryShowFolders(baseTitle: string): string[] {
     for (const d of fs.readdirSync(MEDIA_TV)) {
       const norm = normalizeFolder(d);
       if (!norm) continue;
-      if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+      if (norm === want || (want.length >= 6 && includesTitleNorm(want, norm)) || (norm.length >= 6 && includesTitleNorm(norm, want))) {
         const full = path.join(MEDIA_TV, d);
         if (!out.includes(full)) out.push(full);
       }
@@ -666,7 +682,7 @@ function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | nu
       const normNoYear = normalizeFolder(d.replace(/\(\d{4}\)[-\s].*$/i, "").replace(/\(\d{4}\)$/i, ""));
       if (normNoYear === want || norm === want) {
         exact.push(full);
-      } else if ((want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+      } else if ((want.length >= 6 && includesTitleNorm(want, norm)) || (norm.length >= 6 && includesTitleNorm(norm, want))) {
         fuzzy.push(full);
       }
     }
@@ -1535,20 +1551,11 @@ async function proposeCanonicalName(
   // The probe rides along so an inherited "Remux" is still checked against the
   // measurements — it arrives after the reconciliation inside assembleCanonicalTags.
   const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base, vendorList(conf)), probe || null), siblingBase, vendorList(conf), probe || null);
-  // A resolution the probe contradicted is the one proposal a human has to
-  // second-guess (1080p -> 720p can be real, or letterboxing), so say what the
-  // stream actually measures instead of leaving the change unexplained.
-  const claimedRes = parseReleaseTags(base, vendorList(conf)).resolution;
-  const resNote =
-    probe && claimedRes && tags.resolution && claimedRes !== tags.resolution
-      ? `Stream measures ${probe.video?.width ?? "?"}x${probe.video?.height ?? "?"} (${tags.resolution}); name said ${claimedRes}`
-      : null;
-  const merge = (note: string | null) => (resNote ? (note ? `${note}; ${resNote}` : resNote) : note);
   if (request.type === "movie") {
     if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
     const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
     if (!name) return { name: null, role: "movie", note: "Missing title/year/imdbId" };
-    return { name: name === base ? null : name, role: "movie", note: merge(name === base ? null : null) };
+    return { name: name === base ? null : name, role: "movie", note: null };
   }
   if (request.season === 0) {
     // A special is usually filed on TMDB as its own movie, never under the show,
@@ -1568,7 +1575,7 @@ async function proposeCanonicalName(
       vendor: tags.vendor,
     });
     if (!name) return { name: null, role: "special", note: "Missing title pieces" };
-    return { name: name === base ? null : name, role: "special", note: merge(sp.onTmdb ? null : "Not on TMDB - kept the on-disk title") };
+    return { name: name === base ? null : name, role: "special", note: sp.onTmdb ? null : "Not on TMDB - kept the on-disk title" };
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
@@ -1588,7 +1595,7 @@ async function proposeCanonicalName(
     vendor: tags.vendor,
   });
   if (!name) return { name: null, role: "episode", note: "Missing title/episode pieces" };
-  return { name: name === base ? null : name, role: "episode", note: merge(null) };
+  return { name: name === base ? null : name, role: "episode", note: null };
 }
 
 /** Build the grouped processed+library proposal rows + folder rows for one request (native only). */
