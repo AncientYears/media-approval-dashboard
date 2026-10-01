@@ -555,13 +555,21 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   // as tags — and a bare "-International"-style tail that is one of them stops
   // being treated as a release group.
   const editions = collectEditions(base);
-  const grp = base.match(/-([A-Z0-9]{2,12})$/i);
   // A release group is an ALLCAPS handle (DENDA, AL3X, R45). A trailing
   // "-Zima" / "-drzewa" is just the second half of a hyphenated Polish episode
-  // title, not a group, so a plain word carrying any lowercase is rejected
+  // title, not a group, so a bare word carrying any lowercase is rejected
   // rather than welded onto the end of every canonical name.
   const looksLikeWord = (s: string): boolean => /^[A-Za-z]+$/.test(s) && s !== s.toUpperCase();
-  if (grp && !looksLikeCodec(grp[1]) && !looksLikeWord(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
+  // A group glued to the final tag bracket ("…[h264]-Alusia") is trusted even
+  // when it is not ALLCAPS: a hyphenated episode-title word never directly
+  // follows a closing bracket, so "Alusia" here is the release group. A bare
+  // "-Word" tail still has to look like an ALLCAPS handle.
+  const attGrp = base.match(/[\]\)](-[A-Za-z0-9]{2,12})$/);
+  const grp = base.match(/-([A-Z0-9]{2,12})$/i);
+  if (attGrp && !looksLikeCodec(attGrp[1].slice(1)) && !EDITION_SINGLE.has(attGrp[1].slice(1).toLowerCase())) {
+    out.group = attGrp[1].slice(1);
+    base = base.slice(0, base.length - attGrp[1].length).replace(/[-.\s]+$/g, "");
+  } else if (grp && !looksLikeCodec(grp[1]) && !looksLikeWord(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
   }
