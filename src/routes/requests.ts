@@ -382,26 +382,46 @@ function backfillRequestIdentity(db: Database, request: any): number {
 // move-to-library resolution: fuzzy show folder under MEDIA_TV + existing
 // localized season folder (Sezon I, etc.), movies map flat to MEDIA_MOVIES.
 // Returns null when the library folder cannot be located.
-/** Locate a native series' library SHOW folder under MEDIA_TV (bracket/year
- * tolerant via normalizeFolder). Null when nothing exists. Same resolution the
- * library reconcile uses, but for the fix-names dir rows. */
-function resolveLibraryShowFolder(request: { library_key?: string | null; type?: string; title?: string }): string | null {
-  if (!request.library_key || request.type !== "series") return null;
-  const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-  const direct = path.join(MEDIA_TV, baseTitle);
-  if (fs.existsSync(direct)) return direct;
+/** Every library show folder under MEDIA_TV that fuzzy-matches a title, in
+ *  readdir order (an exact-name dir, when present, is returned first). Year is
+ *  ignored here — callers disambiguate same-named franchises. */
+function matchLibraryShowFolders(baseTitle: string): string[] {
+  const out: string[] = [];
+  const direct = baseTitle ? path.join(MEDIA_TV, baseTitle) : "";
+  if (direct && fs.existsSync(direct)) out.push(direct);
   const want = normalizeFolder(baseTitle);
-  if (!want) return null;
+  if (!want) return out;
   try {
     for (const d of fs.readdirSync(MEDIA_TV)) {
       const norm = normalizeFolder(d);
       if (!norm) continue;
       if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
-        return path.join(MEDIA_TV, d);
+        const full = path.join(MEDIA_TV, d);
+        if (!out.includes(full)) out.push(full);
       }
     }
   } catch {}
-  return null;
+  return out;
+}
+
+/** Locate a native series' library SHOW folder under MEDIA_TV. Prefers the
+ *  folder whose year (a span like "1987-1990" counts at both ends) matches the
+ *  library_key, so same-named franchises never resolve to each other. */
+function resolveLibraryShowFolder(request: { library_key?: string | null; type?: string; title?: string }): string | null {
+  if (!request.library_key || request.type !== "series") return null;
+  const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+  const candidates = matchLibraryShowFolders(baseTitle);
+  if (candidates.length === 0) return null;
+  const keyYear = libraryKeyYear(request.library_key);
+  if (keyYear != null) {
+    const yearHit = candidates.find((d) => folderYears(path.basename(d)).includes(keyYear));
+    if (yearHit) return yearHit;
+    // No folder carries the year: a lone year-less folder is the strongest
+    // signal that THIS show is stored without its year.
+    const yearless = candidates.filter((d) => folderYears(path.basename(d)).length === 0);
+    if (yearless.length === 1 && candidates.length > 1) return yearless[0];
+  }
+  return candidates[0];
 }
 
 function resolveLibraryFolder(request: {
@@ -412,28 +432,30 @@ function resolveLibraryFolder(request: {
 }): string | null {
   if (!request.library_key) return null;
   if (request.type === "series") {
-    const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-    let showFolder = path.join(MEDIA_TV, baseTitle);
-    if (!fs.existsSync(showFolder)) {
-      const want = normalizeFolder(baseTitle);
-      let found: string | null = null;
-      try {
-        for (const d of fs.readdirSync(MEDIA_TV)) {
-          const norm = normalizeFolder(d);
-          if (!norm) continue;
-          if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
-            found = d;
-            break;
-          }
-        }
-      } catch {}
-      if (found) showFolder = path.join(MEDIA_TV, found);
-    }
-    if (!fs.existsSync(showFolder)) return null;
+    const showFolder = resolveLibraryShowFolder(request);
+    if (!showFolder || !fs.existsSync(showFolder)) return null;
     const seasonNum = request.season || 1;
     return findExistingSeasonFolder(showFolder, seasonNum) || path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
   }
   return MEDIA_MOVIES;
+}
+
+/** Walk a library show folder (show → Sxx subdirs) and hand every video file to
+ *  cb. Bounded depth; a file at the show root is included too. */
+function scanVideoTreeFiles(dir: string, cb: (fp: string) => void, depth = 0): void {
+  if (depth > 3) return;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".")) continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) scanVideoTreeFiles(full, cb, depth + 1);
+    else if (VIDEO_FILE_RE.test(e.name)) cb(full);
+  }
 }
 
 // ---- Orphaned download-dir scan helpers -------------------------------------------------
@@ -947,6 +969,18 @@ function folderYear(name: string): number | null {
   return bare ? parseInt(bare[1], 10) : null;
 }
 
+/** Every year token in a folder name. A range like "DuckTales 1987-1990" yields
+ *  both ends, so a franchise keyed by its first year still matches the folder
+ *  that stores it as a span (library folders commonly do this). */
+function folderYears(name: string): number[] {
+  const out: number[] = [];
+  for (const m of name.matchAll(/(?:19|20)\d{2}/g)) {
+    const y = parseInt(m[0], 10);
+    if (!out.includes(y)) out.push(y);
+  }
+  return out;
+}
+
 interface NamingPieces {
   title: string;
   year: number | null;
@@ -1161,7 +1195,11 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
   if (request.library_key) {
     try {
       const identityRow = identifyByPath(db, fullPath);
-      if (identityRow && identityRow.library_key === request.library_key) return true;
+      // Identity is authoritative: a file registered under a library_key belongs
+      // to exactly that franchise. Never fall through to the title guess below —
+      // same-named franchises (DuckTales 1987 vs 2017) would otherwise each
+      // claim the other's files because the filenames overlap.
+      if (identityRow) return identityRow.library_key === request.library_key;
     } catch {}
   }
   if (matchedNames.size === 0) {
@@ -1428,12 +1466,13 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       }
     }
   } else {
-    const libFolder = resolveLibraryFolder(request);
-    if (libFolder && fs.existsSync(libFolder)) {
-      for (const f of fs.readdirSync(libFolder)) {
-        if (!VIDEO_FILE_RE.test(f)) continue;
-        scanLibraryFile(path.join(libFolder, f));
-      }
+    // Scan EVERY fuzzy-matching library show folder, not just the resolved one.
+    // Twins are keyed by inode, so a same-named sibling (DuckTales 1987 vs
+    // 2017, or a year-range folder) can never be mistaken for this show's file:
+    // each processed inode only ever finds its true library hardlink.
+    const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+    for (const showFolder of matchLibraryShowFolders(baseTitle)) {
+      scanVideoTreeFiles(showFolder, scanLibraryFile);
     }
   }
 
