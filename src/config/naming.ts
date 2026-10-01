@@ -528,13 +528,13 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   // evidence, and it outranks the name: a file tagged [PL] with no Polish audio
   // is not a Polish dub. Streams with no usable code abstain, leaving the title.
   const probed = probeLanguage(probe);
-  // A title that already enumerates its languages ("[EN+FR+ES+DE+JA+KO+ZH+PL]")
-  // or says MULTI is both true and more informative than a bare [MULTI], so it
-  // survives. A title naming ONE language is contradicted by tracks in eight,
-  // so MULTI replaces it.
+  // A title that enumerates its languages ("[EN+FR+ES+DE+JA+KO+ZH+PL]") is both
+  // true and more informative than what the streams can offer, so it survives.
+  // A title that says only "MULTI" — or names ONE language, which tracks in
+  // eight contradict — loses to the probe, which actually read the stream tags.
   const language = probed
     ? probed.multi
-      ? t.language && isMultiLanguageClaim(t.language) ? t.language : probed.lang
+      ? t.language && t.language.includes("+") ? t.language : probed.lang
       : probed.lang
     : (t.language ?? null);
 
@@ -582,7 +582,8 @@ function probeLanguage(probe: ProbeInfo | null): { lang: string | null; multi?: 
   // the title parser could not read back on the next pass.
   const label = (code: string): string | null => (/^[a-z]{2}$/.test(code) ? code.toUpperCase() : null);
   // Matroska's own "mul" (mixed languages inside one track) is a multi signal
-  // on its own, and it must not be read as a language called "MUL".
+  // on its own, and it must not be read as a language called "MUL". The languages
+  // inside such a track are unknown, so this is the one case that says MULTI.
   if (codes.some((c) => c === "mul" || c === "multi")) return { lang: "MULTI", multi: true };
   const distinct = Array.from(new Set(codes));
   if (distinct.length > 1) {
@@ -593,7 +594,12 @@ function probeLanguage(probe: ProbeInfo | null): { lang: string | null; multi?: 
       const only = label(foreign[0]);
       return only ? { lang: only } : null;
     }
-    return { lang: "MULTI", multi: true };
+    // The streams DO name every language, so state them all in track order
+    // ("EN+FR+ES+DE+JA+KO+ZH+PL") rather than a bare MULTI — same information a
+    // Blu-ray rip prints in its own name, and it keeps a processed file and its
+    // library twin on identical tags.
+    const all = distinct.map(label).filter((c): c is string => !!c);
+    return { lang: all.length > 1 ? all.join("+") : "MULTI", multi: true };
   }
   if (isEnglishCode(distinct[0])) return { lang: null };
   const single = label(distinct[0]);
@@ -601,9 +607,6 @@ function probeLanguage(probe: ProbeInfo | null): { lang: string | null; multi?: 
 }
 
 const isEnglishCode = (code: string): boolean => code === "en" || code === "eng";
-
-/** A language claim that already says "several languages" rather than one. */
-const isMultiLanguageClaim = (lang: string): boolean => lang === "MULTI" || lang.includes("+");
 
 /** Normalise one stream language value to a bare ISO code, or null when it says
  *  nothing usable. Accepts the code itself ("pl", "pol") and the same words the
