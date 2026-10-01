@@ -162,25 +162,45 @@ fuzzy signal:
 - `nameImdbId(name)` — pull an embedded id out of a name (`[imdbid-tt0110357]`
   or a bare `tt0110357`). `requestImdbId(db, request)` — the request's own id,
   offline: `tmdb_external_ids` cache → id-anchored `library_key`
-  (`movie:tt0110357:1994`) → id in the stored title.
-- `nameContradictsRequest(...)` — a name carrying a DIFFERENT film's id is
-  rejected **before** identity, `approval_history` names and title fallback.
-  When either side is unknown it returns false, so it can only ever exclude a
-  file, never admit one (raw release names keep working as before).
+  (`movie:tt0110357:1994`) → id in the stored title. `imdbIdOwnerKey(db, id)` —
+  the key that **owns** an id (cache, then any id-anchored `library_key`).
+- `nameContradictsRequest(...)` — a name pinning a DIFFERENT film is rejected
+  **before** identity, `approval_history` names and title fallback. **Symmetric
+  by design**: comparing ids only when *both* sides are known made the veto inert
+  whenever the request had no resolved id (cold cache, TMDB down, slug-only
+  `library_key`) — the file then vanished from one card while still sitting in
+  the other's. So the file's id alone is enough: resolve it to its owner and
+  compare keys. Every signal unknown ⇒ false, so it can only exclude, never
+  admit (raw release names keep working as before).
+- **Year fallback** for files that predate canonical naming and carry no id
+  (`The Lion King 1994 MULTI REMUX …`): a name whose year disagrees with the
+  request's authoritative year (`(YYYY)` in the title, else the `:YYYY` tail of
+  `library_key`) contradicts, but only when it shares ≥2 significant title words.
+  Movies only — episode files carry no film year, so series is untouched. A year
+  inside brackets (`[2019 HDR DV]`) is not read as the film's year.
 - Applied in `processedFileMatchesRequest`, `GET /:id/processed`,
   `backfillRequestIdentity` (movie branch), `POST /:id/processed/scan` (picker
   no longer offers it), `POST /:id/processed/associate` (**409** with the
   rejected names), `findBestRequestForDownload`, scan-downloads native match,
   remove-from-library size-based twin lookup, and `nativeMovieLibraryFolders`
   (library folder resolution skips foreign-id dirs).
-- `autodetectIdentity` resolves the embedded id through `tmdb_external_ids`
-  first, so adopt/import cannot claim a foreign film either.
+- `autodetectIdentity` resolves the embedded id through `imdbIdOwnerKey` first
+  (cache, then id-anchored key), so adopt/import cannot claim a foreign film
+  either — and works with TMDB unset.
 - **Repair**: `healProcessedFilesForRequest` drops forged
-  `approval_history.processed_files` entries whose name pins another film and
-  re-registers the inode under the id's real owner (`reassignContradictedFile`);
+  `approval_history.processed_files` entries and re-attributes the inode;
   startup cleanup in `db/index.ts` does the same in bulk, before the read-time
-  heal. Files are never touched on disk — only bookkeeping. `idx_tmdb_external_ids_imdb`
-  backs the id→owner lookups.
+  heal (`processedFileContradicts`). When the file's id is **unattributable**
+  (cold cache + slug-only key) the wrong `media_files` row is **deleted** rather
+  than left in place or guessed: identity outranks every signal, so a disproven
+  row is worse than no row, and the name/id fallback owns the file until TMDB can
+  attribute it. Files are never touched on disk — only bookkeeping.
+  `idx_tmdb_external_ids_imdb` backs the id→owner lookups.
+- **Known limit**: the flat `PROCESSED_MOVIES` layout is the root cause — every
+  movie in one directory, so correctness depends on these signals rather than on
+  the filesystem. Per-movie subfolders (`filmy/<Title> (Year) [imdbid-tt…]/`)
+  would make the folder itself the disambiguator; deferred as P3 (a migration of
+  existing files plus a change to every flat-dir scan).
 
 ## Folder Structure
 
@@ -713,7 +733,9 @@ SEERR_API_KEY=
 - [ ] titlesMatch tolerates 1 missing word for 3+ word titles (e.g. "LEGO Ninjago" matches "Ninjago Dragons Rising")
 - [ ] Embedded `[imdbid-tt…]` veto: Mufasa's file is rejected under The Lion King (1994) and vice versa, in the processed panel, Fix Names, the scan picker and library folder resolution
 - [ ] Embedded-id veto is inert when either side has no id (raw release names still match)
-- [ ] Startup repair drops forged `processed_files` entries and re-registers the inode under the real owner (no file touched on disk)
+- [ ] Embedded-id veto is **symmetric**: works even when the request's own id is unresolved (cold cache / slug-only key), via the file id's owner
+- [ ] Year fallback rejects a no-id raw name whose year disagrees (`The Lion King 1994 MULTI …` under Mufasa 2024) but only with ≥2 shared title words
+- [ ] Startup repair drops forged `processed_files` entries and re-attributes the inode under the real owner (no file touched on disk)
 - [ ] Import: magnet link adds to qBittorrent and polls for hash
 - [ ] Import: .torrent file upload creates RC and polls for hash
 - [ ] Import: bypassApproval creates AWAITING_APPROVAL status immediately

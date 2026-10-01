@@ -1236,34 +1236,124 @@ function requestImdbId(db: Database, request: any): string | null {
   return nameImdbId(request?.title || "");
 }
 
-/** True when a name carries an explicit IMDb id that belongs to a DIFFERENT film
- *  than this request. "Mufasa The Lion King (2024) [imdbid-tt13186482]" inside
- *  The Lion King (1994) is the same cross-wiring as DuckTales 1987/2017: titles
- *  overlap, ids do not. Returns false when either side is unknown, so it can
- *  only ever exclude a file, never admit one. */
+/** The library_key that OWNS an IMDb id, resolved offline. The cache is the fast
+ *  path; when it is cold (or TMDB is unset) an id-anchored library_key still
+ *  answers, because the app writes keys like "movie:tt0110357:1994" itself.
+ *  Null when the id is unattributable - the caller must then stay inert. */
+function imdbIdOwnerKey(db: Database, imdbId: string): string | null {
+  const id = imdbId.toLowerCase();
+  try {
+    const row = db.prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1").get(id) as any;
+    if (row?.library_key) return row.library_key;
+  } catch {}
+  try {
+    const row = db.prepare("SELECT library_key FROM media_requests WHERE library_key LIKE ? LIMIT 1").get(`%${id}%`) as any;
+    if (row?.library_key) return row.library_key;
+  } catch {}
+  return null;
+}
+
+/** The four-digit year a request is authoritative about: the parenthesised
+ *  "(YYYY)" in the stored title, else the ":YYYY" tail of its library_key. That
+ *  tail comes from TMDB, so it is a fact about the film rather than a guess
+ *  scraped out of a release name. */
+function requestYear(request: any): string | null {
+  const inTitle = String(request?.title || "").match(/\((19|20)\d{2}\)/)?.[0]?.slice(1, -1);
+  if (inTitle) return inTitle;
+  const inKey = String(request?.library_key || "").match(/:(\d{4})$/)?.[1];
+  return inKey ?? null;
+}
+
+/** The year a file/folder name states. A parenthesised "(YYYY)" wins; otherwise
+ *  take the first bare 4-digit year outside any bracket (so "[DV 2019 HDR]" or a
+ *  year embedded in a bracket tag cannot masquerade as the film's year). */
+function nameYear(name: string): string | null {
+  const base = path.basename(name, path.extname(name));
+  const parenthesised = base.match(/\((19|20)\d{2}\)/)?.[0]?.slice(1, -1);
+  if (parenthesised) return parenthesised;
+  const stripped = base.replace(/\[[^\]]*\]/g, " ");
+  return stripped.match(/\b(19|20)\d{2}\b/)?.[0] ?? null;
+}
+
+const TITLE_STOP_WORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "by", "is", "it", "its", "vs", "part",
+]);
+
+/** How many significant words two titles share, ignoring release/quality junk
+ *  that trails a canonical name. Used only to confirm that a year conflict is
+ *  about the SAME franchise rather than an unrelated film that merely has a
+ *  year in its name. */
+function sharedTitleWords(a: string, b: string): number {
+  const strip = (s: string) =>
+    s
+      .replace(/\[[^\]]*\]/g, " ")
+      .replace(/\b(imdbid[-\s]*tt\d{6,9})\b/gi, " ")
+      .replace(/\b(19|20)\d{2}\b/g, " ")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 1 && !TITLE_STOP_WORDS.has(w));
+  const setB = new Set(strip(b));
+  const seen = new Set<string>();
+  for (const w of strip(a)) if (setB.has(w)) seen.add(w);
+  return seen.size;
+}
+
+/** True when a name pins a DIFFERENT film than this request, and how we know:
+ *  the request's own id, the id's real owner, or a conflicting year.
+ *
+ *  Symmetric on purpose. Comparing ids only when BOTH sides are known made the
+ *  veto inert whenever the request itself had no resolved id (cold cache, TMDB
+ *  down, slug-only library_key) - which is exactly why the file could vanish from
+ *  one card while still sitting in the other's. Resolving the FILE's id to its
+ *  owner and comparing keys needs only one side to be known.
+ *
+ *  Unknown on any signal returns false, so this can only ever exclude a file,
+ *  never admit one. */
 function nameContradictsRequest(db: Database, request: any, base: string): boolean {
   const mine = nameImdbId(base);
-  if (!mine) return false;
-  const theirs = requestImdbId(db, request);
-  return !!theirs && mine !== theirs;
+  if (mine) {
+    const theirs = requestImdbId(db, request);
+    if (theirs) return mine !== theirs;
+    const owner = imdbIdOwnerKey(db, mine);
+    if (owner && request?.library_key) return owner !== request.library_key;
+  }
+  // No id in the name (older files predate canonical naming). A conflicting YEAR
+  // is the next strongest signal: "The Lion King 1994 MULTI REMUX ..." has no
+  // id, but shares two title words with "Mufasa: The Lion King (2024)" and
+  // states a year that disagrees - a different film. Movies only: episode files
+  // carry no film year, and re-releases keep the original year, so this cannot
+  // misfire on series.
+  if (request?.type !== "movie" || !request?.library_key) return false;
+  const myYear = requestYear(request);
+  const theirYear = nameYear(base);
+  if (!myYear || !theirYear || myYear === theirYear) return false;
+  return sharedTitleWords(String(request.title || ""), base) >= 2;
 }
 
 /** Re-register a wrongly-attributed file under the library_key that owns its
  *  embedded IMDb id. Without this, media_files would keep claiming the inode
- *  belongs to the old key and every later read would trust that stale row. */
+ *  belongs to the old key and every later read would trust that stale row.
+ *  When the id belongs to nobody we can name, the row is dropped instead of
+ *  left wrong: identity outranks every other signal, so a disproven row is
+ *  worse than no row. */
 function reassignContradictedFile(db: Database, fullPath: string, storedName: string): void {
   try {
     const id = nameImdbId(storedName);
     if (!id) return;
-    const owner = db.prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1").get(id) as any;
-    if (!owner?.library_key) return;
-    const req = db.prepare("SELECT library_key, title, type, season FROM media_requests WHERE library_key = ? LIMIT 1").get(owner.library_key) as any;
-    if (!req?.library_key) return;
-    registerVideoTree(db, fullPath, {
-      library_key: req.library_key,
-      title: req.title || "",
-      season: req.season ?? (req.type === "movie" ? 0 : 1),
-    });
+    const ownerKey = imdbIdOwnerKey(db, id);
+    if (ownerKey) {
+      const req = db.prepare("SELECT library_key, title, type, season FROM media_requests WHERE library_key = ? LIMIT 1").get(ownerKey) as any;
+      if (req?.library_key) {
+        registerVideoTree(db, fullPath, {
+          library_key: req.library_key,
+          title: req.title || "",
+          season: req.season ?? (req.type === "movie" ? 0 : 1),
+        });
+        return;
+      }
+    }
+    const st = fs.statSync(fullPath);
+    if (st.ino > 0) db.prepare("DELETE FROM media_files WHERE dev = ? AND inode = ?").run(st.dev, st.ino);
   } catch {}
 }
 

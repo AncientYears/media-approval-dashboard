@@ -29,6 +29,83 @@ function requestImdbId(db: Database.Database, req: { library_key?: string | null
   return req.title ? nameImdbId(req.title) : null;
 }
 
+/** The library_key that owns an IMDb id, offline: cache first, then an
+ *  id-anchored library_key. Null when unattributable. Lets a name's id veto a
+ *  request even when THAT request has no resolved id of its own. */
+function imdbIdOwnerKey(db: Database.Database, imdbId: string): string | null {
+  const id = imdbId.toLowerCase();
+  try {
+    const row = db.prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1").get(id) as any;
+    if (row?.library_key) return row.library_key;
+  } catch {}
+  try {
+    const row = db.prepare("SELECT library_key FROM media_requests WHERE library_key LIKE ? LIMIT 1").get(`%${id}%`) as any;
+    if (row?.library_key) return row.library_key;
+  } catch {}
+  return null;
+}
+
+const TITLE_STOP_WORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "by", "is", "it", "its", "vs", "part",
+]);
+
+function sharedTitleWords(a: string, b: string): number {
+  const strip = (s: string) =>
+    s
+      .replace(/\[[^\]]*\]/g, " ")
+      .replace(/\b(imdbid[-\s]*tt\d{6,9})\b/gi, " ")
+      .replace(/\b(19|20)\d{2}\b/g, " ")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 1 && !TITLE_STOP_WORDS.has(w));
+  const setB = new Set(strip(b));
+  const seen = new Set<string>();
+  for (const w of strip(a)) if (setB.has(w)) seen.add(w);
+  return seen.size;
+}
+
+/** The year a request is authoritative about: "(YYYY)" in the stored title, else
+ *  the ":YYYY" tail of its library_key (which comes from TMDB). */
+function requestYear(req: { title?: string | null; library_key?: string | null }): string | null {
+  const inTitle = String(req.title || "").match(/\((19|20)\d{2}\)/)?.[0]?.slice(1, -1);
+  if (inTitle) return inTitle;
+  return String(req.library_key || "").match(/:(\d{4})$/)?.[1] ?? null;
+}
+
+/** The year a name states: "(YYYY)" wins, else the first bare 4-digit year
+ *  outside brackets (so a year inside "[DV 2019 HDR]" cannot pass as the film's). */
+function nameYear(name: string): string | null {
+  const base = path.basename(name, path.extname(name));
+  const parenthesised = base.match(/\((19|20)\d{2}\)/)?.[0]?.slice(1, -1);
+  if (parenthesised) return parenthesised;
+  return base.replace(/\[[^\]]*\]/g, " ").match(/\b(19|20)\d{2}\b/)?.[0] ?? null;
+}
+
+/** True when a stored processed_files entry pins a film that is not this
+ *  request's. Three signals, strongest first: the entry's own id against the
+ *  request's id, that id's real owner against the request's library_key, and
+ *  (movies only) a conflicting year on a name that shares the request's title
+ *  words. Any signal unknown leaves the entry alone, so this only ever
+ *  excludes - raw release names and unresolved requests are untouched. */
+function processedFileContradicts(
+  db: Database.Database,
+  req: { type?: string | null; title?: string | null; library_key?: string | null },
+  storedName: string,
+): boolean {
+  const mine = nameImdbId(storedName);
+  if (mine) {
+    const theirs = requestImdbId(db, req);
+    if (theirs) return mine !== theirs;
+    const owner = imdbIdOwnerKey(db, mine);
+    if (owner && req.library_key) return owner !== req.library_key;
+  }
+  if (req.type !== "movie" || !req.library_key) return false;
+  const myYear = requestYear(req);
+  const theirYear = nameYear(storedName);
+  if (!myYear || !theirYear || myYear === theirYear) return false;
+  return sharedTitleWords(String(req.title || ""), storedName) >= 2;
+}
+
 /**
  * Relocate a stored processed_files relative path whose file is missing at boot.
  * Startup cleanup runs before any read-time self-heal, so instead of just
@@ -447,24 +524,36 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
         const filtered: string[] = [];
         const relocated: string[] = [];
         const contradicted: string[] = [];
-        const mine = requestImdbId(db, r);
         for (const f of arr) {
-          // A stored path whose name pins a DIFFERENT film's IMDb id is a forged
-          // link from an earlier title-only fuzzy match ("Mufasa The Lion King
-          // (2024)" listed under "The Lion King (1994)"). The file exists on disk,
-          // so neither the existence check nor inode relocation would drop it —
-          // it must be dropped explicitly and re-attributed to its real owner.
-          const fileImdb = nameImdbId(path.basename(f));
-          if (mine && fileImdb && fileImdb !== mine) {
+          // A stored path that pins a DIFFERENT film is a forged link from an
+          // earlier title-only fuzzy match ("Mufasa The Lion King (2024)" listed
+          // under "The Lion King (1994)"). The file exists on disk, so neither the
+          // existence check nor inode relocation would drop it - it must be
+          // dropped explicitly and re-attributed to its real owner.
+          if (processedFileContradicts(db, r, f)) {
             contradicted.push(f);
             try {
-              const owner = db.prepare("SELECT mr.library_key, mr.title, mr.type, mr.season FROM tmdb_external_ids e JOIN media_requests mr ON mr.library_key = e.library_key WHERE e.imdb_id = ? LIMIT 1").get(fileImdb) as any;
+              const filePath = path.join(baseDir, f);
+              const fileImdb = nameImdbId(path.basename(f));
+              const ownerKey = fileImdb ? imdbIdOwnerKey(db, fileImdb) : null;
+              const owner = ownerKey
+                ? (db.prepare("SELECT library_key, title, type, season FROM media_requests WHERE library_key = ? LIMIT 1").get(ownerKey) as any)
+                : null;
               if (owner?.library_key) {
-                registerVideoTree(db, path.join(baseDir, f), {
+                registerVideoTree(db, filePath, {
                   library_key: owner.library_key,
                   title: owner.title || "",
                   season: owner.season ?? (owner.type === "movie" ? 0 : 1),
                 });
+              } else if (fileImdb) {
+                // The file's id belongs to nobody we can name (cold cache, slug-only
+                // key), but the request we are repairing is provably NOT it. A
+                // disproven media_files row is worse than none: identity outranks
+                // every other signal, so a stale row would keep claiming the inode
+                // for the wrong film. Drop it and let the name/id fallback own the
+                // file until TMDB can attribute the id.
+                const st = fs.statSync(filePath);
+                db.prepare("DELETE FROM media_files WHERE dev = ? AND inode = ?").run(st.dev, st.ino);
               }
             } catch {}
             continue;

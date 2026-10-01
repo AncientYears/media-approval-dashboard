@@ -185,19 +185,26 @@ export function autodetectIdentity(db: Database, absPath: string): FileIdentity 
     const wantTitle = normTitle(parsed.title);
     if (!wantTitle) return null;
     // An id embedded in the path ("[imdbid-tt13186482]") is deterministic and
-    // outranks the title guess below: tmdb_external_ids already knows which
-    // library_key owns that film. This is what keeps "Mufasa The Lion King
-    // (2024)" from being adopted into "The Lion King (1994)" merely because the
-    // titles overlap.
+    // outranks the title guess below: the id's real owner is already recorded
+    // somewhere. This is what keeps "Mufasa The Lion King (2024)" from being
+    // adopted into "The Lion King (1994)" merely because the titles overlap.
     const embedded = absPath.match(/imdbid[-\s]*(tt\d{6,9})/i) || absPath.match(/\b(tt\d{6,9})\b/i);
     if (embedded) {
-      const idOwner = db
-        .prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1")
-        .get(embedded[1].toLowerCase()) as any;
-      if (idOwner?.library_key) {
+      const id = embedded[1].toLowerCase();
+      let ownerKey: string | null = null;
+      try {
+        ownerKey = (db.prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1").get(id) as any)?.library_key || null;
+      } catch {}
+      if (!ownerKey) {
+        // Cache cold (or TMDB unset): an id-anchored library_key still answers.
+        try {
+          ownerKey = (db.prepare("SELECT library_key FROM media_requests WHERE library_key LIKE ? LIMIT 1").get(`%${id}%`) as any)?.library_key || null;
+        } catch {}
+      }
+      if (ownerKey) {
         const owner = db
           .prepare("SELECT library_key, title, season FROM media_requests WHERE library_key = ? LIMIT 1")
-          .get(idOwner.library_key) as any;
+          .get(ownerKey) as any;
         if (owner?.library_key) {
           const { role, episodeNumbers } = deriveIdentityFromFilename(path.basename(absPath));
           return {
