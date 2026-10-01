@@ -405,6 +405,11 @@ export async function fixNamesApplyNative(seedId: number, season: number, paths:
   return response.data;
 }
 
+export async function ensureNativeSeason(seedId: number, season: number) {
+  const response = await api.post(`/requests/native-franchise/${seedId}/ensure-season`, { season });
+  return response.data;
+}
+
 export async function fetchUnmatched() {
   const response = await api.get("/requests/unmatched");
   return response.data;

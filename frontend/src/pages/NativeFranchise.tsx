@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity, ensureNativeSeason } from "../api";
 import { useToast } from "../components/Toast";
 import FixNamesModal from "../components/FixNamesModal";
 
@@ -18,6 +18,7 @@ export default function NativeFranchise() {
   const [refreshing, setRefreshing] = useState<number | null>(null);
   const [language, setLanguage] = useState<string>("");
   const [fixTarget, setFixTarget] = useState<{ id: number; season?: number } | null>(null);
+  const [ensuring, setEnsuring] = useState<number | null>(null);
 
   const loadEpisodes = async (season: any) => {
     if (episodes[season.season]) return;
@@ -79,6 +80,21 @@ export default function NativeFranchise() {
       toast("Metadata unavailable (no TMDB key or server offline?)", "error");
     }
     setRefreshing(null);
+  };
+
+  const handleOpenReleases = async (season: any) => {
+    if (season.request_id != null) {
+      navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } });
+      return;
+    }
+    setEnsuring(season.season);
+    try {
+      const data = await ensureNativeSeason(Number(id), season.season);
+      if (data?.request_id) navigate(`/requests/${data.request_id}`, { state: { back: `/native/${id}` } });
+    } catch {
+      toast("Could not open releases for this season", "error");
+    }
+    setEnsuring(null);
   };
 
   const handleLanguage = async (value: string) => {
@@ -213,13 +229,9 @@ export default function NativeFranchise() {
                   <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); setFixTarget({ id: season.request_id ?? Number(id), season: season.request_id != null ? undefined : season.season }); }} title="Standardize this season's file/folder names">
                     Fix Names
                   </button>
-                  {season.request_id != null ? (
-                    <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
-                      Open Releases
-                    </button>
-                  ) : (
-                    <span className="season-status empty" style={{ fontSize: 11 }}>on disk</span>
-                  )}
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleOpenReleases(season); }} disabled={ensuring === season.season} title={season.request_id != null ? undefined : "No request row yet - creating one for this season"}>
+                    {ensuring === season.season ? "Opening..." : "Open Releases"}
+                  </button>
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
                 </div>
               </div>

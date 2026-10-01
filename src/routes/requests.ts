@@ -7633,6 +7633,60 @@ const type = request.type === "series" ? "series" : "movie";
     }
   });
 
+  /** Attach a disk-first season's processed files to a request's approval_history
+   *  (release_id IS NULL), using the reconcile's processed_files convention
+   *  (show/Sxx/name). Best-effort — never throws. */
+  function attachSeasonProcessed(requestId: number, libraryKey: string, baseTitle: string, season: number): void {
+    try {
+      const folder = seasonFolderForLibraryKey(db, libraryKey, baseTitle, season);
+      if (!folder || !fs.existsSync(folder)) return;
+      const rels: string[] = [];
+      for (const f of fs.readdirSync(folder)) {
+        if (!VIDEO_FILE_RE.test(f)) continue;
+        rels.push(path.relative(PROCESSED_TV, path.join(folder, f)));
+      }
+      if (!rels.length) return;
+      const ah = db.prepare("SELECT id, processed_files FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1").get(requestId) as any;
+      if (ah) {
+        const existing: string[] = JSON.parse(ah.processed_files || "[]");
+        let changed = false;
+        for (const p of rels) if (!existing.includes(p)) { existing.push(p); changed = true; }
+        if (changed) db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(existing), ah.id);
+      } else {
+        db.prepare("INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)").run(requestId, JSON.stringify(rels));
+      }
+    } catch {}
+  }
+
+  // POST /api/requests/native-franchise/:id/ensure-season - find or create the
+  // media_requests row for a disk-first native season so its tools (Open
+  // Releases) have a request to open. Mirrors the library reconcile: a dormant
+  // COMPLETED row keyed by library_key+season, with its processed files attached.
+  router.post("/native-franchise/:id/ensure-season", (req: Request, res: Response) => {
+    try {
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(Number(req.params.id)) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(404).json({ error: "Series request with library_key not found" });
+      }
+      const raw = Math.trunc(Number(req.body?.season));
+      const sNum = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+      let row = db.prepare("SELECT id, status FROM media_requests WHERE type = 'series' AND library_key = ? AND season = ?").get(seed.library_key, sNum) as any;
+      if (!row) {
+        const title = cleanFranchiseTitle(seed.title || "");
+        const created = db.prepare("INSERT INTO media_requests (title, type, season, status, requested_by, episode_count, library_key) VALUES (?, 'series', ?, 'COMPLETED', '[]', NULL, ?)").run(title, sNum, seed.library_key);
+        row = { id: Number(created.lastInsertRowid) };
+        attachSeasonProcessed(row.id, seed.library_key, title, sNum);
+      } else if (row.status === "DISMISSED" || row.status == null) {
+        // A dormant row the franchise list filters out — the user is opening it
+        // because content is on disk, so promote it rather than create a twin.
+        db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
+      }
+      res.json({ request_id: row.id });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // GET /api/requests/:id/processed - List processed files for this specific request
   router.get("/:id/processed", async (req: Request, res: Response) => {
     try {
