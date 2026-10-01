@@ -638,7 +638,18 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     ? t.hdr.filter((x) => !/^(DV|HDR10\+?)$/i.test(x))
     : t.hdr;
   const hdr = Array.from(new Set([...titleHdr, ...probeHdr]));
-  const resolution = t.resolution ?? probeResolution(v?.height);
+  // Real pixel height is the ground truth for resolution, so it OVERRIDES a title
+  // claim rather than only filling a blank: Soul's Polish dub was named after the
+  // 43.6 GB remux and still says "2160p", while the stream measures 720p in 1.9 GB.
+  const resolution = probeResolution(v?.height) ?? t.resolution;
+
+  // "Remux" is a claim about provenance, but it makes checkable promises, and the
+  // probe can refute them: a remux is a bit-exact copy of a disc's main track, so
+  // it is never below 1080 and its main audio is always lossless. Measured 720p
+  // with AAC 2.0 is a transcode no matter what the name claims. The label is
+  // DROPPED rather than replaced — guessing Bluray/WEBDL from a contradiction
+  // would be inventing provenance.
+  const source = sourceRefutedByProbe(t.source, v, primary) ? null : t.source;
 
   // A Polish dub says nothing in its file NAME — the audio stream tag is the only
   // evidence, and it outranks the name: a file tagged [PL] with no Polish audio
@@ -658,11 +669,27 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     ...t,
     language,
     resolution,
+    source,
     audio,
     hdr,
     video,
-    tags: renderTags({ ...t, language, resolution, audio, hdr, video }),
+    tags: renderTags({ ...t, language, resolution, source, audio, hdr, video }),
   };
+}
+
+/** Audio codecs that cannot come off a Blu-ray or UHD disc, so a file whose main
+ *  track is one of them is not a remux whatever its name claims. */
+const NON_DISC_AUDIO = /^(aac|mp3|opus|vorbis|flac|alac|amr|wmav\d?)$/i;
+
+/** Does the measured evidence refute a "Remux" claim? A remux is a bit-exact
+ *  copy of a disc's main track: never below 1080p, always lossless main audio.
+ *  Anything else is a transcode that merely inherited the word. */
+function sourceRefutedByProbe(source: string | null | undefined, v: ProbeVideoInfo | null, primary: ProbeAudioInfo | null): boolean {
+  if (!source || String(source).toLowerCase() !== "remux") return false;
+  const height = v?.height || 0;
+  if (height > 0 && height < 1080) return true;
+  if (primary?.codecName && NON_DISC_AUDIO.test(String(primary.codecName))) return true;
+  return false;
 }
 
 /** What the audio streams say about the release language.
@@ -847,6 +874,7 @@ export function inheritReleaseFacts(
   target: ReleaseTags,
   siblingBase: string | null | undefined,
   vendors?: readonly string[] | null,
+  probe?: ProbeInfo | null,
 ): ReleaseTags {
   if (!siblingBase) return target;
   const sibling = parseReleaseTags(siblingBase.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, ""), vendors);
@@ -861,6 +889,12 @@ export function inheritReleaseFacts(
     if (!out.misc.some((m) => m.toLowerCase() === ed.toLowerCase())) { out.misc.push(ed); changed = true; }
   }
   if (changed) out.tags = renderTags(out);
+  // Inheritance runs AFTER the probe reconciliation, so a "Remux" arriving from a
+  // twin would sneak past it and re-label a transcode. Re-check here.
+  if (probe && out.source) {
+    const refuted = sourceRefutedByProbe(out.source, probe.video || null, probe.audio[0] || null);
+    if (refuted) { out.source = null; out.tags = renderTags(out); }
+  }
   return out;
 }
 

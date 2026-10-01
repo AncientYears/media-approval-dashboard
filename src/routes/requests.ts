@@ -1532,7 +1532,9 @@ async function proposeCanonicalName(
   // Release metadata the probe cannot measure (source, group, edition) is
   // filled from the same-inode sibling's name when this one is silent about it,
   // so a twin named by an arr does not quietly drop facts the other one states.
-  const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base, vendorList(conf)), probe || null), siblingBase, vendorList(conf));
+  // The probe rides along so an inherited "Remux" is still checked against the
+  // measurements — it arrives after the reconciliation inside assembleCanonicalTags.
+  const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base, vendorList(conf)), probe || null), siblingBase, vendorList(conf), probe || null);
   if (request.type === "movie") {
     if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
     const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });

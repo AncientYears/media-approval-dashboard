@@ -113,10 +113,28 @@ session can start with P0 without re-deriving the design.
   one. `mediaProbe` reports `video.streamCount` so a genuinely two-stream file —
   where the title's second codec is the only evidence of it — keeps both; cover
   art (`mjpeg` `attached_pic`) is excluded from that count.
-- **Known cosmetic gap**: `source` is title-only and is never reconciled against
-  measured facts, so a 720p x264/AAC transcode dubbed from a remux keeps
-  `[Remux-2160p]`. This follows the documented rule (probe wins for
-  codec/resolution/channels, title keeps source) and is left alone deliberately.
+- **The probe outranks the title, and `source` is refutable.** Two long-standing
+  rules said "probe wins for codec/resolution/channels, title keeps source", but
+  the code only consulted the probe when the title was *silent* — Soul's Polish
+  dub was named after the 43.6 GB remux and kept `[Remux-2160p]` at 1.9 GB /
+  measured 720p. Fixed in two parts:
+  - **Resolution**: real pixel height now **overrides** a title claim
+    (`probeResolution(v?.height) ?? t.resolution`). A measured height is ground
+    truth; a name is not. No probe ⇒ title still used, since then it's all we have.
+  - **`Remux` is a claim about provenance, and provenance has consequences**: a
+    remux is a bit-exact copy of a disc's main track, so it is never below 1080 and
+    its main audio is always a disc codec. `sourceRefutedByProbe` drops the label
+    when the stream measures `< 1080` or its primary audio is one of
+    `NON_DISC_AUDIO` (`aac|mp3|opus|vorbis|flac|alac|amr|wmav`). It is **dropped,
+    not replaced** — deriving Bluray/WEBDL from a contradiction would be inventing
+    provenance. Deliberately scoped to `Remux` only: `Bluray` alone survives a
+    720p transcode (720p BDs exist, and discs may carry an AAC secondary), and
+    `AC3`/`DD` is mandatory on Blu-ray so it refutes nothing.
+  - The check runs **again after `inheritReleaseFacts`**, because a `Remux` arriving
+    from a same-inode twin lands after the reconciliation inside
+    `assembleCanonicalTags` and would otherwise re-label a transcode. The probe is
+    therefore threaded through `inheritReleaseFacts(target, sibling, vendors, probe)`
+    at its one call site.
 - **"Fix Names" UI (Layer 2, cosmetic)** — user-confirmed shape: a modal listing
   each processed file + its linked library twin (same inode, shown only if
   already in the library) + lone processed files; per-row checkbox to apply the
