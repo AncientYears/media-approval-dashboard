@@ -2334,9 +2334,14 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
   if (after.ino !== st.ino) return { ok: false, error: "Rename changed the inode — aborting" };
 
   // Identity rows are keyed by (dev, inode); refresh the stored release_name.
+  // The column is `inode` (not Node's `st.ino` property) — a bare catch here once
+  // swallowed "no such column: ino", so every rename reported success while the
+  // UPDATE never ran and storedNameMatchesRow's self-heal silently stopped working.
   try {
-    db.prepare("UPDATE media_files SET release_name = ? WHERE dev = ? AND ino = ?").run(path.basename(dest), st.dev, st.ino);
-  } catch {}
+    db.prepare("UPDATE media_files SET release_name = ? WHERE dev = ? AND inode = ?").run(path.basename(dest), st.dev, st.ino);
+  } catch (e) {
+    console.error(`[FixNames] release_name refresh FAILED for ${dest} (dev=${st.dev} ino=${st.ino}):`, e);
+  }
   // Refresh approval_history.processed_files entries (PROCESSED-relative).
   try {
     const rows = db.prepare(
