@@ -198,12 +198,35 @@ function editionLabel(word: string): string {
  *  piece, which would otherwise shred "[Dual Audio]" into "[Dual][Audio]". */
 const DUB_MARKERS = new Set(["DUB", "DUBBED", "DUBBING"]);
 
+/** Words that mark a DUBBED audio track, not merely a language. A Polish
+ *  release ships both a dubbed and an original track, so the audio source is a
+ *  real quality tier: dropping the marker made `[PL] [AC3]` look like the same
+ *  thing whether the audio was dubbed or not. */
+const DUB_WORDS = new Set([...DUB_MARKERS, "LEKTOR", "LEKTORSKI", "LEKTORSKIE", "NAUKA"]);
+
+/** Word-form resolutions. A title often states the class ("4K", "UHD", "2K")
+ *  instead of a pixel count, and the class IS the tier we render — so "UHD
+ *  BluRay" with no "2160p" still names a 2160p file. Bare "HD" is deliberately
+ *  absent: it means 720p to one scene and 1080p to another, and the kernel
+ *  never guesses. */
+const RES_WORDS: Record<string, string> = {
+  "8K": "4320p",
+  "4K": "2160p",
+  "UHD": "2160p",
+  "ULTRAHD": "2160p",
+  "2K": "1440p",
+  "QHD": "1440p",
+  "FHD": "1080p",
+  "FULLHD": "1080p",
+};
+
 /** Words that mean a language without naming it. Polish scene releases say
  *  "Lektor" or "Polski", never "PL". */
 const LANG_ALIASES: Record<string, string> = {
   LEKTOR: "PL",
   LEKTORSKI: "PL",
   LEKTORSKIE: "PL",
+  NAUKA: "PL",
   POLSKI: "PL",
   POLSKIE: "PL",
   POLISH: "PL",
@@ -240,6 +263,10 @@ export interface ReleaseTags {
   tags: string;
   group: string | null;
   language: string | null;
+  /** A dub was explicitly marked (DUB/DUBBING/LEKTOR/NAUKA/…). Polish releases
+   *  are split between a dubbed and an original track, so the audio *source*
+   *  is a real quality tier and must survive naming — see `DUB_WORDS`. */
+  dubbed: boolean;
   source: string | null;
   resolution: string | null;
   audio: string[];
@@ -296,6 +323,7 @@ function hdrFlagOf(tok: string): string | null {
 const HDR_RANK = ["DV", "HDR10+", "HDR10", "HDR", "HLG", "WCG"];
 function renderTags(f: {
   language: string | null;
+  dubbed: boolean;
   source: string | null;
   resolution: string | null;
   audio: string[];
@@ -304,6 +332,9 @@ function renderTags(f: {
   misc: string[];
 }): string {
   let tags = f.language ? `[${f.language}] ` : "";
+  // Right after the language, because a dub is a property OF the audio: the
+  // same Polish language covers both the dubbed track and the original one.
+  if (f.dubbed) tags += `[DUB]`;
   if (f.source && f.resolution) tags += `[${f.source}-${f.resolution}]`;
   else if (f.source) tags += `[${f.source}]`;
   else if (f.resolution) tags += `[${f.resolution}]`;
@@ -548,7 +579,7 @@ const ISO3_TO_2: Record<string, string> = {
  * than preserving unrecognized short bracket tags verbatim.
  */
 export function parseReleaseTags(baseName: string): ReleaseTags {
-  const out: ReleaseTags = { tags: "", group: null, language: null, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
+  const out: ReleaseTags = { tags: "", group: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
   // Editions ("International", "Extended", "Director's Cut", …) are preserved
@@ -567,6 +598,8 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   }
 
   const misc: string[] = [];
+  // "2160p" is an explicit claim; "4K"/"UHD" is a class that only fills a gap.
+  let sawNumericRes = false;
   const tryToken = (tok: string, fromBracket: boolean) => {
     const at = tok.trim();
     if (!at) return;
@@ -574,9 +607,13 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     // Polish releases are marked "Lektor"/"Polski" rather than by a country
     // code, so those words ARE the language. Resolved before LANG_TAGS so they
     // are not also left behind in the trailing misc tags.
-    const alias = LANG_ALIASES[at.toUpperCase()];
+    const up = at.toUpperCase();
+    const alias = LANG_ALIASES[up];
     if (alias) {
       out.language = alias;
+      // "Lektor"/"Nauka" name the dubbing studio, so they say the audio is a
+      // dub on top of saying the language.
+      if (DUB_WORDS.has(up)) out.dubbed = true;
       return;
     }
     // "PLDUB", "PL-DUB", "PL.DUB" — the country code glued to a dub marker.
@@ -584,13 +621,17 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     const dubbed = at.toUpperCase().match(/^([A-Z]{2})[-_.]?(?:DUB|DUBBED|DUBBING)$/);
     if (dubbed) {
       out.language = dubbed[1];
+      out.dubbed = true;
       return;
     }
-    if (LANG_TAGS.has(at.toUpperCase()) && at.length <= 12) {
-      const up = at.toUpperCase();
-      // "Dubbing" says a track was dubbed, not WHICH language, so it must not
-      // overwrite a real one: "[Lektor PL] [DUBBING]" is still PL.
-      if (DUB_MARKERS.has(up) && out.language && !DUB_MARKERS.has(out.language)) return;
+    if (DUB_MARKERS.has(up)) {
+      // A bare "DUB"/"DUBBED"/"DUBBING" names the audio SOURCE, not a language,
+      // so it must never become one ("[Dubbing]" alone was rendering as
+      // `[DUBBING]`) — it only marks the dub.
+      out.dubbed = true;
+      return;
+    }
+    if (LANG_TAGS.has(up) && at.length <= 12) {
       out.language = up;
       return;
     }
@@ -603,8 +644,19 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     }
     const srcM = at.match(SOURCE_RE);
     const resM = at.match(RES_RE);
+    const resWord = RES_WORDS[up.replace(/[-_.]/g, "")] || null;
     if (srcM) out.source = normalizeSource(srcM[1]);
-    if (resM) out.resolution = `${resM[1]}p`;
+    if (resM) {
+      // An explicit pixel count is the most specific claim there is, so it wins
+      // over any word form ("4K" must not overwrite a stated "1080p").
+      out.resolution = `${resM[1]}p`;
+      sawNumericRes = true;
+    } else if (resWord && !sawNumericRes) {
+      // Between word forms keep the highest tier, so "8K.UHD" does not end up
+      // naming an 8K file as 2160p just because "UHD" came last.
+      const cur = out.resolution;
+      if (!cur || parseInt(resWord, 10) >= parseInt(cur, 10)) out.resolution = resWord;
+    }
     const audio = parseAudioToken(at);
     if (audio) {
       if (audio === "Atmos") {
@@ -627,7 +679,7 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
         return;
       }
     }
-    if (!srcM && !resM && !audio && !video) {
+    if (!srcM && !resM && !resWord && !audio && !video) {
       // HDR flags (DV, HDR10Plus, HDR10, HLG, ...) are recognized from loose
       // dotted words AND brackets. Unknown short bracket tags are preserved
       // verbatim (except "[Unknown]"/"[Group]"/"[NoGrp]", which are dropped).
@@ -662,13 +714,20 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
       misc.push(phrase);
       continue;
     }
-    for (const piece of m[1].split(/\s+/)) tryToken(piece, true);
+    // Split on whitespace, and on a dot that is NOT between digits, so
+    // "[UHD.BluRay]" becomes two recognizable tags while channel numbers
+    // ("[AC3 2.0]", "[DD+5.1]") stay in one piece and never get torn apart.
+    for (const piece of m[1].split(/(?<!\d)\.(?!\d)|\s+/)) {
+      if (piece.trim()) tryToken(piece, true);
+    }
   }
   // Loose dotted/separated release tail. Re-join known multi-word compounds
   // ("WEB" "DL", "BD" "RIP", "BLU" "RAY") so "1080p.WEB-DL.x265" classifies.
   // A protected placeholder keeps channel numbers ("DD+5.1", "7.1") intact so
-  // the split never tears the "5.1" apart from its codec.
-  const keepNums = base.replace(/(\d)\.(\d)/g, "$1\x00$2");
+  // the split never tears the "5.1" apart from its codec. Only a digit that does
+  // NOT follow another digit is protected: "2021.2K" is a year then a 2K class,
+  // not a decimal, and fusing them hid the resolution entirely.
+  const keepNums = base.replace(/(?<!\d)(\d)\.(\d)/g, "$1\x00$2");
   const looseTokens = keepNums.replace(/[\[({][^\])}]*[\])}]/g, " ").split(/[.\s_]+/).filter((t) => t).map((t) => t.replace(/\x00/g, "."));
   for (let i = 0; i < looseTokens.length; i++) {
     const t = looseTokens[i];
