@@ -1257,7 +1257,7 @@ function episodeTitleFor(db: Database, request: any, base: string, ep: { season:
 function episodeTitleFromSourceName(base: string): string | null {
   // "S0XE03" is a season-0 special marker, not a typo — accept it alongside the
   // normal S00E03 so the title after it is still found.
-  const m = base.match(/\b[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
+  const m = base.match(/(?<![A-Za-z0-9])[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
   if (!m) return null;
   let rest = m[1];
   // Cut the release tail: first bracket group, or a trailing tag word run. A
@@ -5605,7 +5605,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           const targetSeason = season.season;
           const mapped = allMapped.filter((r: RadarrSearchResult) => {
             const title = (r.title || "").toUpperCase();
-            const sMatch = title.match(/\bS(\d{1,2})(?:E\d|\b)/);
+            // "_" is a word char, so "\bS" never matches an underscore-glued
+            // season marker ("Show_S01E01") — look behind on alphanumerics only.
+            const sMatch = title.match(/(?<![A-Za-z0-9])S(\d{1,2})(?:E\d|\b)/);
             if (sMatch) {
               return parseInt(sMatch[1], 10) === targetSeason;
             }
