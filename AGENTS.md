@@ -997,6 +997,22 @@ SEERR_API_KEY=
   `[imdbid-tt…]` than the request's own id — a canonical name states identity
   outright, settling what a missing row could not. Applied at all four preview
   sites *and* the apply path, or preview and apply would disagree.
+- **`ino` is `fs.Stats`, `inode` is the column.** `media_files` is keyed
+  `(dev, inode)`, but the inode value itself comes from `st.ino` — Node's
+  `fs.Stats` property. Mixing the two in SQL throws `no such column: ino` at
+  prepare time. The post-rename `release_name` refresh did exactly that behind a
+  bare `catch {}`, so every Fix Names rename reported success while the UPDATE
+  never ran and `release_name` kept the PRE-rename name. That is not cosmetic:
+  `storedNameMatchesRow()` compares `release_name` against a real on-disk
+  basename to self-heal stale `approval_history` paths, so a stale value
+  silently disables that recovery. Two rules follow: a `catch {}` around a write
+  must log, and startup re-derives the truth by stat anyway — `reconcile` in
+  `db/index.ts` walks the four managed trees, maps `dev:ino -> basename`, and
+  rewrites only rows that disagree (idempotent, no-op once clean). It exists
+  because `media_files` stores no path, so the disk is the only source for a
+  name the app may have failed to write. Retitle/fix-identity repairs the same
+  value through a different path: re-registering inodes hits the
+  `release_name = excluded.release_name` upsert in `identity.ts`.
 - **Version count excludes DOWNLOADING**: `release_count` and `total_size_mb` subqueries add `AND mr.status != 'DOWNLOADING'` so in-progress torrents are not counted as versions. Dashboard outer WHERE includes `IN ('DOWNLOADING', 'COMPLETED')` to keep visible. Managed endpoint at line 646-660.
 - **Unmatched match (series) multi-season**: `POST /unmatched/:id/match` for series scans `content_path` for season subdirectories, creates one request per detected season. Response includes `seasons` array.
 - **isSeasonPackTitle range patterns**: Handles `S##-S##` and `S##-##` ranges in torrent names (e.g. `[S01-S03]` covers S01, S02, S03). Used by franchise coverage detection.

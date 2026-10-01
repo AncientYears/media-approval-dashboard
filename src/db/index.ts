@@ -1,7 +1,7 @@
 ﻿import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
-import { fromQBittorrentPath, PROCESSED_MOVIES, PROCESSED_TV } from "../config/paths";
+import { fromQBittorrentPath, PROCESSED_MOVIES, PROCESSED_TV, MEDIA_MOVIES, MEDIA_TV } from "../config/paths";
 import { identifyByPath, deriveIdentityFromFilename, registerVideoTree } from "../services/identity";
 
 export interface DBInstance {
@@ -741,6 +741,56 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       console.log(
         `[DB] Cleared ${orphanIdentities.length} orphaned identity row(s) pointing at ${keys.length} unowned key(s): ${keys.slice(0, 5).join(", ")}${keys.length > 5 ? ", …" : ""}`,
       );
+    }
+
+    // media_files.release_name is refreshed after every Fix Names rename, but that
+    // UPDATE briefly ran with the wrong column name ("ino" instead of "inode") behind
+    // a bare catch {}, so the SQL error was swallowed and every renamed file kept its
+    // PRE-rename name. That matters beyond cosmetics: storedNameMatchesRow() compares
+    // this value against a real on-disk basename to self-heal stale approval_history
+    // paths, so a stale release_name silently disables that recovery.
+    // media_files has no path column, so recover the truth by stat: walk the managed
+    // trees, map dev:ino -> basename, and refresh only rows that disagree. Idempotent
+    // (writes on mismatch only) and a no-op once names are correct.
+    const nameByInode = new Map<string, string>();
+    const walkForNames = (dir: string, depth = 0): void => {
+      if (depth > 6) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          walkForNames(full, depth + 1);
+        } else if (e.isFile() && /\.(mkv|mp4|avi|mov|ts|wmv|m4v)$/i.test(e.name)) {
+          try {
+            const st = fs.statSync(full);
+            if (st.ino) nameByInode.set(`${st.dev}:${st.ino}`, e.name);
+          } catch {}
+        }
+      }
+    };
+    for (const root of [PROCESSED_MOVIES, PROCESSED_TV, MEDIA_MOVIES, MEDIA_TV]) walkForNames(root);
+    if (nameByInode.size > 0) {
+      const refreshName = db.prepare(
+        "UPDATE media_files SET release_name = ?, updated_at = datetime('now') WHERE dev = ? AND inode = ?",
+      );
+      const renamed: string[] = [];
+      const allRows = db.prepare("SELECT dev, inode, release_name FROM media_files").all() as any[];
+      for (const r of allRows) {
+        const actual = nameByInode.get(`${r.dev}:${r.inode}`);
+        if (actual && actual !== r.release_name) {
+          refreshName.run(actual, r.dev, r.inode);
+          renamed.push(`${r.release_name || "(null)"} -> ${actual}`);
+        }
+      }
+      if (renamed.length > 0) {
+        console.log(`[DB] Refreshed ${renamed.length} stale media_files.release_name value(s) from disk:`);
+        for (const line of renamed) console.log(`[DB]   ${line}`);
+      }
     }
 
     // Migration: create unmatched_torrents table if not exists
