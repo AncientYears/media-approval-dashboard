@@ -7112,13 +7112,33 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       if (!seed) return res.status(404).json({ error: "Request not found" });
       if (seed.type !== "movie") return res.status(400).json({ error: "Native movie request required" });
       const lang = franchiseLanguage(db, seed.library_key) || process.env.TMDB_LANGUAGE || "en-US";
-      // Prefer a search term that can actually find the film: the canonical name
-      // behind the current key beats a stored title that is known to be junk.
-      let query = cleanFranchiseTitle(seed.title || "");
-      const fromKey = seed.library_key ? cleanFranchiseTitle(String(seed.library_key).replace(/^movie:/, "").replace(/:\d{4}$/, "").replace(/-/g, " ")) : "";
-      if (fromKey && fromKey.length > query.length) query = fromKey;
-      const candidates = query ? await searchTMDB(query, "movie", lang).catch(() => []) : [];
-      res.json({ query, current_key: seed.library_key, candidates });
+      // Search under EVERY spelling this card could be found by, rather than
+      // picking one. The stored title is the readable one; the key slug is a
+      // LOSSY artifact of it ("służbie" -> "s u bie", diacritics folded and
+      // separators injected), so it can only ever be a fallback for a title that
+      // is empty or mangled -- preferring it because it is LONGER sent the search
+      // for "Asterix i Obelix W służbie Jej Królewskiej Mości" out as
+      // "asterix i obelix w s u bie jej kr lewskiej mo ci" and found nothing.
+      // Merging both (deduped by TMDB id) means neither can hide the film from
+      // the one spelling that does resolve it.
+      const fromTitle = cleanFranchiseTitle(seed.title || "");
+      const fromKey = seed.library_key
+        ? cleanFranchiseTitle(String(seed.library_key).replace(/^movie:/, "").replace(/:\d{4}$/, "").replace(/-/g, " "))
+        : "";
+      const queries = Array.from(new Set([fromTitle, fromKey].map((q) => q.trim()).filter((q) => q.length > 2)));
+      const seen = new Set<number>();
+      const candidates: any[] = [];
+      for (const q of queries) {
+        const hits = await searchTMDB(q, "movie", lang).catch(() => []);
+        for (const hit of hits || []) {
+          if (seen.has(hit.id)) continue;
+          seen.add(hit.id);
+          candidates.push(hit);
+        }
+      }
+      // The title stays the reported query: it is what the user recognises, and
+      // it is the spelling the canonical name is built from once they pick.
+      res.json({ query: fromTitle || fromKey || "", searched: queries, current_key: seed.library_key, candidates });
     } catch (error: any) {
       console.error("Error listing identity candidates:", error.message || error);
       res.status(500).json({ error: "Failed to list identity candidates" });
