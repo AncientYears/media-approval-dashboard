@@ -120,7 +120,15 @@ session can start with P0 without re-deriving the design.
    release group.** One tag per fact: the HDR bracket prints `[DV HDR10]` or
    `[HDR10+]`, never a redundant member — a bare `HDR` is the umbrella word and
    is dropped once any specific flag is present (the title claiming `HDR` next
-   to a probed `HDR10` used to render `[HDR10 HDR]`). Language is the exception to "title keeps language": a Polish
+   to a probed `HDR10` used to render `[HDR10 HDR]`). HDR10+ is read from
+   `HDR10P`/`HDR10Pr`/`HDR10Plus`/`HDR10+`, and within the HDR10 family the TITLE
+   refines the probe rather than fighting it: HDR10+ is dynamic metadata layered
+   on the ST 2086 base, and ffprobe reports only that base unless it survived
+   muxing as ST 2094 side data, so a name saying `HDR10P` is the better evidence
+   where the probe saw plain `HDR10`. Across transfer functions it IS a conflict
+   and the probe wins: a title claiming `DV`/`HDR10+` on a stream measured as
+   `HLG` is dropped instead of printing `[DV HDR10+ HLG]`. `WCG`/`BT2020` is a
+   gamut rather than a transfer, so it coexists with everything. Language is the exception to "title keeps language": a Polish
    dub says nothing in its file NAME, so the stream tag outranks it — but ONLY
    while exactly one foreign language sits beside English (`pol + eng` → `[PL]`).
    Two or more foreign languages is a **multi** release: no single one
