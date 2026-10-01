@@ -221,7 +221,14 @@ const RES_WORDS: Record<string, string> = {
 };
 
 /** Words that mean a language without naming it. Polish scene releases say
- *  "Lektor" or "Polski", never "PL". */
+ *  "Lektor" or "Polski", never "PL".
+ *
+ *  The ISO-639-2/3-letter codes live here too, mapped to the SAME two-letter
+ *  form LANG_TAGS uses. That keeps the title parser and the ffprobe stream tags
+ *  speaking one alphabet: a name can state "[FRA]" and be normalised to [FR],
+ *  and a probe reading a "fre" track yields FR. Previously the probe emitted
+ *  mixed-width labels (FRE→FRA, JPN→JPN) that the title parser could not read
+ *  back, so a canonical name was not idempotent for those languages. */
 const LANG_ALIASES: Record<string, string> = {
   LEKTOR: "PL",
   LEKTORSKI: "PL",
@@ -230,6 +237,40 @@ const LANG_ALIASES: Record<string, string> = {
   POLSKI: "PL",
   POLSKIE: "PL",
   POLISH: "PL",
+  POL: "PL",
+  ENG: "EN",
+  FRE: "FR",
+  FRA: "FR",
+  FRD: "FR",
+  GER: "DE",
+  DEU: "DE",
+  SPA: "ES",
+  ITA: "IT",
+  NLD: "NL",
+  DUT: "NL",
+  POR: "PT",
+  RUS: "RU",
+  JPN: "JA",
+  KOR: "KO",
+  CHI: "ZH",
+  ZHO: "ZH",
+  SWE: "SE",
+  NOR: "NO",
+  DAN: "DK",
+  FIN: "FI",
+  CZE: "CZ",
+  CES: "CZ",
+  HUN: "HU",
+  ROM: "RO",
+  RUM: "RO",
+  GRE: "GR",
+  GRC: "GR",
+  UKR: "UK",
+  TUR: "TR",
+  ARA: "AR",
+  HEB: "HE",
+  THA: "TH",
+  VIE: "VI",
 };
 
 const MISC_PHRASES: Record<string, string> = {
@@ -487,7 +528,15 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   // evidence, and it outranks the name: a file tagged [PL] with no Polish audio
   // is not a Polish dub. Streams with no usable code abstain, leaving the title.
   const probed = probeLanguage(probe);
-  const language = probed ? probed.lang : (t.language ?? null);
+  // A title that already enumerates its languages ("[EN+FR+ES+DE+JA+KO+ZH+PL]")
+  // or says MULTI is both true and more informative than a bare [MULTI], so it
+  // survives. A title naming ONE language is contradicted by tracks in eight,
+  // so MULTI replaces it.
+  const language = probed
+    ? probed.multi
+      ? t.language && isMultiLanguageClaim(t.language) ? t.language : probed.lang
+      : probed.lang
+    : (t.language ?? null);
 
   return {
     ...t,
@@ -505,12 +554,21 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
  *  - `{ lang: null }` → the evidence contradicts a language claim: a single
  *    English track is not a distinguishing tag AND not a Polish dub, whatever
  *    the file name claims. Ground truth beats the name.
+ *  - `{ lang, multi: true }` → the release is MULTI-language.
  *  - `{ lang }` → use it.
  *
  *  A Polish dub carries nothing in its file NAME, so the stream tag is the only
  *  evidence. When tracks disagree the release is a dub, and the dub is what
- *  identifies it — "pol + eng" is a Polish release, so it is [PL], not [EN]. */
-function probeLanguage(probe: ProbeInfo | null): { lang: string | null } | null {
+ *  identifies it — "pol + eng" is a Polish release, so it is [PL], not [EN].
+ *
+ *  That only holds while there is ONE foreign language. A Blu-ray remux with
+ *  en/fr/es/de/ja/ko/zh/pl tracks is multi-language, and picking the first
+ *  foreign code in stream order just reports whichever language the encoder
+ *  happened to list first (The Lion King was tagged [FRA] for having 8 tracks).
+ *  No single language identifies a multi release, so say MULTI and keep any
+ *  enumeration the title already gave ([EN+FR+ES+DE+JA+KO+ZH+PL] is strictly
+ *  more informative than [MULTI]). */
+function probeLanguage(probe: ProbeInfo | null): { lang: string | null; multi?: boolean } | null {
   const streams = probe?.audio || [];
   // `language` first, then the track's "title" tag — a lot of rips put the
   // language in one and leave the other empty, and both say the same thing.
@@ -518,17 +576,34 @@ function probeLanguage(probe: ProbeInfo | null): { lang: string | null } | null 
     .map((a) => streamLanguageCode(a.language) || streamLanguageCode(a.title))
     .filter((c): c is string => !!c);
   if (!codes.length) return null;
-  const label = (code: string): string | null => {
-    if (code.length === 3) return ISO3_TO_2[code.toUpperCase()] || (/^[a-z]{3}$/.test(code) ? code.toUpperCase() : null);
-    return /^[a-z]{2}$/.test(code) ? code.toUpperCase() : null;
-  };
+  // `streamLanguageCode` already folded the ISO-639-2 codes through
+  // LANG_ALIASES, so a usable code is two letters. Anything else is a language
+  // we do not speak: abstain and let the title decide, rather than emit a label
+  // the title parser could not read back on the next pass.
+  const label = (code: string): string | null => (/^[a-z]{2}$/.test(code) ? code.toUpperCase() : null);
+  // Matroska's own "mul" (mixed languages inside one track) is a multi signal
+  // on its own, and it must not be read as a language called "MUL".
+  if (codes.some((c) => c === "mul" || c === "multi")) return { lang: "MULTI", multi: true };
   const distinct = Array.from(new Set(codes));
-  if (distinct.length > 1) return { lang: label(distinct.find((c) => !isEnglishCode(c)) || distinct[0]) };
+  if (distinct.length > 1) {
+    const foreign = distinct.filter((c) => !isEnglishCode(c));
+    // One foreign language beside English is the dub case that identifies the
+    // release. Two or more means multi, where naming one would be arbitrary.
+    if (foreign.length === 1) {
+      const only = label(foreign[0]);
+      return only ? { lang: only } : null;
+    }
+    return { lang: "MULTI", multi: true };
+  }
   if (isEnglishCode(distinct[0])) return { lang: null };
-  return { lang: label(distinct[0]) };
+  const single = label(distinct[0]);
+  return single ? { lang: single } : null;
 }
 
 const isEnglishCode = (code: string): boolean => code === "en" || code === "eng";
+
+/** A language claim that already says "several languages" rather than one. */
+const isMultiLanguageClaim = (lang: string): boolean => lang === "MULTI" || lang.includes("+");
 
 /** Normalise one stream language value to a bare ISO code, or null when it says
  *  nothing usable. Accepts the code itself ("pl", "pol") and the same words the
@@ -543,38 +618,6 @@ function streamLanguageCode(raw: string | null | undefined): string | null {
   if (/^[a-z]{3}$/.test(word)) return word;
   return null;
 }
-
-const ISO3_TO_2: Record<string, string> = {
-  POL: "PL",
-  ENG: "EN",
-  GER: "DE",
-  FRE: "FRA",
-  SPA: "ESP",
-  ITA: "ITA",
-  NLD: "NLD",
-  POR: "POR",
-  RUS: "RUS",
-  JPN: "JPN",
-  KOR: "KOR",
-  CHI: "CHI",
-  ZHO: "CHI",
-  SWE: "SWE",
-  NOR: "NOR",
-  DAN: "DAN",
-  FIN: "FIN",
-  CZE: "CZE",
-  CES: "CZE",
-  HUN: "HUN",
-  ROU: "ROU",
-  GRE: "GRE",
-  UKR: "UKR",
-  TUR: "TUR",
-  ARA: "ARA",
-  HEB: "HEB",
-  THA: "THA",
-  VIE: "VIE",
-  IND: "IND",
-};
 
 /**
  * Extract the trailing release metadata from a filename base so it can survive
@@ -634,6 +677,18 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
       // so it must never become one ("[Dubbing]" alone was rendering as
       // `[DUBBING]`) — it only marks the dub.
       out.dubbed = true;
+      return;
+    }
+    // "EN+FR+ES+DE+JA+KO+ZH+PL", "PL+EN" — a multi-language release enumerates
+    // its audio tracks with "+". Every part has to be a known code, so codec or
+    // resolution lists ("x264+x265", "1080p+720p") can never be mistaken for
+    // one. The enumeration is the honest description of a multi release and is
+    // the one form more informative than a bare "[MULTI]", so it is kept whole.
+    const parts = at.toUpperCase().split("+").map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 1 && parts.every((p) => LANG_TAGS.has(p) || LANG_ALIASES[p])) {
+      const codes = parts.map((p) => LANG_ALIASES[p] || p);
+      out.dubbed = out.dubbed || codes.some((c) => DUB_MARKERS.has(c));
+      out.language = codes.filter((c) => !DUB_MARKERS.has(c)).join("+") || "MULTI";
       return;
     }
     if (LANG_TAGS.has(up) && at.length <= 12) {
