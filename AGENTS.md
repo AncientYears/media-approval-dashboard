@@ -112,7 +112,7 @@ session can start with P0 without re-deriving the design.
   (`src/services/mediaProbe.ts` → `assembleCanonicalTags`) before title
   inference — resolution from real pixel height, video codec + bit depth, HDR
   flags (DV/HDR10+/HDR10/HLG from `side_data_list`/`color_transfer`), primary
-  audio codec + channel layout (TrueHD → TrueHD 7.1 / "Atmos" still only from
+     audio codec + channel layout (TrueHD → TrueHD 7.1 / "Atmos" still only from
    the title). Probe wins for codec/resolution/channels; title keeps
    source/language/group. Multi-word brackets (`[DV HDR10+]`,
    `[TrueHD Atmos 7.1]`, `[AC3 2.0]`) are split and merged, channel numbers are
@@ -130,7 +130,13 @@ session can start with P0 without re-deriving the design.
    contradict, defers to the probe. Bare `[MULTI]` remains for a Matroska `mul`
    track, whose sub-languages are unknown. ISO-639 codes are folded to the
    same two-letter alphabet `LANG_TAGS` uses, so `[FRE]` normalises to `[FR]`
-   and canonical names round-trip. Folders keep their structure; `move-to-library` dirs,
+   and canonical names round-trip. **The probe must collect every audio track**:
+   capping it made an 8-language remux look like `eng + one foreign` (a French
+   dub) simply because only the first 4 of 12 tracks were read. Languages named
+   only in a track's free-text title (`7.1 fr`, `pl ac3 6ch 48 khz`) count too,
+   via `PROBE_LANG_NAMES` (kept out of `LANG_ALIASES`, which the file-name
+   parser shares and where "English" is a title, not a tag). Folders keep their
+   structure; `move-to-library` dirs,
   workspace outputs, adopt and library-import are NOT renamed (P2's Fix Names
   owns existing trees). Native requests only — arr-linked moves still defer
   naming to Radarr/Sonarr. `uniqueDestPath` idempotently reuses same-inode
@@ -577,7 +583,7 @@ resolution inherits the pref through every call site.
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
 | `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge; probe language enumerates 2+ foreign streams in track order, dub only when exactly one), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
-| `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — resolution/height, video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG) |
+| `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — resolution/height, video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG), and **every** audio track's `language`/`title` (the language tag reads all of them — never truncate, a 12-track remux read as 4 tracks looked like a single-language dub) |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
 | `src/jobs/pollRadarr.ts` | Discovers wanted movies, searches |
