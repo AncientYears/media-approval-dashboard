@@ -608,17 +608,75 @@ function probeLanguage(probe: ProbeInfo | null): { lang: string | null; multi?: 
 
 const isEnglishCode = (code: string): boolean => code === "en" || code === "eng";
 
+/** Full language NAMES as they appear in stream track titles ("English
+ *  Commentary", "Polish dub", "Français"). Deliberately NOT folded into
+ *  LANG_ALIASES: that table is shared with the file-name parser, and "English"
+ *  or "French" inside a film title ("The English Patient") is not a language
+ *  tag. Track titles have no such ambiguity. */
+const PROBE_LANG_NAMES: Record<string, string> = {
+  ENGLISH: "EN",
+  FRENCH: "FR",
+  GERMAN: "DE",
+  SPANISH: "ES",
+  ITALIAN: "IT",
+  DUTCH: "NL",
+  PORTUGUESE: "PT",
+  BRAZILIAN: "PT",
+  RUSSIAN: "RU",
+  UKRAINIAN: "UK",
+  JAPANESE: "JA",
+  KOREAN: "KO",
+  CHINESE: "ZH",
+  MANDARIN: "ZH",
+  CZECH: "CZ",
+  SLOVAK: "SK",
+  HUNGARIAN: "HU",
+  ROMANIAN: "RO",
+  GREEK: "GR",
+  TURKISH: "TR",
+  SWEDISH: "SE",
+  NORWEGIAN: "NO",
+  DANISH: "DK",
+  FINNISH: "FI",
+  BULGARIAN: "BG",
+  VIETNAMESE: "VI",
+  THAI: "TH",
+  HEBREW: "HE",
+  ARABIC: "AR",
+  HINDI: "HI",
+  INDONESIAN: "ID",
+};
+
+/** The two-letter codes this kernel is willing to believe. Anything else — "HD",
+ *  "VO", "DD", "AC" — is a channel/edition marker that happens to be two
+ *  letters, and reading it as a language would invent a tag. */
+const KNOWN_LANG_CODES = new Set(
+  [...LANG_TAGS].filter((c) => /^[A-Z]{2}$/.test(c)).concat(Object.values(LANG_ALIASES)),
+);
+
 /** Normalise one stream language value to a bare ISO code, or null when it says
- *  nothing usable. Accepts the code itself ("pl", "pol") and the same words the
- *  file-name parser knows, because track titles are free text ("Polish dub"). */
+ *  nothing usable. Accepts the code itself ("pl", "pol"), a full name ("Polish",
+ *  "English"), and a free-text track title — which is where a lot of rips put
+ *  the language ("7.1 fr", "pl ac3 6ch 48 khz"), so every word is tried, not just
+ *  the first. A DUB marker on its own ("dubbed") names no language and is
+ *  dropped rather than guessed at. */
 function streamLanguageCode(raw: string | null | undefined): string | null {
   const value = String(raw || "").trim().toLowerCase();
   if (!value || value === "und" || value === "unknown") return null;
-  const word = value.split(/[\s._-]+/)[0];
-  if (LANG_ALIASES[word.toUpperCase()]) return LANG_ALIASES[word.toUpperCase()].toLowerCase();
-  const dubbed = word.match(/^([a-z]{2})(?:dub|dubbed|dubbing)?$/);
-  if (dubbed) return dubbed[1];
-  if (/^[a-z]{3}$/.test(word)) return word;
+  const words = value.split(/[\s._+-]+/).filter(Boolean);
+  for (const [i, word] of words.entries()) {
+    if (DUB_MARKERS.has(word.toUpperCase())) continue;
+    const up = word.toUpperCase();
+    if (LANG_ALIASES[up]) return LANG_ALIASES[up].toLowerCase();
+    if (PROBE_LANG_NAMES[up]) return PROBE_LANG_NAMES[up].toLowerCase();
+    // A leading two/three-letter token is a real `language` tag, so an
+    // unfamiliar 3-letter ISO code is worth reporting (and `probeLanguage`
+    // abstains on it later). A LATER word must be a code we know, or a track
+    // titled "5.1 DTS-HD Master Audio" would report "dts" as a language.
+    if (i === 0 && /^[a-z]{2}$/.test(word)) return word;
+    if (/^[a-z]{2}$/.test(word) && KNOWN_LANG_CODES.has(up)) return word;
+    if (i === 0 && /^[a-z]{3}$/.test(word)) return word;
+  }
   return null;
 }
 

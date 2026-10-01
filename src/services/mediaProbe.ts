@@ -4,6 +4,11 @@ import type { ProbeInfo } from "../config/naming";
 
 const execFileAsync = promisify(execFile);
 
+/** Upper bound on collected audio streams. Real remuxes stay well under this
+ *  (a multi-language disc has one track per language); it only stops a
+ *  pathological file from inflating the JSON we hold in memory. */
+const MAX_AUDIO_STREAMS = 64;
+
 /**
  * Probe a video file with ffprobe and return the raw stream facts used by the
  * naming kernel (resolution, codecs, channel layout, bit depth, HDR flags).
@@ -64,7 +69,12 @@ export async function probeVideoFile(filePath: string): Promise<ProbeInfo | null
         language: s.tags?.language || null,
         title: s.tags?.title || null,
       });
-      if (audio.length >= 4) break;
+      // Generous but bounded. This used to stop at 4, which was harmless while
+      // only the FIRST track was used (codec + channels) — but the language tag
+      // reads every track, and a multi-language Blu-ray remux has one track per
+      // language (The Lion King 1994 has 12). Truncating made an 8-language
+      // remux look like "eng + one foreign" and it was tagged as a French dub.
+      if (audio.length >= MAX_AUDIO_STREAMS) break;
     }
 
     if (!video && audio.length === 0) return null;
