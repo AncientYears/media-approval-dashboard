@@ -125,12 +125,12 @@ const LANG_TAGS = new Set([
 const SOURCE_RE = /(remux|blu-?ray|bd-?rip|web-?dl|web-?rip|web|hdtv|dvd-?rip)/i;
 const RES_RE = /\b(\d{3,4})[pi]\b/i;
 const AUDIO_RE = /(\btrue-?hd\b|\bdts-?hd(?:\s*ma)?\b|\bdts\b|\be?-?ac3\b|\bdd[P+]?\s?5\.1\b|\bac3(?:[-\s]\d\.\d)?\b|\baac(?:[-\s]\d\.\d)?\b|\bflac\b|\batmos\b|\bdolby\b|\bopus\b|\bmp3\b)/i;
-const VIDEO_RE = /(\b(?:x|h)\.?26[45]\b|\bhevc\b|\bavc\b|\bav1\b|\b10bit\b)/i;
+const VIDEO_RE = /(\b(?:x|h)\.?26[45]\b|\bhevc\b|\bavc\b|\bav1\b|\bvp9\b|\bxvid\b|\bdivx\b|\bmpeg-?4\b|\b10bit\b)/i;
 
 /** True when a "-(...)" tail is a codec/quality word, not a release group. */
 function looksLikeCodec(word: string): boolean {
   if (/\d{3,4}p$/i.test(word)) return true;
-  return /^(ac3|eac3|aac|flac|dts|truehd|atmos|dolby|hevc|x26[45]|h\.?26[45]|avc|av1|web|hd|hdrip|bdrip|dvdrip|remux|720p|1080p|2160p|480p)$/i.test(word);
+  return /^(ac3|eac3|aac|flac|dts|truehd|atmos|dolby|hevc|x26[45]|h\.?26[45]|avc|av1|vp9|xvid|divx|mpeg-?4|web|hd|hdrip|bdrip|dvdrip|remux|720p|1080p|2160p|480p)$/i.test(word);
 }
 
 /** Normalized quality source (matches QUALITY_WEIGHTS names minus resolution). */
@@ -175,6 +175,14 @@ function parseVideoToken(tok: string): string | null {
   if (/\bhevc\b/i.test(tok)) return "HEVC";
   if (/\bavc\b/i.test(tok)) return "AVC";
   if (/\bav1\b/i.test(tok)) return "AV1";
+  if (/\bvp9\b/i.test(tok)) return "VP9";
+  // MPEG-4 Part 2 and its two popular encoder names. These must be recognized
+  // here, not just mapped by the probe: an unrecognized "[Xvid]" fell through
+  // to the "keep unknown short bracket verbatim" rule as a MISC tag while the
+  // probe added its own video tag, and the name printed "[Xvid][Xvid]".
+  if (/\bxvid\b/i.test(tok)) return "Xvid";
+  if (/\bdivx\b/i.test(tok)) return "DivX";
+  if (/\bmpeg-?4\b/i.test(tok)) return "MPEG-4";
   if (/\b10bit\b/i.test(tok)) return "10bit";
   return null;
 }
@@ -476,6 +484,11 @@ function videoFamilyOf(l: string): string {
   if (/h264|x264|avc/.test(n)) return "avc";
   if (/av1/.test(n)) return "av1";
   if (/vp9/.test(n)) return "vp9";
+  // Xvid, DivX and plain "MPEG-4" are all MPEG-4 Part 2, and ffprobe reports
+  // that as codec_name "mpeg4" whichever encoder produced it. One family, so
+  // the more specific name in the file name survives instead of being flattened
+  // (or, worse, printed twice).
+  if (/xvid|divx|mpeg-?4/.test(n)) return "mpeg4asp";
   return n;
 }
 
@@ -525,8 +538,17 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   if (probedVideoLabel) {
     const fam = videoFamilyOf(probedVideoLabel);
     const kept = video.filter((x) => videoFamilyOf(x) !== fam);
+    // Same rule as audio: the probe is authoritative for the family, but the
+    // most specific label in the NAME wins. ffprobe reports codec_name "mpeg4"
+    // for Xvid, DivX and plain MPEG-4 alike, so without this a release named
+    // DivX would be silently relabelled Xvid by the probe.
+    let base = probedVideoLabel;
+    if (fam === "mpeg4asp") {
+      const named = video.find((x) => videoFamilyOf(x) === fam);
+      if (named) base = named.replace(/\s+\d\.\d$/, "");
+    }
     video.length = 0;
-    video.push(probedVideoLabel, ...kept);
+    video.push(base, ...kept);
   }
   if (v?.bitDepth && Number(v.bitDepth) >= 10 && !video.some((x) => /10bit/i.test(x))) video.push("10bit");
 
