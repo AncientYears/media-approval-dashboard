@@ -76,7 +76,23 @@ session can start with P0 without re-deriving the design.
   - `/download` keeps original release names forever; the original name is also
     preserved in `release_candidates.title`.
 - **Naming configurable in Settings** (like Sonarr/Radarr name-format): a
-  template with tokens stored in the `settings` table, defaults = above.
+  template with tokens stored in the `settings` table, defaults = above, plus a
+  `naming.vendors` list (comma-separated, default `Bajeczki24`) for platform
+  watermarks. A vendor arrives as a **bare trailing word** — no hyphen, no
+  bracket — which is why it was silently dropped: the group rule only matches a
+  `-WORD` tail and the tokenizer discards unknown words. It's matched
+  case-insensitively anywhere in the name and re-attached **at the very end**,
+  where those rips put it and where it round-trips. A `-Vendor` tail is peeled
+  off **before** the group rule runs, otherwise the canonical form (`-Vendor`,
+  which matches `-WORD`) would be re-read as a release group on the next pass and
+  a rename would not be idempotent. Recognition is case-insensitive but the
+  NAME's own spelling is rendered, so the mixed-case rule that protects groups
+  protects vendors. Being name-only, a vendor joins source/group/edition in
+  `inheritReleaseFacts`. `{Vendor}` is a documented token, but a template stored
+  before it existed still gets the vendor appended — otherwise enabling the list
+  would silently do nothing on any deployment that already saved a template.
+  Clearing the list persists as **empty** rather than snapping back to the
+  default, so "attach none" is expressible.
 - **"Fix Names" UI (Layer 2, cosmetic)** — user-confirmed shape: a modal listing
   each processed file + its linked library twin (same inode, shown only if
   already in the library) + lone processed files; per-row checkbox to apply the
