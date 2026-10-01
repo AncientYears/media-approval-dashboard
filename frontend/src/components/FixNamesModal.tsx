@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { fixNamesApply, fixNamesPreview } from "../api";
+import { fixNamesApply, fixNamesApplyNative, fixNamesPreview, fixNamesPreviewNative } from "../api";
 
 interface FixNameRow {
   id: string;
@@ -44,11 +44,13 @@ type FixMode = "all" | "top" | "season" | "files";
 export default function FixNamesModal({
   requestId,
   title,
+  season,
   onClose,
   onApplied,
 }: {
   requestId: number;
   title: string;
+  season?: number;
   onClose: () => void;
   onApplied: () => void;
 }) {
@@ -68,7 +70,7 @@ export default function FixNamesModal({
     setFailures([]);
     setApplySummary("");
     try {
-      const data = await fixNamesPreview(requestId);
+      const data = season != null ? await fixNamesPreviewNative(requestId, season) : await fixNamesPreview(requestId);
       const gs: FixNameGroup[] = data.groups || [];
       const ds: FixNameDirRow[] = data.dirs || [];
       setGroups(gs);
@@ -88,7 +90,7 @@ export default function FixNamesModal({
     } finally {
       setLoading(false);
     }
-  }, [requestId]);
+  }, [requestId, season]);
 
   useEffect(() => {
     load();
@@ -169,7 +171,7 @@ export default function FixNamesModal({
     setApplySummary("");
     setFailures([]);
     try {
-      const data = await fixNamesApply(requestId, selectedPaths);
+      const data = season != null ? await fixNamesApplyNative(requestId, season, selectedPaths) : await fixNamesApply(requestId, selectedPaths);
       const results: any[] = data.results || [];
       const ok = results.filter((r) => r.ok && !r.skipped).length;
       const skipped = results.filter((r) => r.skipped).length;

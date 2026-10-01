@@ -7513,6 +7513,55 @@ const type = request.type === "series" ? "series" : "movie";
     }
   });
 
+  /** Rename submitted paths to their recomputed canonical names for `request` —
+   *  shared by the request-scoped and native-season Fix Names endpoints. */
+  async function applyFixNamePaths(request: any, paths: string[]): Promise<any[]> {
+    // Apply normally rides on the preview the UI just made, but it can be called
+    // cold. Warm the season cache here too so a proposal can never be un-appliable
+    // because the title/air date went missing between the two.
+    await warmSeasonCache(db, request);
+    const results: any[] = [];
+    const filePaths: string[] = [];
+    const dirEntries: { path: string; kind: "show" | "season" | "movie" }[] = [];
+    for (const p of paths) {
+      try {
+        const st = fs.statSync(p);
+        if (st.isDirectory()) dirEntries.push({ path: p, kind: dirKindForPath(p) });
+        else filePaths.push(p);
+      } catch {
+        results.push({ path: p, ok: false, error: "Path not found" });
+      }
+    }
+    // Files rename first (their folders are still at today's paths); directory
+    // renames run last, deepest-first, so a season rename never invalidates its
+    // show dir's submitted path.
+    for (const p of filePaths) {
+      try {
+        const st = fs.statSync(p);
+        if (!st.isFile()) { results.push({ path: p, ok: false, error: "Not a file" }); continue; }
+        if (!isFixNameTarget(p)) { results.push({ path: p, ok: false, error: "Path is outside the managed trees" }); continue; }
+        const probe = await probeVideoFile(p);
+        const pb = await proposeCanonicalName(db, request, path.basename(p), probe);
+        if (!pb.name) { results.push({ path: p, ok: false, error: pb.note || "Nothing to rename" }); continue; }
+        const newName = `${pb.name}${path.extname(p)}`;
+        results.push({ path: p, ...applyFixNameRename(db, request, p, newName) });
+      } catch (err: any) {
+        results.push({ path: p, ok: false, error: err.message });
+      }
+    }
+    dirEntries.sort((a, b) => b.path.split(path.sep).length - a.path.split(path.sep).length);
+    for (const d of dirEntries) {
+      results.push({ path: d.path, ...(await applyDirRename(db, request, d.path, d.kind)) });
+    }
+    return results;
+  }
+
+  /** A synthetic request row for a native season that has no media_requests row
+   *  yet, so season-scoped tools (Fix Names) can operate on a disk-first season. */
+  function nativeSeasonRequest(seed: any, season: number): any {
+    return { id: -1, type: "series", title: cleanFranchiseTitle(seed.title || ""), library_key: seed.library_key, season, episode_count: null };
+  }
+
   // POST /api/requests/:id/fix-names/preview - P2 proposal rows (processed files
   // + library twins) with canonical old→new names for the Fix Names modal.
   router.post("/:id/fix-names/preview", async (req: Request, res: Response) => {
@@ -7541,45 +7590,43 @@ const type = request.type === "series" ? "series" : "movie";
       }
       const paths: string[] = Array.isArray(req.body?.paths) ? req.body.paths.filter((p: unknown) => typeof p === "string") : [];
       if (paths.length === 0) return res.status(400).json({ error: "No file paths provided" });
+      const results = await applyFixNamePaths(request, paths);
+      res.json({ results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
-      // Apply normally rides on the preview the UI just made, but it can be
-      // called cold. Warm the season cache here too so a proposal can never be
-      // un-appliable because the title/air date went missing between the two.
-      await warmSeasonCache(db, request);
+  // POST /api/requests/native-franchise/:id/fix-names/preview - Fix Names for a
+  // native season that has no media_requests row yet (a disk-first season).
+  router.post("/native-franchise/:id/fix-names/preview", async (req: Request, res: Response) => {
+    try {
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(Number(req.params.id)) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(404).json({ error: "Series request with library_key not found" });
+      }
+      const raw = Math.trunc(Number(req.body?.season));
+      const sNum = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+      const data = await buildFixNameGroups(db, nativeSeasonRequest(seed, sNum));
+      res.json({ groups: data.groups, dirs: data.dirs });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
-      // Split files vs directories. Files rename first (their folders are still
-      // at today's paths); directory renames run last, deepest-first, so a
-      // season rename never invalidates its show dir's submitted path.
-      const results: any[] = [];
-      const filePaths: string[] = [];
-      const dirEntries: { path: string; kind: "show" | "season" | "movie" }[] = [];
-      for (const p of paths) {
-        try {
-          const st = fs.statSync(p);
-          if (st.isDirectory()) dirEntries.push({ path: p, kind: dirKindForPath(p) });
-          else filePaths.push(p);
-        } catch {
-          results.push({ path: p, ok: false, error: "Path not found" });
-        }
+  // POST /api/requests/native-franchise/:id/fix-names/apply - apply for the same
+  // disk-first season. Names are recomputed server-side, never taken verbatim.
+  router.post("/native-franchise/:id/fix-names/apply", async (req: Request, res: Response) => {
+    try {
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(Number(req.params.id)) as any;
+      if (!seed || seed.type !== "series" || !seed.library_key) {
+        return res.status(404).json({ error: "Series request with library_key not found" });
       }
-      for (const p of filePaths) {
-        try {
-          const st = fs.statSync(p);
-          if (!st.isFile()) { results.push({ path: p, ok: false, error: "Not a file" }); continue; }
-          if (!isFixNameTarget(p)) { results.push({ path: p, ok: false, error: "Path is outside the managed trees" }); continue; }
-          const probe = await probeVideoFile(p);
-          const pb = await proposeCanonicalName(db, request, path.basename(p), probe);
-          if (!pb.name) { results.push({ path: p, ok: false, error: pb.note || "Nothing to rename" }); continue; }
-          const newName = `${pb.name}${path.extname(p)}`;
-          results.push({ path: p, ...applyFixNameRename(db, request, p, newName) });
-        } catch (err: any) {
-          results.push({ path: p, ok: false, error: err.message });
-        }
-      }
-      dirEntries.sort((a, b) => b.path.split(path.sep).length - a.path.split(path.sep).length);
-      for (const d of dirEntries) {
-        results.push({ path: d.path, ...(await applyDirRename(db, request, d.path, d.kind)) });
-      }
+      const raw = Math.trunc(Number(req.body?.season));
+      const sNum = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+      const paths: string[] = Array.isArray(req.body?.paths) ? req.body.paths.filter((p: unknown) => typeof p === "string") : [];
+      if (paths.length === 0) return res.status(400).json({ error: "No file paths provided" });
+      const results = await applyFixNamePaths(nativeSeasonRequest(seed, sNum), paths);
       res.json({ results });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

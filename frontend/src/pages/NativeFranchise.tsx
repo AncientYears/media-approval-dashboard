@@ -17,7 +17,7 @@ export default function NativeFranchise() {
   const [episodes, setEpisodes] = useState<Record<number, any>>({});
   const [refreshing, setRefreshing] = useState<number | null>(null);
   const [language, setLanguage] = useState<string>("");
-  const [fixRequestId, setFixRequestId] = useState<number | null>(null);
+  const [fixTarget, setFixTarget] = useState<{ id: number; season?: number } | null>(null);
 
   const loadEpisodes = async (season: any) => {
     if (episodes[season.season]) return;
@@ -207,20 +207,18 @@ export default function NativeFranchise() {
                   )}
                 </div>
                 <div className="fr-season-right" style={{ gap: 6 }}>
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
+                    {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
+                  </button>
+                  <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); setFixTarget({ id: season.request_id ?? Number(id), season: season.request_id != null ? undefined : season.season }); }} title="Standardize this season's file/folder names">
+                    Fix Names
+                  </button>
                   {season.request_id != null ? (
-                    <>
-                      <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); handleRefresh(season); }} disabled={refreshing === season.season}>
-                        {refreshing === season.season ? "Refreshing..." : "Refresh Metadata"}
-                      </button>
-                      <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); setFixRequestId(season.request_id); }} title="Standardize this season's file/folder names">
-                        Fix Names
-                      </button>
-                      <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
-                        Open Releases
-                      </button>
-                    </>
+                    <button className="btn btn-secondary btn-tiny" onClick={(e) => { e.stopPropagation(); navigate(`/requests/${season.request_id}`, { state: { back: `/native/${id}` } }); }}>
+                      Open Releases
+                    </button>
                   ) : (
-                    <span className="season-status empty" style={{ fontSize: 11 }}>on disk — no request row</span>
+                    <span className="season-status empty" style={{ fontSize: 11 }}>on disk</span>
                   )}
                   <span className="fr-arrow">{isExpanded ? "\u25BC" : "\u25B6"}</span>
                 </div>
@@ -255,11 +253,12 @@ export default function NativeFranchise() {
           );
         })}
       </div>
-      {fixRequestId != null && (
+      {fixTarget && (
         <FixNamesModal
-          requestId={fixRequestId}
+          requestId={fixTarget.id}
+          season={fixTarget.season}
           title={franchise.title}
-          onClose={() => setFixRequestId(null)}
+          onClose={() => setFixTarget(null)}
           onApplied={async () => {
             const data = await fetchNativeFranchise(Number(id));
             setFranchise(data);

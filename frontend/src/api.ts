@@ -395,6 +395,16 @@ export async function fixNamesApply(requestId: number, paths: string[]) {
   return response.data;
 }
 
+export async function fixNamesPreviewNative(seedId: number, season: number) {
+  const response = await api.post(`/requests/native-franchise/${seedId}/fix-names/preview`, { season });
+  return response.data;
+}
+
+export async function fixNamesApplyNative(seedId: number, season: number, paths: string[]) {
+  const response = await api.post(`/requests/native-franchise/${seedId}/fix-names/apply`, { season, paths });
+  return response.data;
+}
+
 export async function fetchUnmatched() {
   const response = await api.get("/requests/unmatched");
   return response.data;
