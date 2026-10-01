@@ -711,6 +711,40 @@ function streamLanguageCode(raw: string | null | undefined): string | null {
   return null;
 }
 
+/** Fill the release facts a name cannot prove from a same-inode sibling's name.
+ *
+ *  A processed file and its library hardlink are the SAME bytes under two names,
+ *  and the facts that only a name can carry — source, group, edition — are true
+ *  of both. Naming each from its own name alone loses whatever the other
+ *  happened to state: The Hobbit's Extended library file was named without
+ *  "Remux" or the group, so its proposal silently dropped both and would have
+ *  renamed the release group out of existence.
+ *
+ *  GAPS ARE FILLED, NEVER OVERRIDDEN: a name that already says Atmos, or names
+ *  its own source or group, keeps it. Everything ffprobe measures — resolution,
+ *  codecs, channels, bit depth, HDR, language — is recomputed per file and is
+ *  never inherited, so this can only add release metadata, never stale it. */
+export function inheritReleaseFacts(target: ReleaseTags, siblingBase: string | null | undefined): ReleaseTags {
+  if (!siblingBase) return target;
+  const sibling = parseReleaseTags(siblingBase.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, ""));
+  const out: ReleaseTags = { ...target, misc: [...target.misc] };
+  let changed = false;
+  if (!out.source && sibling.source) { out.source = sibling.source; changed = true; }
+  if (!out.group && sibling.group) { out.group = sibling.group; changed = true; }
+  // Only EDITION labels are inherited. Misc also holds unrecognized bracket tags
+  // preserved verbatim, and those belong to the file whose name carried them.
+  for (const ed of sibling.misc.filter(isEditionLabel)) {
+    if (!out.misc.some((m) => m.toLowerCase() === ed.toLowerCase())) { out.misc.push(ed); changed = true; }
+  }
+  if (changed) out.tags = renderTags(out);
+  return out;
+}
+
+/** EDITION_MULTI_RE is global, and a global regex carries lastIndex between
+ *  .test() calls — so match against a fresh non-global copy. */
+const EDITION_TEST_RE = new RegExp(EDITION_MULTI_RE.source, "i");
+const isEditionLabel = (misc: string): boolean => EDITION_TEST_RE.test(misc);
+
 /**
  * Extract the trailing release metadata from a filename base so it can survive
  * a canonical rename. Reads both bracketed ("[Bluray-1080p]", "[AC3 2.0]",

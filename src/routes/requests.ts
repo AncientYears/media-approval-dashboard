@@ -21,6 +21,7 @@ import {
   loadNamingConf,
   parseReleaseTags,
   assembleCanonicalTags,
+  inheritReleaseFacts,
   parseEpisodeCode,
   canonicalMovieFile,
   canonicalSpecialFile,
@@ -1516,6 +1517,7 @@ async function proposeCanonicalName(
   sourceBase: string,
   probe: ProbeInfo | null,
   cachedPieces?: NamingPieces | null,
+  siblingBase?: string | null,
 ): Promise<{ name: string | null; role: FixNameRow["role"] | null; note: string | null }> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return { name: null, role: null, note: "Naming disabled in Settings" };
@@ -1525,7 +1527,10 @@ async function proposeCanonicalName(
   const pieces = cachedPieces !== undefined ? cachedPieces : await namingPiecesForRequest(db, request);
   const ext = path.extname(sourceBase);
   const base = ext ? sourceBase.slice(0, -ext.length) : sourceBase;
-  const tags = assembleCanonicalTags(parseReleaseTags(base), probe || null);
+  // Release metadata the probe cannot measure (source, group, edition) is
+  // filled from the same-inode sibling's name when this one is silent about it,
+  // so a twin named by an arr does not quietly drop facts the other one states.
+  const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base), probe || null), siblingBase);
   if (request.type === "movie") {
     if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
     const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
@@ -1689,7 +1694,13 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       probe = probes.get(key) || null;
     } catch {}
 
-    const pb = await proposeCanonicalName(db, request, path.basename(a.fullPath), probe, cachedPieces);
+    const libPath = key ? libraryByIno.get(key) : null;
+    const processedBase = path.basename(a.fullPath);
+    // Each row is named from its own name first, then inherits what it is
+    // silent about from the same-inode sibling (identical bytes, two names).
+    // The library row therefore keeps a "Remux"/group the processed row states,
+    // while a library row that names Atmos of its own accord keeps that too.
+    const pb = await proposeCanonicalName(db, request, processedBase, probe, cachedPieces, libPath ? path.basename(libPath) : null);
     // Canonical file proposals are extensionless by construction — append the
     // source extension unconditionally (never detect one from the name: channel
     // layouts like "[DTS-HD MA 2.0]" contain dots that would fool extname).
@@ -1699,16 +1710,15 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       ino,
       path: a.fullPath,
       tree: "processed",
-      currentName: path.basename(a.fullPath),
+      currentName: processedBase,
       proposedName: withExt(pb.name, a.fullPath),
       role: pb.role,
       note: pb.note,
     };
 
     let library: FixNameRow | null = null;
-    const libPath = key ? libraryByIno.get(key) : null;
     if (libPath) {
-      const lb = await proposeCanonicalName(db, request, path.basename(libPath), probe, cachedPieces);
+      const lb = await proposeCanonicalName(db, request, path.basename(libPath), probe, cachedPieces, processedBase);
       library = {
         id: `l-${gid}`,
         ino,
@@ -7779,15 +7789,42 @@ const type = request.type === "series" ? "series" : "movie";
     // Files rename first (their folders are still at today's paths); directory
     // renames run last, deepest-first, so a season rename never invalidates its
     // show dir's submitted path.
+    //
+    // Every proposal is snapshotted from ONE buildFixNameGroups run BEFORE the
+    // first rename. Recomputing per file looked equivalent but had two holes:
+    // it cannot see the same-inode sibling that fills a name's gaps, and after
+    // the first rename the sibling has moved, so the rest of the batch would
+    // land on different names than the preview showed. Snapshot also makes
+    // preview and apply literally the same computation.
+    const previewed = new Map<string, string | null>();
+    try {
+      const { groups } = await buildFixNameGroups(db, request);
+      for (const g of groups) {
+        for (const row of [g.processed, g.library]) {
+          if (row) previewed.set(row.path, row.proposedName ?? null);
+        }
+      }
+    } catch (err: any) {
+      console.log(`[FixNames] proposal snapshot failed, falling back to per-file naming: ${err.message}`);
+    }
     for (const p of filePaths) {
       try {
         const st = fs.statSync(p);
         if (!st.isFile()) { results.push({ path: p, ok: false, error: "Not a file" }); continue; }
         if (!isFixNameTarget(p)) { results.push({ path: p, ok: false, error: "Path is outside the managed trees" }); continue; }
-        const probe = await probeVideoFile(p);
-        const pb = await proposeCanonicalName(db, request, path.basename(p), probe);
-        if (!pb.name) { results.push({ path: p, ok: false, error: pb.note || "Nothing to rename" }); continue; }
-        const newName = `${pb.name}${path.extname(p)}`;
+        // Both branches yield the FULL new name, extension included:
+        // applyFixNameRename only appends one when it is missing.
+        let newName: string | null;
+        if (previewed.has(p)) {
+          newName = previewed.get(p) ?? null;
+        } else {
+          // Not part of this request's groups (a file matched through some other
+          // route) — name it standalone rather than refusing the user's pick.
+          const probe = await probeVideoFile(p);
+          const pb = await proposeCanonicalName(db, request, path.basename(p), probe);
+          newName = pb.name ? `${pb.name}${path.extname(p)}` : null;
+        }
+        if (!newName) { results.push({ path: p, ok: false, error: "Nothing to rename" }); continue; }
         results.push({ path: p, ...applyFixNameRename(db, request, p, newName) });
       } catch (err: any) {
         results.push({ path: p, ok: false, error: err.message });
