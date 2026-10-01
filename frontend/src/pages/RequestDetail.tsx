@@ -637,6 +637,21 @@ export default function RequestDetail() {
               Fix Names
             </button>
           )}
+          {/* Beside Fix Names, since it only affects what Fix Names proposes.
+              Arr-linked rows have no library_key and the endpoint rejects them,
+              so it only shows where the pref is actually honoured. */}
+          {request.library_key && (
+            <select
+              className="lang-select"
+              value={language}
+              onChange={(e) => handleLanguage(e.target.value)}
+              title="TMDB language for the canonical title (per movie/franchise; default = TMDB_LANGUAGE or en-US). Applies to the next Fix Names preview."
+              style={{ marginLeft: 4, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+            >
+              <option value="">Default language</option>
+              {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          )}
         </div>
         {processedFiles.length > 0 && (
           <>
@@ -761,21 +776,6 @@ export default function RequestDetail() {
           {searching ? <span className="spinner" /> : "Refresh"}
         </button>
         <button className="btn btn-workspace btn-tiny" onClick={() => setImportOpen(true)}>Import</button>
-        {/* Same spot as the franchise page: pushed to the far right of the
-            topbar. Arr-linked rows have no library_key and the endpoint rejects
-            them, so it only shows where the pref is actually honoured. */}
-        {request.library_key && (
-          <select
-            className="lang-select"
-            value={language}
-            onChange={(e) => handleLanguage(e.target.value)}
-            title="TMDB language for the canonical title (per movie/franchise; default = TMDB_LANGUAGE or en-US). Applies to the next Fix Names preview."
-            style={{ marginLeft: "auto", fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
-          >
-            <option value="">Default language</option>
-            {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-        )}
       </div>
 
       {searchProgress && (
