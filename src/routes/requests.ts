@@ -1,4 +1,4 @@
-﻿import { Router, Request, Response } from "express";
+import { Router, Request, Response } from "express";
 import { Database } from "better-sqlite3";
 import { RadarrService } from "../services/radarr";
 import { SonarrService } from "../services/sonarr";
@@ -659,7 +659,17 @@ function linkTorrentToRequest(db: Database, torrent: any, entryName: string, typ
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
 // localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
-function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | null): string[] {
+/** Resolve the library folder(s) holding this movie's files.
+ *
+ *  Order: an id in the FOLDER name, then an id in the video files DIRECTLY inside
+ *  it, then title matching. `libraryKey` adds the identity signal that needs no
+ *  name at all: a folder holding a hardlink twin whose (dev, inode) is registered
+ *  to this request. That is the last resort on purpose — it walks every library
+ *  folder, so it only runs when nothing cheaper matched. A Polish-titled folder
+ *  holding a canonical-but-id-less file ("Asterix i Obelix W sluzbie Jej
+ *  Krolewskiej Mosci (2012)") matches no title and embeds no id, and without the
+ *  inode its own file could never be found. */
+function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | null, db?: Database, libraryKey?: string | null): string[] {
   const want = normalizeFolder((requestTitle || "").replace(/ \(\d{4}\)$/i, ""));
   const idMatch: string[] = [];
   const exact: string[] = [];
@@ -717,7 +727,8 @@ function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | nu
           }
           if (foreign) continue;
         }
-      }      const norm = normalizeFolder(d);
+      }
+      const norm = normalizeFolder(d);
       const normNoYear = normalizeFolder(d.replace(/\(\d{4}\)[-\s].*$/i, "").replace(/\(\d{4}\)$/i, ""));
       if (want && (normNoYear === want || norm === want)) {
         exact.push(full);
@@ -727,8 +738,40 @@ function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | nu
     }
   } catch {}
   if (idMatch.length) return idMatch;
+  if (exact.length) return exact;
+  if (fuzzy.length) return fuzzy;
+  // Last resort, and the only signal that needs no name at all: identity. Walk the
+  // library for a hardlink twin whose (dev, inode) is registered to this request.
+  // A folder can be unreachable by name and by content — "Asterix i Obelix W
+  // sluzbie Jej Krolewskiej Mosci (2012)" holds a file that states neither the
+  // card's English title nor any IMDb id, so no name test reaches it, yet that
+  // file IS this film's twin and settles the folder outright. Deliberately last:
+  // this walks every library folder and stats every video in it, so it only runs
+  // once the cheap signals have all come up empty.
+  if (db && libraryKey) {
+    const byTwin = new Set<string>();
+    try {
+      for (const d of fs.readdirSync(MEDIA_MOVIES)) {
+        const full = path.join(MEDIA_MOVIES, d);
+        try {
+          if (!fs.statSync(full).isDirectory()) continue;
+          for (const f of fs.readdirSync(full)) {
+            if (!VIDEO_FILE_RE.test(f)) continue;
+            try {
+              const row = identifyByPath(db, path.join(full, f));
+              if (row && row.library_key === libraryKey) {
+                byTwin.add(full);
+                break;
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
+    if (byTwin.size) return Array.from(byTwin);
+  }
   if (!want) return [MEDIA_MOVIES];
-  return exact.length ? exact : fuzzy.length ? fuzzy : [MEDIA_MOVIES];
+  return [MEDIA_MOVIES];
 }
 
 /** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset. */
@@ -1940,7 +1983,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     } catch {}
   };
   if (type === "movie") {
-    for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
+    for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)) {
       if (!fs.existsSync(folder)) continue;
       for (const f of fs.readdirSync(folder)) {
         if (!VIDEO_FILE_RE.test(f)) continue;
@@ -2021,7 +2064,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     ...(type === "movie" ? movieDirs : []),
     ...(type === "series" ? [...showSeasons.keys()] : []),
     ...(type === "series" ? [resolveLibraryShowFolder(request) || ""] : []),
-    ...(type === "movie" ? nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request)) : []),
+    ...(type === "movie" ? nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key) : []),
   ]);
   // When nothing resolves, say why in the row note — one short, actionable
   // sentence, never an internal step dump.
@@ -2190,7 +2233,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     }
     // Library movie dir(s) — nativeMovieLibraryFolders falls back to the movie
     // root itself when nothing matches; skip proposing the root.
-    for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
+    for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)) {
       if (!folder || path.normalize(folder) === path.normalize(MEDIA_MOVIES)) continue;
       if (!fs.existsSync(folder)) continue;
       // Never even LIST a folder a sibling film owns. nativeMovieLibraryFolders
@@ -7529,7 +7572,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       } catch {}
       try {
         if (request?.library_key && request.type === "movie") {
-          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
+          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)) {
             if (fs.existsSync(folder)) libraryFolders.add(folder);
           }
         }
@@ -7669,7 +7712,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       } catch {}
       try {
         if (request?.library_key && request.type === "movie") {
-          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
+          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)) {
             if (fs.existsSync(folder)) libraryFolders.add(folder);
           }
         }
@@ -8036,7 +8079,7 @@ const type = request.type === "series" ? "series" : "movie";
           try {
             libraryDir = request.type === "series"
               ? (resolveLibraryFolder(request) || "")
-              : (nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))[0] || "");
+              : (nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)[0] || "");
           } catch {}
         }
 
@@ -8113,7 +8156,7 @@ const type = request.type === "series" ? "series" : "movie";
         try {
           libraryDir = request.type === "series"
             ? (resolveLibraryFolder(request) || "")
-            : (nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))[0] || "");
+            : (nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)[0] || "");
         } catch {}
       }
       console.log(`[RemoveFromLib] libraryDir=${libraryDir} exists=${libraryDir ? fs.existsSync(libraryDir) : false}`);
@@ -8793,7 +8836,7 @@ const type = request.type === "series" ? "series" : "movie";
         // Native (arr-free) movie — movies live in a "<Title> (Year)/" subfolder
         // under MEDIA_MOVIES, so resolve the folder(s) and scan each.
         try {
-          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
+          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)) {
             if (!fs.existsSync(folder)) continue;
             for (const f of fs.readdirSync(folder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
@@ -9486,7 +9529,7 @@ const type = request.type === "series" ? "series" : "movie";
           // Native movie: place into the matching "<Title> (Year)/" library
           // subfolder when one exists (same resolution the processed panel's
           // in-library scan uses), else the MEDIA_MOVIES root.
-          const folders = nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request));
+          const folders = nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key);
           destFolder = folders[0] && folders[0] !== MEDIA_MOVIES ? folders[0] : MEDIA_MOVIES;
         }
         try {

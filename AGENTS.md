@@ -1103,6 +1103,7 @@ SEERR_API_KEY=
 - [ ] `siblingOwningYear` requires a shared title WORD with the folder, so an unrelated same-year film (Skyfall 2012) never claims a Hobbit file
 - [ ] Fix Names and the processed panel veto on the SAME folder-year evidence (a file listed on the card is never refused as a rename proposal)
 - [ ] A sibling's library folder is not listed as a candidate at all (no `Hobbit (2014)` row on the 2012 card)
+- [ ] `nativeMovieLibraryFolders` falls back to IDENTITY when no name signal can reach a folder: a Polish-titled folder holding an id-less file (`Asterix i Obelix W sluzbie Jej Krolewskiej Mosci (2012)`) is found via a registered hardlink twin, so Fix Names proposes the FOLDER and not just the file. Deliberately last — it walks every library folder, so title/id matching still wins; a twin registered to another `library_key` is never claimed
 - [ ] A file with an embedded id still blocks folder ownership even when the folder's year matches the request's
 - [ ] `[EAC3 Atmos 5.1]` round-trips as itself (streaming Atmos ships as E-AC3, so Atmos is not TrueHD-only)
 - [ ] A channel number never renders as `[Atmos 5.1]` — it lands on the nearest codec, or is dropped
