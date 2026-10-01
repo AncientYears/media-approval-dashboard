@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity, ensureNativeSeason } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity, ensureNativeSeason, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import FixNamesModal from "../components/FixNamesModal";
-
-const LANGUAGES = ["pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA", "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO", "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA"];
 
 export default function NativeFranchise() {
   const { id } = useParams<{ id: string }>();

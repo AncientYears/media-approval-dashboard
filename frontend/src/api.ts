@@ -74,6 +74,14 @@ export async function fixNativeIdentity(requestId: number) {
   return response.data;
 }
 
+/** TMDB languages offered for episode/movie titles. Shared by the franchise and
+ *  the movie page so both offer exactly the same set. */
+export const LANGUAGES = [
+  "pl-PL", "en-US", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "ru-RU", "uk-UA",
+  "cs-CZ", "sk-SK", "hu-HU", "nl-NL", "sv-SE", "no-NO", "da-DK", "fi-FI", "ro-RO",
+  "tr-TR", "el-GR", "he-IL", "ja-JP", "ko-KR", "zh-CN", "ar-SA",
+];
+
 export async function setFranchiseLanguage(requestId: number, language: string | null) {
   const response = await api.post(`/requests/${requestId}/set-language`, { language });
   return response.data;

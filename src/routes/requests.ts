@@ -5974,6 +5974,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       }
 
       request.requested_by = JSON.parse(request.requested_by || "[]");
+      // The TMDB language preference is keyed by library_key, so movies carry it
+      // too — without it the client cannot preselect the language dropdown.
+      request.language = request.library_key ? franchiseLanguage(db, request.library_key) : null;
 
       // Get all approved releases
       const approvedRows = db.prepare(
@@ -6398,6 +6401,14 @@ let episodes: any[];
       } else {
         db.prepare("DELETE FROM tmdb_franchise_prefs WHERE library_key = ?").run(request.library_key);
       }
+      // tmdb_external_ids caches the RESOLVED TITLE per key, so switching the
+      // language would keep naming everything in the old one (movies have no
+      // refresh endpoint to clear it). Drop the row and let the next resolution
+      // re-fetch in the newly selected language; series re-resolve from their
+      // tmdb_season_cache show id, so this stays cheap and never re-searches.
+      try {
+        db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(request.library_key);
+      } catch {}
       res.json({ ok: true, language });
     } catch (error) {
       console.error("Error setting franchise language:", error);

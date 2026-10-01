@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -185,6 +185,9 @@ export default function RequestDetail() {
   const [sortBy, setSortBy] = useState<SortKey>("app_score");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [filterQuality, setFilterQuality] = useState<FilterQuality>("ALL");
+  // TMDB language for the canonical title — a movie carries the same per-library_key
+  // preference a franchise does, it just had no control of its own.
+  const [language, setLanguage] = useState<string>("");
   const [filterIndexer, setFilterIndexer] = useState("ALL");
   const [filterLanguage, setFilterLanguage] = useState("ALL");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
@@ -235,6 +238,7 @@ export default function RequestDetail() {
       if (initial) setLoading(true);
       const data = await fetchReleases(Number(id));
       setRequest(data);
+      setLanguage(data.language || "");
       setReleases(data.releases || []);
       setApprovedReleases(data.approved_releases || []);
       if (initial) setSearchTerm(data.title || "");
@@ -291,6 +295,19 @@ export default function RequestDetail() {
     const interval = setInterval(loadTorrentStatuses, 3000);
     return () => clearInterval(interval);
   }, [id, hasAnyTorrent]);
+
+  const handleLanguage = async (value: string) => {
+    const prev = language;
+    setLanguage(value);
+    try {
+      await setFranchiseLanguage(Number(id), value || null);
+      setRequest((prevReq: any) => (prevReq ? { ...prevReq, language: value || null } : prevReq));
+      toast(value ? `TMDB language: ${value}` : "Using default TMDB language", "success");
+    } catch {
+      setLanguage(prev);
+      toast("Could not set language", "error");
+    }
+  };
 
   const handleApprove = async (releaseId: number) => {
     setApprovingId(releaseId);
@@ -619,6 +636,20 @@ export default function RequestDetail() {
             <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 4 }} onClick={() => setFixNamesOpen(true)} title="Standardize filenames to the canonical naming template">
               Fix Names
             </button>
+          )}
+          {/* Arr-linked rows have no library_key, and the endpoint rejects them,
+              so the control only appears where the pref is actually honoured. */}
+          {request.library_key && (
+            <select
+              className="lang-select"
+              value={language}
+              onChange={(e) => handleLanguage(e.target.value)}
+              title="TMDB language for the canonical title (per movie/franchise; default = TMDB_LANGUAGE or en-US). Applies to the next Fix Names preview."
+              style={{ marginLeft: 4, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+            >
+              <option value="">Default language</option>
+              {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
           )}
         </div>
         {processedFiles.length > 0 && (
