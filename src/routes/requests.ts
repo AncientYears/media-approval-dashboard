@@ -19,6 +19,7 @@ import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFr
 import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
+  vendorList,
   parseReleaseTags,
   assembleCanonicalTags,
   inheritReleaseFacts,
@@ -1133,17 +1134,17 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   // instead of inheriting whatever the last reader happened to leave behind.
   await warmSeasonCache(db, request, idHintFolder ? [idHintFolder] : []);
   const pieces = await namingPiecesForRequest(db, request, idHintFolder);
-  const tags = assembleCanonicalTags(parseReleaseTags(sourceBase), probe || null);
+  const tags = assembleCanonicalTags(parseReleaseTags(sourceBase, vendorList(conf)), probe || null);
   if (request.type === "movie") {
     if (!pieces) return null;
-    return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
+    return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
   }
   const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!ep) return null;
   if (ep.season === 0) {
     const sp = await specialPiecesForFile(db, request, sourceBase, pieces, ep.episode);
     if (!sp) return null;
-    return canonicalSpecialFile(conf, { title: sp.title, year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group });
+    return canonicalSpecialFile(conf, { title: sp.title, year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group, vendor: tags.vendor });
   }
   const episodeTitle = episodeTitleFor(db, request, sourceBase, ep);
   // Per-episode air date, so a template can date a season that aired years after
@@ -1159,6 +1160,7 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
     episodeYear: airDate ? airDate.slice(0, 4) : null,
     tags: tags.tags,
     group: tags.group,
+    vendor: tags.vendor,
   });
 }
 
@@ -1530,10 +1532,10 @@ async function proposeCanonicalName(
   // Release metadata the probe cannot measure (source, group, edition) is
   // filled from the same-inode sibling's name when this one is silent about it,
   // so a twin named by an arr does not quietly drop facts the other one states.
-  const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base), probe || null), siblingBase);
+  const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base, vendorList(conf)), probe || null), siblingBase, vendorList(conf));
   if (request.type === "movie") {
     if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
-    const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group });
+    const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
     if (!name) return { name: null, role: "movie", note: "Missing title/year/imdbId" };
     return { name: name === base ? null : name, role: "movie", note: name === base ? null : null };
   }
@@ -1552,6 +1554,7 @@ async function proposeCanonicalName(
       episode: epNo?.episode ?? null,
       tags: tags.tags,
       group: tags.group,
+      vendor: tags.vendor,
     });
     if (!name) return { name: null, role: "special", note: "Missing title pieces" };
     return { name: name === base ? null : name, role: "special", note: sp.onTmdb ? null : "Not on TMDB - kept the on-disk title" };
@@ -1571,6 +1574,7 @@ async function proposeCanonicalName(
     episodeYear: airDate ? airDate.slice(0, 4) : null,
     tags: tags.tags,
     group: tags.group,
+    vendor: tags.vendor,
   });
   if (!name) return { name: null, role: "episode", note: "Missing title/episode pieces" };
   return { name: name === base ? null : name, role: "episode", note: null };

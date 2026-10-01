@@ -16,6 +16,7 @@ interface NamingConf {
   episode_file: string;
   special_file: string;
   movie_file: string;
+  vendors: string;
 }
 
 const NAMING_LABELS: Record<string, string> = {
@@ -123,6 +124,23 @@ export default function Settings() {
               {namingTokens.map((t) => (
                 <code key={t}>{t}</code>
               ))}
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="naming-vendors">Vendor watermarks</label>
+              <input
+                id="naming-vendors"
+                type="text"
+                value={naming.vendors || ""}
+                onChange={(e) => setNaming({ ...naming, vendors: e.target.value })}
+                spellCheck={false}
+              />
+              <span className="help-text">
+                Comma-separated platform watermarks (e.g. <code>Bajeczki24</code>). Matching is
+                case-insensitive and the name keeps its own spelling; a hit is re-attached at the
+                very end of the canonical name, after the release group. Leave empty to attach
+                none.
+              </span>
             </div>
 
             <button type="submit" className="btn btn-primary" disabled={savingNaming}>

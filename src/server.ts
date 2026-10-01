@@ -335,7 +335,7 @@ app.put("/api/settings/naming", (req, res) => {
     const body = (req.body || {}) as Record<string, any>;
     const patch: Partial<NamingConf> = {};
     if ("enabled" in body) patch.enabled = !!body.enabled;
-    for (const k of ["series_dir", "movie_dir", "season_dir", "episode_file", "special_file", "movie_file"] as const) {
+    for (const k of ["series_dir", "movie_dir", "season_dir", "episode_file", "special_file", "movie_file", "vendors"] as const) {
       if (k in body && typeof body[k] === "string") (patch as any)[k] = body[k] as string;
     }
     saveNamingConf(db, patch);

@@ -26,6 +26,36 @@ export interface NamingConf {
   episode_file: string;
   special_file: string;
   movie_file: string;
+  /** Comma-separated platform/vendor watermarks ("Bajeczki24"). Recognized
+   *  case-insensitively anywhere in a release name and re-attached at the very
+   *  END of the canonical name, because that is where these rips put it and
+   *  where it survives. Recognition only — the name's own spelling is kept, so
+   *  the mixed-case rule that protects release groups protects vendors too. */
+  vendors: string;
+}
+
+/** Vendors recognized when the setting is absent. Polish streaming rips append
+ *  their brand as a bare trailing word with no hyphen and no bracket, which is
+ *  why it is dropped today: the group rule only reads a "-WORD" tail. */
+export const DEFAULT_VENDORS = ["Bajeczki24"];
+
+/** The configured vendor list, split and trimmed. This is the single choke point
+ *  where the brands become one regex, so it is also where a malformed or
+ *  runaway setting is defused: empty names dropped (a trailing comma would
+ *  otherwise match every position), duplicates collapsed, and count/length
+ *  capped so the pattern stays a sane size. */
+export function vendorList(conf: Pick<NamingConf, "vendors">): string[] {
+  const raw = conf.vendors !== undefined && conf.vendors !== null ? String(conf.vendors) : DEFAULT_VENDORS.join(",");
+  // Deduped case-insensitively but stored with the spelling the user typed:
+  // the list is echoed back into Settings, and lowercasing it there would
+  // rewrite "Bajeczki24" as "bajeczki24" on every save.
+  const seen = new Map<string, string>();
+  for (const part of raw.split(/[,\n]/)) {
+    const v = part.trim().slice(0, 48);
+    if (v) { const key = v.toLowerCase(); if (!seen.has(key)) seen.set(key, v); }
+    if (seen.size >= 32) break;
+  }
+  return [...seen.values()];
 }
 
 export const DEFAULT_NAMING: NamingConf = {
@@ -33,9 +63,10 @@ export const DEFAULT_NAMING: NamingConf = {
   series_dir: "{Title} ({Year}) [tvdbid-{TvdbId}]",
   movie_dir: "{Title} ({Year}) [imdbid-tt{ImdbId}]",
   season_dir: "S{Season:02}",
-  episode_file: "{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}",
-  special_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {SpecialCode} {Tags}{Group}",
-  movie_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}",
+  episode_file: "{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}{Vendor}",
+  special_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {SpecialCode} {Tags}{Group}{Vendor}",
+  movie_file: "{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}{Vendor}",
+  vendors: DEFAULT_VENDORS.join(","),
 };
 
 /** All writable naming settings keys (mirror of NamingConf). */
@@ -47,6 +78,7 @@ export const NAMING_FIELDS: (keyof NamingConf)[] = [
   "episode_file",
   "special_file",
   "movie_file",
+  "vendors",
 ];
 
 /** Documented tokens shown in the Settings UI. */
@@ -65,6 +97,7 @@ export const NAMING_TOKENS = [
   "{SpecialCode}",
   "{Tags}",
   "{Group}",
+  "{Vendor}",
 ];
 
 export function loadNamingConf(db: Database): NamingConf {
@@ -85,6 +118,15 @@ export function saveNamingConf(db: Database, patch: Partial<NamingConf>): void {
     const v = (patch as any)[k];
     if (k === "enabled") {
       db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('naming.enabled', ?)").run(v ? "1" : "0");
+      continue;
+    }
+    // Unlike a template, an emptied vendor list is a deliberate choice — "attach
+    // no vendors" — so it must persist as empty rather than snap back to the
+    // default brand and reappear on the next rename.
+    if (k === "vendors") {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('naming.vendors', ?)").run(
+        v === null || v === undefined ? "" : vendorList({ vendors: String(v) }).join(","),
+      );
       continue;
     }
     const value = v === null || v === undefined || String(v).trim() === "" ? (DEFAULT_NAMING[k] as string) : String(v).trim();
@@ -311,6 +353,9 @@ function collectEditions(base: string): string[] {
 export interface ReleaseTags {
   tags: string;
   group: string | null;
+  /** Platform watermark ("Bajeczki24"). Name-only, like the group, so it is
+   *  inherited from a same-inode twin and never measured. */
+  vendor: string | null;
   language: string | null;
   /** A dub was explicitly marked (DUB/DUBBING/LEKTOR/NAUKA/…). Polish releases
    *  are split between a dubbed and an original track, so the audio *source*
@@ -732,6 +777,13 @@ function streamLanguageCode(raw: string | null | undefined): string | null {
   return null;
 }
 
+/** Escape a user-supplied vendor name for use inside a RegExp — a brand may
+ *  legitimately contain "." or "+" (e.g. "Canal+"), which would otherwise
+ *  compile into a pattern that matches far more than the name. */
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Fill the release facts a name cannot prove from a same-inode sibling's name.
  *
  *  A processed file and its library hardlink are the SAME bytes under two names,
@@ -745,13 +797,18 @@ function streamLanguageCode(raw: string | null | undefined): string | null {
  *  its own source or group, keeps it. Everything ffprobe measures — resolution,
  *  codecs, channels, bit depth, HDR, language — is recomputed per file and is
  *  never inherited, so this can only add release metadata, never stale it. */
-export function inheritReleaseFacts(target: ReleaseTags, siblingBase: string | null | undefined): ReleaseTags {
+export function inheritReleaseFacts(
+  target: ReleaseTags,
+  siblingBase: string | null | undefined,
+  vendors: readonly string[] = DEFAULT_VENDORS,
+): ReleaseTags {
   if (!siblingBase) return target;
-  const sibling = parseReleaseTags(siblingBase.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, ""));
+  const sibling = parseReleaseTags(siblingBase.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, ""), vendors);
   const out: ReleaseTags = { ...target, misc: [...target.misc] };
   let changed = false;
   if (!out.source && sibling.source) { out.source = sibling.source; changed = true; }
   if (!out.group && sibling.group) { out.group = sibling.group; changed = true; }
+  if (!out.vendor && sibling.vendor) { out.vendor = sibling.vendor; changed = true; }
   // Only EDITION labels are inherited. Misc also holds unrecognized bracket tags
   // preserved verbatim, and those belong to the file whose name carried them.
   for (const ed of sibling.misc.filter(isEditionLabel)) {
@@ -773,19 +830,41 @@ const isEditionLabel = (misc: string): boolean => EDITION_TEST_RE.test(misc);
  * plus a "-GROUP" tail. Unknown pieces are dropped, never guessed at — other
  * than preserving unrecognized short bracket tags verbatim.
  */
-export function parseReleaseTags(baseName: string): ReleaseTags {
-  const out: ReleaseTags = { tags: "", group: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
+export function parseReleaseTags(baseName: string, vendors: readonly string[] = DEFAULT_VENDORS): ReleaseTags {
+  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
   // Editions ("International", "Extended", "Director's Cut", …) are preserved
   // as tags — and a bare "-International"-style tail that is one of them stops
   // being treated as a release group.
   const editions = collectEditions(base);
+
+  // A vendor is the one piece that arrives as a BARE trailing word, with no
+  // hyphen and no bracket ("… i stara szafa 2005 Bajeczki24"), because that is
+  // how streaming rips brand themselves. Nothing else would read it: the group
+  // rule only matches a "-WORD" tail, and the tokenizer drops unknown words. So
+  // it is lifted out first, before either rule can misjudge it. Boundaries are
+  // Unicode-aware so a Polish vendor name is not cut in half, and the name's own
+  // spelling is kept.
+  const vRe = vendors.length ? new RegExp(`(^|[^\\p{L}\\p{N}])(${vendors.map(escapeRe).join("|")})(?![\\p{L}\\p{N}])`, "iu") : null;
+  const vHit = vRe ? base.match(vRe) : null;
+  if (vHit && vHit.index !== undefined) {
+    out.vendor = vHit[2];
+    base = (base.slice(0, vHit.index) + base.slice(vHit.index + vHit[0].length)).replace(/[-.\s]+$/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+
   // A trailing "-Group" is a release group whether or not it is ALLCAPS: real
   // groups are frequently mixed case and Polish ("-Alusia", "-FraMeSToR",
   // "-ELiTE", "-Zima", "-drzewa"). Shape cannot separate them from a title
   // ending in a hyphenated word, so the tag wins and only codec/edition words
-  // are rejected — those are never a group.
+  // are rejected — those are never a group. A "-Vendor" tail is not a group
+  // even though "-Bajeczki24" would match the shape, so the vendor is peeled
+  // off first: that is what makes the rename idempotent, since the canonical
+  // form ends in one.
+  if (out.vendor) {
+    const tail = new RegExp(`[-.]${escapeRe(out.vendor)}$`, "i");
+    if (tail.test(base)) base = base.replace(tail, "").replace(/[-.\s]+$/g, "").trim();
+  }
   const grp = base.match(/-([A-Za-z0-9]{2,12})$/);
   if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
     out.group = grp[1];
@@ -1038,6 +1117,7 @@ export interface CanonicalFilePieces {
   episodeYear?: string | null;
   tags?: string;
   group?: string | null;
+  vendor?: string | null;
 }
 
 const pad2 = (n: number): string => String(n).padStart(2, "0");
@@ -1069,12 +1149,31 @@ const fileVars = (p: CanonicalFilePieces, conf: NamingConf): Record<string, stri
   SpecialCode: p.season === 0 && p.episode ? `S${String(0).padStart(2, "0")}E${String(p.episode).padStart(2, "0")}` : "",
   Tags: p.tags || "",
   Group: p.group ? `-${p.group}` : "",
+  Vendor: p.vendor ? `-${p.vendor}` : "",
 });
+
+/** A vendor belongs at the very end, which is where these rips put it and where
+ *  it round-trips. A stored template from before {Vendor} existed still gets it
+ *  appended, so enabling the list works without anyone editing a template; a
+ *  template that does reference the token renders it itself and is left alone. */
+function renderFileTemplate(template: string, vars: Record<string, string>, p: CanonicalFilePieces): string {
+  const out = renderNamingTemplate(template, vars);
+  if (vars.Vendor && !template.includes("{Vendor}")) {
+    // The vendor continues the same zero-space run {Group} uses, so it glues on
+    // directly. Only when NEITHER tag nor group rendered is the template's own
+    // " - " separator left dangling, and gluing onto that would double the dash.
+    const content = `${p.tags || ""}${p.group || ""}`.trim();
+    if (content) return `${out}${vars.Vendor}`;
+    const trimmed = out.replace(/[\s\-–—:]+$/, "");
+    return trimmed ? `${trimmed} ${vars.Vendor}` : vars.Vendor.slice(1);
+  }
+  return out;
+}
 
 /** Movie file / S00 special: "Title (YYYY) [imdbid-tt####] - [tags]-GROUP". */
 export function canonicalMovieFile(conf: NamingConf, p: CanonicalFilePieces): string | null {
   if (!p.title || !p.year || !p.imdbId) return null;
-  return sanitizeSegment(renderNamingTemplate(conf.movie_file, fileVars(p, conf)));
+  return sanitizeSegment(renderFileTemplate(conf.movie_file, fileVars(p, conf), p));
 }
 
 /** Drop empty bracket pairs, an id bracket with no id, and the dangling
@@ -1095,13 +1194,13 @@ function tidyTemplate(out: string): string {
  *  empty and the on-disk title is kept; the SxxExx marker still keeps it unique. */
 export function canonicalSpecialFile(conf: NamingConf, p: CanonicalFilePieces): string | null {
   if (!p.title) return null;
-  return sanitizeSegment(tidyTemplate(renderNamingTemplate(conf.special_file, fileVars(p, conf))));
+  return sanitizeSegment(tidyTemplate(renderFileTemplate(conf.special_file, fileVars(p, conf), p)));
 }
 
 /** Numbered episode: "Show - S01E01 - Name [tags]-GROUP". Episode title optional. */
 export function canonicalEpisodeFile(conf: NamingConf, p: CanonicalFilePieces): string | null {
   if (!p.title || typeof p.season !== "number" || typeof p.episode !== "number") return null;
-  const out = renderNamingTemplate(conf.episode_file, fileVars(p, conf));
+  const out = renderFileTemplate(conf.episode_file, fileVars(p, conf), p);
   // Drop empty bracket pairs first: an optional token ({AirDate} on an unaired
   // episode) must not leave a dangling "()" or "[]" behind.
   return sanitizeSegment(tidyTemplate(out));
