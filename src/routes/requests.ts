@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, searchTMDB, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -834,6 +834,43 @@ function processedShowDirFromFiles(db: Database, requestIds: number[]): string |
       const parts = String(p).split(/[/\\]+/);
       if (parts.length < 2) continue;
       if (fs.existsSync(path.join(PROCESSED_TV, parts[0]))) return parts[0];
+    }
+  }
+  return null;
+}
+
+/** The processed movie SUBFOLDER holding these requests' accepted files, when
+ *  they are foldered. Movies are mostly flat in PROCESSED_MOVIES, so this is
+ *  frequently null - that is fine, it only serves as a fallback title source
+ *  when TMDB cannot search the stored (often localized) row title. */
+function processedMovieDirFromFiles(db: Database, requestIds: number[]): string | null {
+  if (!requestIds.length) return null;
+  let rows: any[];
+  try {
+    rows = db
+      .prepare(
+        "SELECT processed_files FROM approval_history" +
+          ` WHERE request_id IN (${requestIds.map(() => "?").join(",")})` +
+          " AND processed_files IS NOT NULL AND processed_files != '[]'",
+      )
+      .all(...requestIds) as any[];
+  } catch {
+    return null;
+  }
+  for (const r of rows) {
+    let arr: string[] = [];
+    try {
+      arr = JSON.parse(r.processed_files || "[]") as string[];
+    } catch {
+      continue;
+    }
+    for (const p of arr) {
+      const rel = String(p).split(/[/\\]+/).filter(Boolean);
+      // One segment means the file sits flat in PROCESSED_MOVIES, which names
+      // nothing - every movie in that root shares it.
+      if (rel.length < 2) continue;
+      const full = path.join(PROCESSED_MOVIES, rel.join(path.sep));
+      if (fs.existsSync(full)) return path.dirname(full);
     }
   }
   return null;
@@ -6651,6 +6688,75 @@ let episodes: any[];
     } catch (error: any) {
       console.error("Error fixing franchise identity:", error.message || error);
       res.status(500).json({ error: "Failed to fix franchise identity" });
+    }
+  });
+
+  // POST /api/requests/:id/fix-identity - the movie counterpart of the native
+  // franchise repair above. Movie keys are minted from the same unparsed release
+  // names, so they carry junk slugs and zero years too
+  // (movie:niekonczaca-sie-opowiesc-ii-264-al3x:0). Re-resolve on TMDB and
+  // rewrite to `movie:<slug>:<year>`, migrating every dependent row.
+  //
+  // Unlike the series repair the slug comes from the RESOLVED TMDB name rather
+  // than the stored one: a movie's key is what Fix Names mints the canonical
+  // filename and folder from, so keying it off the mangled Polish row title
+  // would only relocate the junk.
+  router.post("/:id/fix-identity", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed) return res.status(404).json({ error: "Request not found" });
+      if (seed.type !== "movie" || !seed.library_key) {
+        return res.status(400).json({ error: "Native movie request with library_key required" });
+      }
+      const oldKey = seed.library_key;
+      const lang = franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US";
+      const cleaned = cleanFranchiseTitle(seed.title || "");
+      let resolved = await resolveMovieIdentity(oldKey, cleaned, lang);
+      // Stored movie titles are routinely localized or mangled, so a search can
+      // miss what the on-disk folder names correctly - retry with that, the same
+      // way the series repair retries with the show folder.
+      let usedDiskTitle = false;
+      if (!resolved) {
+        const rows = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").all(oldKey) as any[];
+        const dir = processedMovieDirFromFiles(db, rows.map((r: any) => r.id));
+        if (dir) {
+          resolved = await resolveMovieIdentity(oldKey, path.basename(dir), lang);
+          usedDiskTitle = true;
+        }
+      }
+      if (!resolved) {
+        return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "unresolved on TMDB" });
+      }
+      const slug = slugForKeyTitle(resolved.name) || slugForKeyTitle(cleaned);
+      if (!slug || slug.length < 3) {
+        return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "Could not build a key from the resolved title" });
+      }
+      const newKey = `movie:${slug}:${resolved.year ?? 0}`;
+      if (newKey === oldKey) {
+        return res.json({ fixed: false, old_key: oldKey, new_key: newKey, reason: "already canonical" });
+      }
+      const clash = (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ?").get(newKey) as any)?.c || 0;
+      if (clash > 0) {
+        return res.status(409).json({ error: `Key ${newKey} is already in use by another movie — not overwriting` });
+      }
+      db.transaction(() => {
+        db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'movie'").run(newKey, oldKey);
+        db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+        db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+        // The cache holds the RESOLVED TITLE per key, so the old row's title must
+        // not follow the new key or the next preview keeps printing it.
+        db.prepare("DELETE FROM tmdb_external_ids WHERE library_key IN (?, ?)").run(oldKey, newKey);
+      })();
+      res.json({
+        fixed: true,
+        old_key: oldKey,
+        new_key: newKey,
+        resolved: { id: resolved.id, name: resolved.name, year: resolved.year, via: usedDiskTitle ? `${resolved.via}+disk` : resolved.via },
+      });
+    } catch (error: any) {
+      console.error("Error fixing movie identity:", error.message || error);
+      res.status(500).json({ error: "Failed to fix movie identity" });
     }
   });
 

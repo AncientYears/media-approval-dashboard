@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, LANGUAGES } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, fixMovieIdentity, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -306,6 +306,20 @@ export default function RequestDetail() {
     } catch {
       setLanguage(prev);
       toast("Could not set language", "error");
+    }
+  };
+
+  const handleFixIdentity = async () => {
+    try {
+      const res = await fixMovieIdentity(Number(id));
+      if (res.fixed) {
+        toast(`Identity fixed: ${res.old_key} → ${res.new_key}`, "success");
+        loadData();
+      } else {
+        toast(res.reason === "unresolved on TMDB" ? "Could not resolve movie on TMDB (server offline / no API key?)" : "Identity already canonical", "info");
+      }
+    } catch (e: any) {
+      toast(e.response?.data?.error || e.message || "Fix identity failed", "error");
     }
   };
 
@@ -646,16 +660,31 @@ export default function RequestDetail() {
               Arr-linked rows have no library_key and the endpoint rejects them,
               so it only shows where the pref is actually honoured. */}
           {request.library_key && (
-            <select
-              className="lang-select"
-              value={language}
-              onChange={(e) => handleLanguage(e.target.value)}
-              title="TMDB language for the canonical title (per movie/franchise; default = TMDB_LANGUAGE or en-US). Applies to the next Fix Names preview."
-              style={{ marginLeft: "auto", fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
-            >
-              <option value="">Default language</option>
-              {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-            </select>
+            <>
+              {/* Series repairs live on the franchise page (native-franchise
+                  fix-identity); this endpoint is the movie counterpart and
+                  rejects anything else. */}
+              {request.type !== "series" && (
+                <button
+                  className="btn btn-secondary btn-tiny"
+                  style={{ marginLeft: 8 }}
+                  title={`Re-resolve this movie on TMDB and rewrite its library_key to a clean \`movie:<slug>:<year>\` (fixes junk slugs and zero years minted from raw release names). Migrates requests, TMDB cache and language pref.`}
+                  onClick={handleFixIdentity}
+                >
+                  Fix identity
+                </button>
+              )}
+              <select
+                className="lang-select"
+                value={language}
+                onChange={(e) => handleLanguage(e.target.value)}
+                title="TMDB language for the canonical title (per movie/franchise; default = TMDB_LANGUAGE or en-US). Applies to the next Fix Names preview."
+                style={{ marginLeft: "auto", fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+              >
+                <option value="">Default language</option>
+                {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </>
           )}
         </div>
         {processedFiles.length > 0 && (

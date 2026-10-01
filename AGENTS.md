@@ -643,6 +643,23 @@ button in `NativeFranchise.tsx`) rewrites a polluted
 Keys carry a fragile `:0` year when the slug lookup didn't produce one — the
 yearless-search retry and disk-title fallback exist precisely to fix those.
 
+**Movies have their own endpoint**, `POST /api/requests/:id/fix-identity`
+(`RequestDetail.tsx`, the movie card's header next to the TMDB language select —
+series repairs stay on `NativeFranchise.tsx`, and this route 400s on a series
+row). Same three steps via `resolveMovieIdentity`, plus two deliberate
+differences:
+- The slug comes from the **resolved TMDB name**, not the stored row title (the
+  series repair keys off the stored one). A movie's key is what Fix Names mints
+  the canonical filename and folder from, so keying it off a localized/mangled
+  title would only relocate the junk.
+- It **deletes** the `tmdb_external_ids` rows for both the old and new key. That
+  cache holds the RESOLVED TITLE per key, so carrying the old row across would
+  keep the next preview printing the pre-fix title. Series never had this because
+  it re-resolves from `tmdb_season_cache`.
+Its disk fallback is `processedMovieDirFromFiles` — which returns a folder only
+when the movie is **foldered**, since movies are mostly flat in
+`PROCESSED_MOVIES` and that root names nothing.
+
 ### Language pref
 `tmdb_franchise_prefs` is keyed by `library_key` (post-fix-identity key, i.e.
 the message handles both row data and cache/prefs migration). `set-language`

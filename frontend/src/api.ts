@@ -74,6 +74,13 @@ export async function fixNativeIdentity(requestId: number) {
   return response.data;
 }
 
+/** Movie counterpart: re-resolve this movie on TMDB and rewrite its
+ *  library_key to a clean `movie:<slug>:<year>`. */
+export async function fixMovieIdentity(requestId: number) {
+  const response = await api.post(`/requests/${requestId}/fix-identity`);
+  return response.data;
+}
+
 /** TMDB languages offered for episode/movie titles. Shared by the franchise and
  *  the movie page so both offer exactly the same set. */
 export const LANGUAGES = [
