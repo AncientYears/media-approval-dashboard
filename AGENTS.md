@@ -153,7 +153,18 @@ session can start with P0 without re-deriving the design.
   each processed file (matched via AH `processed_files`/identity/title fallback) plus its
   library twin by inode (`nativeMovieLibraryFolders`/`resolveLibraryFolder`); proposal
   reuses the naming kernel + `assembleCanonicalTags`, one ffprobe per `(dev,ino)` (pool of
-  4). Names are recomputed server-side on apply (client sends only paths); renames are
+  4). Names are recomputed server-side on apply (client sends only paths), and
+  apply snapshots every proposal from ONE `buildFixNameGroups` run *before* the
+  first rename — so preview and apply are the same computation and a batch
+  cannot half-apply (recomputing per file meant the first rename moved the
+  sibling out from under the rest). **Each row is named from its own name, then
+  inherits the gaps from its same-inode twin** (`inheritReleaseFacts`): source,
+  group and edition can only come from a name, and a twin an arr had named
+  without them would otherwise drop them silently and rename a release group out
+  of existence. Inheritance only FILLS — a name that states its own
+  source/group/edition/Atmos keeps it, and nothing ffprobe measures is ever
+  inherited. Only EDITION labels cross over, not misc generally (`[Dual Audio]`
+  belongs to the name that said it). renames are
   collision-safe (`uniqueDestPath`), inode-verified (`renameSync` + pre/post `stat`),
   refresh `media_files.release_name` + AH `processed_files` basenames. **Folder renames
   added alongside (files first, then dirs deepest-first)**: processed-tree (show/season
@@ -585,7 +596,7 @@ resolution inherits the pref through every call site.
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
-| `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge; probe language enumerates 2+ foreign streams in track order, dub only when exactly one), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
+| `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge; probe language enumerates 2+ foreign streams in track order, dub only when exactly one), `inheritReleaseFacts` (fills source/group/edition gaps from a same-inode twin's name — never overriding, never inheriting probe facts), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment`. `xvid`/`divx`/`mpeg-4` are MPEG-4 Part 2 (`videoFamilyOf`), so a title-branded label is kept instead of being flattened to the probe's generic `Xvid` — which used to render `[Xvid][Xvid]` |
 | `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — resolution/height, video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG), and **every** audio track's `language`/`title` (the language tag reads all of them — never truncate, a 12-track remux read as 4 tracks looked like a single-language dub) |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
