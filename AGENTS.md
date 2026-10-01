@@ -679,25 +679,47 @@ subdirs). Both are wired into `/managed` and `/native-franchise`.
 ### Fix Identity repair
 `POST /api/requests/native-franchise/:id/fix-identity` (frontend: "Fix identity"
 button in `NativeFranchise.tsx`) rewrites a polluted
-`library_key` (`series:tajemnica-sagali-264-al3x:0` → `series:tajemnica-sagali:2016`):
+`library_key` (`series:tajemnica-sagali-264-al3x:0` → `series:<tvdbId>:2016`):
 1. Resolves on TMDB from `cleanFranchiseTitle`; if that misses, retries with the
-   disk-derived show folder name and prefers the matched TMDB name for the slug.
-2. Builds `series:<slug>:<year>`; refuses (`409`) if another franchise owns the
-   target key; no-ops when already canonical.
-3. Migrates `media_requests`, `tmdb_season_cache`, and `tmdb_franchise_prefs`
-   (language pref) rows to the new key in a transaction.
-Keys carry a fragile `:0` year when the slug lookup didn't produce one — the
+   disk-derived show folder name.
+2. Builds `series:<tvdbId|imdbId|slug>:<year>` via `seriesKeySegment` — **TVDB
+   first** (the id the canonical `[tvdbid-####]` dir names embed), then IMDb,
+   then the title slug. A slug is a **lossy artifact of a title**, so it is the
+   last resort and is always built from the **resolved** name, never the stored
+   row title (which is routinely localized — "Kacze opowiesci" used to mint a
+   Polish slug). `applySeriesIdentity` is the series mirror of
+   `applyMovieIdentity`, and because the id segment wins, an already id-anchored
+   key is a no-op — the repair can never **downgrade** a TVDB key to a slug.
+3. Refuses (`409`) if another franchise owns the target key; no-ops when already
+   canonical.
+4. Migrates `media_requests`, `tmdb_season_cache`, `tmdb_franchise_prefs`
+   (language pref) and — unlike the original series repair — `media_files`, so the
+   identity layer moves WITH the key (a skipped migration orphaned every
+   registered inode until a read re-registered it). Drops the stale
+   `tmdb_external_ids` row for the old key and repopulates under the new one.
+Keys carry a fragile `:0` year when the lookup didn't produce one — the
 yearless-search retry and disk-title fallback exist precisely to fix those.
+
+**Series now carries the movie's Re-attach pair too** (mirroring `RequestDetail`):
+`GET /api/requests/native-franchise/:id/identity-candidates` searches the readable
+stored title AND the lossy key slug (merged), and accepts a free-text `?q=` because
+TMDB indexes a show under its ORIGINAL name — a localized card title can be
+unsearchable in any spelling we derive. `POST /api/requests/native-franchise/:id/retitle { tmdbId }`
+applies the pick, rewriting the franchise `title` (the mangled *input* that caused
+the bad identity) alongside the key across every season. Both take a `:id` that is
+any one of the franchise's season requests (the UI seeds from the first season with
+a `request_id`, since injected rows have `request_id: null`).
 
 **Movies have their own endpoint**, `POST /api/requests/:id/fix-identity`
 (`RequestDetail.tsx`, the movie card's header next to the TMDB language select —
 series repairs stay on `NativeFranchise.tsx`, and this route 400s on a series
 row). Same three steps via `resolveMovieIdentity`, plus two deliberate
 differences:
-- The slug comes from the **resolved TMDB name**, not the stored row title (the
-  series repair keys off the stored one). A movie's key is what Fix Names mints
-  the canonical filename and folder from, so keying it off a localized/mangled
-  title would only relocate the junk.
+- The id anchor is the **IMDb** id, not TVDB (`movieKeySegment`), because a movie
+  has no TVDB id. Both now build the slug from the **resolved TMDB name**, never
+  the stored row title: a key is what Fix Names mints the canonical filename and
+  folder from, so keying it off a localized/mangled title would only relocate the
+  junk.
 - It **deletes** the `tmdb_external_ids` row for the OLD key and then
   re-resolves under the new one. Carrying the old row across is wrong (it holds
   the pre-fix resolved title, so the next preview would keep printing it), but
@@ -706,8 +728,8 @@ differences:
   `movie:the-neverending-story-iii:1994`) can find no id in its key or its stored
   title, and losing the id silently cost the card its library folder and its
   "in library" state. So `resolveExternalIds(db, newKey, …, { ignoreCache: true })`
-  repopulates it. Series never needed this because it re-resolves from
-  `tmdb_season_cache`.
+  repopulates it. The series repair now does the same (`tmdb_external_ids` keyed
+  by `library_key`), so `[tvdbid-####]`/`[imdbid-tt…]` stay resolvable offline.
 - The **identity is displayed, and the button is always available**. The card
   header shows the raw `library_key` next to "Fix identity" (which is no longer
   gated on `keyNeedsIdentityRepair`). That gate was wrong: a key built from a
@@ -872,7 +894,7 @@ resolution inherits the pref through every call site.
 | `frontend/src/pages/FranchiseDetail.tsx` | Franchise overview + SeasonDetail |
 | `frontend/src/pages/RequestDetail.tsx` | Single request view (movies) |
 | `frontend/src/pages/Dashboard.tsx` | Requests list + filters + managed media |
-| `frontend/src/pages/NativeFranchise.tsx` | Native (arr-free) franchise view: seasons, Specials pill, language select, "Fix identity" repair |
+| `frontend/src/pages/NativeFranchise.tsx` | Native (arr-free) franchise view: seasons, Specials pill, language select, "Fix identity" + "Re-attach" repair |
 | `frontend/src/api.ts` | Axios client + all API functions |
 
 ## Environment Variables
@@ -1088,7 +1110,9 @@ SEERR_API_KEY=
 - [ ] Specials pill shows honest numerator/denominator (native shows: TMDB named specials), never hidden when unfilled
 - [ ] Empty S00 grip (no video files) still gets a TMDB-only Specials pill for native franchises (DiP/Smurfs/Ninjago)
 - [ ] `fetchTMDBSeason` altTitle fallback resolves mangled row titles from the on-disk folder name ("Ninjago: Dragon Rising" → "LEGO Ninjago: Dragons Rising")
-- [ ] Fix identity rewrites `series:<junk>-264-al3x:0` → `series:<slug>:<year>`, migrating requests/cache/language pref, 409 on clash
+- [ ] Fix identity rewrites `series:<junk>-264-al3x:0` → `series:<tvdbId|imdbId|slug>:<year>` (TVDB first), migrating requests/cache/language pref/**media_files**, 409 on clash
+- [ ] Pressing "Fix identity" on an already TVDB-anchored series is a no-op (never downgrades the id key to a slug), and `seriesKeySegment` prefers TVDB then IMDb then the resolved-name slug (`series_key_segment.test.js`)
+- [ ] `GET /native-franchise/:id/identity-candidates` lists shows (title + key slug, plus free-text `?q=`), and "Re-attach" applies one via `POST /native-franchise/:id/retitle` — rewriting the franchise title + key across every season
 - [ ] Language select uses the first season with a `request_id` (injected S00 rows sort first but have `request_id: null`)
 - [ ] Startup cleanup doesn't delete RCs for bilingual/alternate-title series
 - [ ] Unmatched match creates multi-season requests from content_path scan

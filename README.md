@@ -181,7 +181,9 @@ npm run dev
 | GET | `/api/requests/managed` | Managed media list (series + movies with releases) |
 | GET | `/api/requests/managed/:sonarrId` | Legacy franchise detail (all seasons, releases, coverage) |
 | GET | `/api/requests/native-franchise/:id` | Native (arr-free, TMDB-backed) franchise detail |
-| POST | `/api/requests/native-franchise/:id/fix-identity` | Repair polluted `library_key` identity |
+| POST | `/api/requests/native-franchise/:id/fix-identity` | Repair polluted `library_key` identity (TVDB-anchored) |
+| GET | `/api/requests/native-franchise/:id/identity-candidates` | Shows this series could be (Re-attach picker) |
+| POST | `/api/requests/native-franchise/:id/retitle` | Apply a picked show; rewrites title + key across every season |
 | POST | `/api/requests/managed/:sonarrId/search-all` | Parallel season search (SSE, Prowlarr) |
 | POST | `/api/requests/managed/search-all-movies` | Parallel movie search (SSE, Prowlarr) |
 | DELETE | `/api/requests/managed/:sonarrId` | Delete legacy franchise (all seasons) |

@@ -74,6 +74,24 @@ export async function fixNativeIdentity(requestId: number) {
   return response.data;
 }
 
+/** Shows this franchise could be, for the explicit "Re-attach" control. The
+ *  series mirror of `getIdentityCandidates`: needed so a card whose key was
+ *  repaired while its stored title stayed localized can still be corrected. */
+export async function getNativeIdentityCandidates(requestId: number, term?: string) {
+  const response = await api.get(`/requests/native-franchise/${requestId}/identity-candidates`, {
+    params: term ? { q: term } : {},
+  });
+  return response.data;
+}
+
+/** Apply the show the user picked. Unlike fix-identity this also rewrites the
+ *  stored franchise `title`, which is the mangled input that caused the wrong
+ *  identity in the first place. Mirrors `retitleMovie`. */
+export async function retitleSeries(requestId: number, tmdbId: number) {
+  const response = await api.post(`/requests/native-franchise/${requestId}/retitle`, { tmdbId });
+  return response.data;
+}
+
 /** Movie counterpart: re-resolve this movie on TMDB and rewrite its
  *  library_key to a clean `movie:<slug>:<year>`. */
 export async function fixMovieIdentity(requestId: number) {

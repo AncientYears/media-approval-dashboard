@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity, ensureNativeSeason, LANGUAGES } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity, getNativeIdentityCandidates, retitleSeries, ensureNativeSeason, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import FixNamesModal from "../components/FixNamesModal";
 
@@ -17,6 +17,72 @@ export default function NativeFranchise() {
   const [language, setLanguage] = useState<string>("");
   const [fixTarget, setFixTarget] = useState<{ id: number; season?: number } | null>(null);
   const [ensuring, setEnsuring] = useState<number | null>(null);
+  const [fixingIdentity, setFixingIdentity] = useState(false);
+  const [identityPicker, setIdentityPicker] = useState<{ reason: string; candidates: any[] } | null>(null);
+  const [identitySearch, setIdentitySearch] = useState("");
+  const [searchingIdentity, setSearchingIdentity] = useState(false);
+  const [retitlingId, setRetitlingId] = useState<number | null>(null);
+
+  const reloadFranchise = () => {
+    setFranchise(null);
+    return fetchNativeFranchise(Number(id))
+      .then((data) => {
+        setFranchise(data);
+        setLanguage(data.language || "");
+      })
+      .catch((e: any) => setError(e.message));
+  };
+
+  const handleFixIdentity = async () => {
+    setFixingIdentity(true);
+    try {
+      const res = await fixNativeIdentity(Number(id));
+      if (res.fixed) {
+        toast(`Identity fixed: ${res.old_key} → ${res.new_key}`, "success");
+        reloadFranchise();
+      } else {
+        toast(res.reason === "unresolved on TMDB" ? "Could not resolve show on TMDB (server offline / no API key?)" : "Identity already canonical", "info");
+      }
+    } catch (e: any) {
+      toast(e.response?.data?.error || e.message || "Fix identity failed", "error");
+    } finally {
+      setFixingIdentity(false);
+    }
+  };
+
+  const handleOpenReattach = async (term?: string) => {
+    const seedId = franchise?.seasons?.find((s: any) => s.request_id != null)?.request_id;
+    if (!seedId) return;
+    setSearchingIdentity(true);
+    try {
+      const res = await getNativeIdentityCandidates(seedId, term);
+      setIdentitySearch(term || "");
+      setIdentityPicker({
+        reason: `Current identity: ${res.current_key || "(none)"} — searched "${term || res.query || ""}"`,
+        candidates: res.candidates || [],
+      });
+    } catch (e: any) {
+      toast(e.response?.data?.error || e.message || "Could not load candidates", "error");
+    } finally {
+      setSearchingIdentity(false);
+    }
+  };
+
+  const handleRetitle = async (tmdbId: number) => {
+    const seedId = franchise?.seasons?.find((s: any) => s.request_id != null)?.request_id;
+    if (!seedId) return;
+    setRetitlingId(tmdbId);
+    try {
+      const res = await retitleSeries(seedId, tmdbId);
+      setIdentityPicker(null);
+      toast(`Re-attached as ${res.new_key}`, "success");
+      reloadFranchise();
+    } catch (e: any) {
+      toast(e.response?.data?.error || e.message || "Re-attach failed", "error");
+    } finally {
+      setRetitlingId(null);
+    }
+  };
 
   const loadEpisodes = async (season: any) => {
     if (episodes[season.season]) return;
@@ -166,27 +232,17 @@ export default function NativeFranchise() {
         <button
           className="btn btn-secondary btn-tiny"
           style={{ marginLeft: 8 }}
-          title={`Re-resolve this franchise on TMDB and rewrite its library_key to a clean \`series:<slug>:<year>\` (fixes junk slugs like "...-264-al3x" and zero years). Migrates requests, TMDB cache and language pref.`}
-          onClick={async () => {
-            try {
-              const res = await fixNativeIdentity(Number(id));
-              if (res.fixed) {
-                toast(`Identity fixed: ${res.old_key} → ${res.new_key}`, "success");
-                setFranchise(null);
-                fetchNativeFranchise(Number(id))
-                  .then((data) => {
-                    setFranchise(data);
-                    setLanguage(data.language || "");
-                  })
-                  .catch((e: any) => setError(e.message));
-              } else {
-                toast(res.reason === "unresolved on TMDB" ? "Could not resolve show on TMDB (server offline / no API key?)" : "Identity already canonical", "info");
-              }
-            } catch (e: any) {
-              toast(e.response?.data?.error || e.message || "Fix identity failed", "error");
-            }
-          }}
-        >Fix identity</button>
+          title={`Re-resolve this franchise on TMDB and rewrite its library_key to a clean \`series:<tvdbId>:<year>\` (anchored on the TVDB id the folder names embed, so it no longer rides a localized title slug). Fixes junk slugs like "...-264-al3x" and zero years. Migrates requests, TMDB cache, language pref and the identity layer.`}
+          onClick={handleFixIdentity}
+          disabled={fixingIdentity}
+        >{fixingIdentity ? "Fixing…" : "Fix identity"}</button>
+        <button
+          className="btn btn-secondary btn-tiny"
+          style={{ marginLeft: 4 }}
+          title="Search TMDB for this series and pick the right show by hand. Use this when the stored title is localized/mangled even though the key looks fine — card matching reads the title, so only a re-attach can fix it."
+          onClick={() => handleOpenReattach()}
+          disabled={fixingIdentity}
+        >Re-attach</button>
       </div>
 
       <div className="franchise-seasons-list">
@@ -263,6 +319,109 @@ export default function NativeFranchise() {
           );
         })}
       </div>
+      {identityPicker && (
+        <div className="modal-overlay" onClick={() => setIdentityPicker(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>Re-attach to the correct series</span>
+              <button className="modal-close" onClick={() => setIdentityPicker(null)}>&times;</button>
+            </div>
+            <div className="modal-body" style={{ maxHeight: 460, overflowY: "auto" }}>
+              <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted)" }}>
+                {identityPicker.reason}. Picking one rewrites this franchise's title and{" "}
+                <code>library_key</code> across every season to that show.
+              </p>
+              {/* TMDB indexes a show under its ORIGINAL name, so a localized card
+                  title can be unsearchable no matter how we spell it. Searching by
+                  the show's real name is the only way to reach it. */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleOpenReattach(identitySearch.trim() || undefined);
+                }}
+                style={{ display: "flex", gap: 6, marginBottom: 10 }}
+              >
+                <input
+                  value={identitySearch}
+                  onChange={(e) => setIdentitySearch(e.target.value)}
+                  placeholder="Search TMDB by another name…"
+                  style={{
+                    flex: 1,
+                    padding: "6px 8px",
+                    background: "var(--card-bg, #1e293b)",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    color: "#e2e8f0",
+                    fontSize: 13,
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={searchingIdentity || identitySearch.trim().length < 2}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#334155",
+                    border: "1px solid #475569",
+                    borderRadius: 6,
+                    color: "#e2e8f0",
+                    cursor: searchingIdentity ? "wait" : "pointer",
+                    opacity: identitySearch.trim().length < 2 ? 0.5 : 1,
+                  }}
+                >
+                  {searchingIdentity ? "Searching…" : "Search"}
+                </button>
+              </form>
+              {identityPicker.candidates.length === 0 ? (
+                <div style={{ padding: 16, color: "var(--text-muted)" }}>
+                  No candidates found on TMDB. Try the show&apos;s original-language title above.
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {identityPicker.candidates.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => handleRetitle(c.id)}
+                      disabled={retitlingId !== null}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "8px 10px",
+                        textAlign: "left",
+                        background: "var(--card-bg, #1e293b)",
+                        border: "1px solid #334155",
+                        borderRadius: 6,
+                        color: "#e2e8f0",
+                        cursor: retitlingId !== null ? "wait" : "pointer",
+                        opacity: retitlingId !== null && retitlingId !== c.id ? 0.5 : 1,
+                      }}
+                    >
+                      {c.poster && (
+                        <img
+                          src={`https://image.tmdb.org/t/p/w92${c.poster}`}
+                          alt=""
+                          style={{ width: 46, height: 69, objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
+                        />
+                      )}
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 13 }}>{c.title}</span>
+                        {c.overview && (
+                          <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {c.overview}
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
+                        {retitlingId === c.id ? "Re-attaching…" : c.year || "?"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {fixTarget && (
         <FixNamesModal
           requestId={fixTarget.id}

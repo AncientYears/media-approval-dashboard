@@ -7056,8 +7056,11 @@ let episodes: any[];
   // franchise's library_key. Keys minted from unparsed release names carry junk
   // slugs and a zero year (e.g. series:tajemnica-sagali-264-al3x:0). Re-resolve
   // the show on TMDB from the cleaned title and rewrite the key to the canonical
-  // `series:<slug>:<year>`, migrating every dependent row (requests, TMDB cache,
-  // language pref). No-op when already canonical, refuses when another franchise
+  // `series:<tvdbId|imdbId|slug>:<year>`, anchoring on the TVDB id the canonical
+  // dir names embed so the key no longer rides a localized title slug (the movie
+  // counterpart anchors on the IMDb id for the same reason). Migrates every
+  // dependent row (requests, TMDB cache, language pref, and the identity layer's
+  // media_files). No-op when already canonical, refuses when another franchise
   // already owns the target key.
   router.post("/native-franchise/:id/fix-identity", async (req: Request, res: Response) => {
     try {
@@ -7067,44 +7070,103 @@ let episodes: any[];
         return res.status(400).json({ error: "Series request with library_key required" });
       }
       const oldKey = seed.library_key;
+      const lang = franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US";
       const cleaned = cleanFranchiseTitle(seed.title || "");
-      let resolved = await resolveShowIdentity(oldKey, cleaned, franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US");
+      let resolved = await resolveShowIdentity(oldKey, cleaned, lang);
       let usedDiskTitle = false;
       if (!resolved) {
         const rows = db.prepare("SELECT id, season FROM media_requests WHERE library_key = ? AND type = 'series'").all(oldKey) as any[];
         const showDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id)) ?? showDirByStructure(rows.map((r: any) => r.season ?? 0));
         if (showDir) {
-          resolved = await resolveShowIdentity(oldKey, path.basename(showDir), franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US");
+          resolved = await resolveShowIdentity(oldKey, path.basename(showDir), lang);
           usedDiskTitle = true;
         }
       }
       if (!resolved) {
         return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "unresolved on TMDB" });
       }
-      let slug = usedDiskTitle ? slugForKeyTitle(resolved.name) : slugForKeyTitle(cleaned);
-      if (!slug || slug.length < 3) slug = slugForKeyTitle(resolved.name) || slugForKeyTitle(cleaned);
-      const newKey = `series:${slug}:${resolved.year ?? 0}`;
-      if (newKey === oldKey) {
-        return res.json({ fixed: false, old_key: oldKey, new_key: newKey, reason: "already canonical" });
+      const applied = await applySeriesIdentity(db, oldKey, { name: resolved.name, year: resolved.year, tmdbId: resolved.id }, lang);
+      if ("error" in applied) {
+        return res.status(applied.status).json({ fixed: false, old_key: oldKey, new_key: null, reason: applied.error });
       }
-      const clash = (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'series' AND library_key = ?").get(newKey) as any)?.c || 0;
-      if (clash > 0) {
-        return res.status(409).json({ error: `Key ${newKey} is already in use by another franchise — not overwriting` });
-      }
-      db.transaction(() => {
-        db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
-        db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-        db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-      })();
       res.json({
         fixed: true,
         old_key: oldKey,
-        new_key: newKey,
-        resolved: { id: resolved.id, name: resolved.name, year: resolved.year, via: resolved.via },
+        new_key: applied.newKey,
+        resolved: { id: resolved.id, name: resolved.name, year: resolved.year, via: usedDiskTitle ? `${resolved.via}+disk` : resolved.via },
       });
     } catch (error: any) {
       console.error("Error fixing franchise identity:", error.message || error);
       res.status(500).json({ error: "Failed to fix franchise identity" });
+    }
+  });
+
+  // GET /api/requests/native-franchise/:id/identity-candidates - shows this
+  // franchise could be, for the explicit "Re-attach" control. The series mirror
+  // of the movie route: searches every spelling the card could be found by (the
+  // readable stored title AND the lossy key slug), merging both, and accepts a
+  // free-text `?q=` because TMDB indexes a show under its ORIGINAL name.
+  router.get("/native-franchise/:id/identity-candidates", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed) return res.status(404).json({ error: "Request not found" });
+      if (seed.type !== "series" || !seed.library_key) {
+        return res.status(400).json({ error: "Native series request with library_key required" });
+      }
+      const lang = franchiseLanguage(db, seed.library_key) || process.env.TMDB_LANGUAGE || "en-US";
+      const fromTitle = cleanFranchiseTitle(seed.title || "");
+      const fromKey = cleanFranchiseTitle(
+        String(seed.library_key).replace(/^series:/, "").replace(/:\d{4}$/, "").replace(/-/g, " "),
+      );
+      const manual = String(req.query.q || "").trim();
+      const queries = Array.from(
+        new Set((manual ? [manual] : [fromTitle, fromKey]).map((q) => q.trim()).filter((q) => q.length > 1)),
+      );
+      const seen = new Set<number>();
+      const candidates: any[] = [];
+      for (const q of queries) {
+        const hits = await searchTMDB(q, "series", lang).catch(() => []);
+        for (const hit of hits || []) {
+          if (seen.has(hit.id)) continue;
+          seen.add(hit.id);
+          candidates.push(hit);
+        }
+      }
+      res.json({ query: fromTitle || fromKey || "", searched: queries, current_key: seed.library_key, candidates });
+    } catch (error: any) {
+      console.error("Error listing series identity candidates:", error.message || error);
+      res.status(500).json({ error: "Failed to list identity candidates" });
+    }
+  });
+
+  // POST /api/requests/native-franchise/:id/retitle - the user picked the show.
+  // The series mirror of the movie route: rewrites `title` (the mangled input
+  // that caused the bad identity) alongside the key, across every season row.
+  router.post("/native-franchise/:id/retitle", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const tmdbId = Number(req.body?.tmdbId);
+      if (!Number.isFinite(tmdbId) || tmdbId <= 0) return res.status(400).json({ error: "tmdbId is required" });
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed) return res.status(404).json({ error: "Request not found" });
+      if (seed.type !== "series" || !seed.library_key) {
+        return res.status(400).json({ error: "Native series request with library_key required" });
+      }
+      const oldKey = seed.library_key;
+      const lang = franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US";
+      const info = await fetchTMDBById("series", tmdbId, lang);
+      if (!info?.title) return res.status(404).json({ error: `TMDB has no series ${tmdbId}` });
+      const applied = await applySeriesIdentity(db, oldKey, { name: info.title, year: info.year, tmdbId }, lang, {
+        alsoSetTitle: true,
+      });
+      if ("error" in applied) {
+        return res.status(applied.status).json({ fixed: false, old_key: oldKey, new_key: null, reason: applied.error });
+      }
+      res.json({ fixed: true, old_key: oldKey, new_key: applied.newKey, title: info.title, resolved: info });
+    } catch (error: any) {
+      console.error("Error retitling series:", error.message || error);
+      res.status(500).json({ error: "Failed to retitle series" });
     }
   });
 
@@ -7205,6 +7267,84 @@ async function applyMovieIdentity(
   // stored title, so without this the request silently loses the id that the
   // folder veto and the canonical name both depend on.
   await resolveExternalIds(db, newKey, "movie", resolved.name, lang, { ignoreCache: true }).catch(() => null);
+  return { newKey };
+}
+
+/** The middle segment of a series `library_key`: the TVDB id when known (the
+ *  canonical `[tvdbid-####]` convention the dir names embed), then the IMDb id,
+ *  else the title slug. The series mirror of `movieKeySegment`, but a series
+ *  anchors on TVDB rather than IMDb. A slug is a LOSSY artifact of a title, so
+ *  it is the last resort and is built from the RESOLVED name -- never the stored
+ *  row title, which is routinely localized ("Kacze opowiesci" used to mint a
+ *  Polish slug). Returns null for anything unusable, so the caller can refuse. */
+function seriesKeySegment(name: string, tvdbId: string | null | undefined, imdbId: string | null | undefined): string | null {
+  const tv = tvdbId != null ? String(tvdbId).trim() : "";
+  if (/^\d+$/.test(tv)) return tv;
+  const im = imdbId != null ? imdbId.trim() : "";
+  if (/^tt\d{6,}$/i.test(im)) return im.toLowerCase();
+  const slug = slugForKeyTitle(name);
+  return slug && slug.length >= 3 ? slug : null;
+}
+
+/** Rewrite a series franchise's identity across every dependent row, then
+ *  repopulate the external-id cache under the new key. Never touches the
+ *  filesystem. Mirrors `applyMovieIdentity`, with two series-specific pieces:
+ *  the TVDB-first key segment, and the `media_files` migration (a series repair
+ *  that skipped it orphaned every registered inode until a read re-registered
+ *  it). `alsoSetTitle` is the Re-attach path. */
+async function applySeriesIdentity(
+  db: Database,
+  oldKey: string,
+  resolved: { name: string; year: number | null; tmdbId?: number },
+  lang: string,
+  opts?: { alsoSetTitle?: boolean },
+): Promise<{ newKey: string } | { error: string; status: number }> {
+  let tvdbId: string | null = null;
+  let imdbId: string | null = null;
+  if (resolved.tmdbId) {
+    const ids = await fetchExternalIds("series", resolved.tmdbId, lang).catch(() => null);
+    if (ids) {
+      tvdbId = ids.tvdbId;
+      imdbId = ids.imdbId;
+    }
+  }
+  const seg = seriesKeySegment(resolved.name, tvdbId, imdbId);
+  if (!seg) return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
+  const newKey = `series:${seg}:${resolved.year ?? 0}`;
+  // Re-attaching to the show the key ALREADY names is not a no-op when the
+  // stored title differs (the mangled title is what card matching reads), and
+  // because the id segment wins, an already id-anchored key is a no-op here --
+  // that is what stops a repair from DOWNGRADING a TVDB key to a slug.
+  if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
+  // A clash only counts when ANOTHER franchise holds the key; when newKey ===
+  // oldKey this row's own seasons are the sole holders.
+  const clash =
+    (db
+      .prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'series' AND library_key = ? AND library_key != ?")
+      .get(newKey, oldKey) as any)?.c || 0;
+  if (clash > 0) {
+    return { error: `Key ${newKey} is already in use by another franchise — not overwriting`, status: 409 };
+  }
+  db.transaction(() => {
+    if (opts?.alsoSetTitle) {
+      db.prepare("UPDATE media_requests SET title = ?, library_key = ? WHERE library_key = ? AND type = 'series'").run(
+        resolved.name,
+        newKey,
+        oldKey,
+      );
+    } else {
+      db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
+    }
+    db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The identity layer must move WITH the key, or a registered inode keeps
+    // claiming a franchise no request owns any more (startup then clears it).
+    db.prepare("UPDATE media_files SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The stale external-id row holds the pre-fix resolved title, so drop it and
+    // let the repopulate below write the correct one under the new key.
+    db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
+  })();
+  await resolveExternalIds(db, newKey, "series", resolved.name, lang, { ignoreCache: true }).catch(() => null);
   return { newKey };
 }
 
