@@ -555,32 +555,13 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
   // as tags — and a bare "-International"-style tail that is one of them stops
   // being treated as a release group.
   const editions = collectEditions(base);
-  const looksLikeWord = (s: string): boolean => /^[A-Za-z]+$/.test(s) && s !== s.toUpperCase();
-  // Three ways a trailing group can be written; only the third is ambiguous.
-  //   1. "…[h264]-Alusia"  — glued to a tag bracket: always a group.
-  //   2. "…REMUX-FraMeSToR", "…AC3-ELiTE", "…x264-GRP" — glued to a release-tag
-  //      run, so it is a group even when mixed case (a hyphenated episode title
-  //      never ends on a tag). Only the run's LAST segment must look like a tag,
-  //      which keeps "…Swiatynia Floty-Zima" from being read as a group.
-  //   3. "… - drzewa"      — space before the dash: the second half of a
-  //      hyphenated Polish episode title, so it still needs an ALLCAPS handle.
-  const attGrp = base.match(/[\]\)](-[A-Za-z0-9]{2,12})$/);
-  const tagGrp = base.match(/([A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)-([A-Za-z0-9]{2,12})$/);
-  const tagAnchor = tagGrp ? tagGrp[1].split(".").pop() || "" : "";
-  const tagAnchored =
-    tagGrp !== null &&
-    (/^[A-Z0-9]{2,14}$/.test(tagAnchor) ||
-      looksLikeCodec(tagAnchor) ||
-      /^[A-Z0-9]{2,12}$/.test(tagGrp[2]));
-  const grp = base.match(/ -([A-Z0-9]{2,12})$/i);
-  const reject = (w: string): boolean => looksLikeCodec(w) || EDITION_SINGLE.has(w.toLowerCase());
-  if (attGrp && !reject(attGrp[1].slice(1))) {
-    out.group = attGrp[1].slice(1);
-    base = base.slice(0, base.length - attGrp[1].length).replace(/[-.\s]+$/g, "");
-  } else if (tagGrp && tagAnchored && !reject(tagGrp[2])) {
-    out.group = tagGrp[2];
-    base = base.slice(0, tagGrp.index).replace(/[-.\s]+$/g, "");
-  } else if (grp && !looksLikeCodec(grp[1]) && !looksLikeWord(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
+  // A trailing "-Group" is a release group whether or not it is ALLCAPS: real
+  // groups are frequently mixed case and Polish ("-Alusia", "-FraMeSToR",
+  // "-ELiTE", "-Zima", "-drzewa"). Shape cannot separate them from a title
+  // ending in a hyphenated word, so the tag wins and only codec/edition words
+  // are rejected — those are never a group.
+  const grp = base.match(/-([A-Za-z0-9]{2,12})$/);
+  if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
   }
@@ -649,20 +630,19 @@ export function parseReleaseTags(baseName: string): ReleaseTags {
     if (!srcM && !resM && !audio && !video) {
       // HDR flags (DV, HDR10Plus, HDR10, HLG, ...) are recognized from loose
       // dotted words AND brackets. Unknown short bracket tags are preserved
-      // verbatim (except a trailing "[Unknown]"/"[Group]"/"[NoGrp]" bracket,
-      // which becomes the release group). Everything else is dropped — the
-      // kernel never guesses at words it doesn't know.
+      // verbatim (except "[Unknown]"/"[Group]"/"[NoGrp]", which are dropped).
+      // Everything else is dropped — the kernel never guesses at words it
+      // doesn't know.
       const flag = hdrFlagOf(at);
       if (flag) {
         if (!out.hdr.includes(flag)) out.hdr.push(flag);
         return;
       }
       if (fromBracket && /^[A-Z][A-Za-z0-9.+-]{0,12}$/.test(at)) {
-        if (/^(unknown|nogrp|group)$/i.test(at)) {
-          if (!out.group) out.group = at;
-        } else {
-          misc.push(at);
-        }
+        // "[Unknown]"/"[Group]"/"[NoGrp]" are placeholders that carry no
+        // information, so they are dropped outright — promoting them to the
+        // group only ever produced junk like "-Unknown" on the new name.
+        if (!/^(unknown|nogrp|group)$/i.test(at)) misc.push(at);
       }
     }
   };
