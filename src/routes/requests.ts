@@ -1755,7 +1755,23 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
       }
     } catch {}
   }
-  if (matchedNames.has(base) || matchedNames.has(rel)) return true;
+  if (matchedNames.has(base) || matchedNames.has(rel)) {
+    // CLAIM the inode while we are admitting it. Startup deletes identity rows
+    // naming an unowned key, and this is the branch that gets a file admitted
+    // without any row - it matched approval_history by name, so nothing re-registers
+    // it and it stays unattributed forever. That is not cosmetic: an unregistered
+    // inode cannot be found by identity from the other side, so its own library
+    // twin's folder becomes unreachable (a Polish folder name plus a pre-canonical
+    // file name state no title and no id, leaving only the inode - see
+    // nativeMovieLibraryFolders). Registering here is what makes the fallback find
+    // it, and it is the same evidence that admitted the file.
+    if (request.library_key) {
+      try {
+        registerVideoTree(db, fullPath, { library_key: request.library_key, title: request.title || "", season: request.season ?? 0 });
+      } catch {}
+    }
+    return true;
+  }
   // A twin of one of this request's own library files IS this request's file,
   // even with no media_files row at all (adoption leaves the inode unregistered).
   if (libraryPath) return true;
@@ -1967,6 +1983,29 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   for (const ah of approvals) {
     try {
       for (const n of JSON.parse(ah.processed_files) as string[]) matchedNames.add(n);
+    } catch {}
+  }
+
+  // Register identity for the inodes this request already claims, BEFORE the
+  // library folders are resolved below. Otherwise the two lookups deadlock: the
+  // folder is reachable only by identity, and identity is only registered once a
+  // read admits the file - but the processed scan runs after this. A processed
+  // twin and its library copy are the same inode, so registering the processed
+  // side is what lets the library side be found. Keyed by approval_history here
+  // (an explicit association, not a fuzzy title), so nothing is claimed on a
+  // guess; the processed scan below re-registers the same inodes for files that
+  // were matched another way.
+  if (request.library_key) {
+    try {
+      for (const n of matchedNames) {
+        const full = path.join(processedDir, n);
+        if (!fs.existsSync(full)) continue;
+        try {
+          const st = fs.statSync(full);
+          if (!st.isFile()) continue;
+          registerVideoTree(db, full, { library_key: request.library_key, title: request.title || "", season: request.season ?? 0 });
+        } catch {}
+      }
     } catch {}
   }
 
@@ -8933,7 +8972,19 @@ const type = request.type === "series" ? "series" : "movie";
           reassignFileByLibraryFolder(db, request, fullPath, libraryNameByInode.get(ino) || null);
           continue;
         }
-        if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary && !identityHit) {
+        if (matchedNames.has(e.name) || matchedNames.has(e.relPath) || linkedToLibrary || identityHit) {
+          // Admitted with no identity row of its own (it matched approval_history by
+          // name, or is a twin of one of our library files). Claim the inode here
+          // for the same reason as the Fix Names scan: an unregistered inode cannot
+          // be found by identity from the library side, which leaves a folder whose
+          // name states neither the card title nor an id unreachable. Same evidence
+          // that admitted the file, so nothing is claimed on a fuzzy guess.
+          if (request.library_key && ino > 0 && !identityHit) {
+            try {
+              registerVideoTree(db, fullPath, { library_key: request.library_key, title: request.title || "", season: request.season ?? 0 });
+            } catch {}
+          }
+        } else {
           if (!hasExplicitAssociations) {
             const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
             if (!titlesMatch(requestTitleNorm, entryNorm)) continue;
