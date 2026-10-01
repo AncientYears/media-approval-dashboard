@@ -690,13 +690,61 @@ differences:
   "in library" state. So `resolveExternalIds(db, newKey, …, { ignoreCache: true })`
   repopulates it. Series never needed this because it re-resolves from
   `tmdb_season_cache`.
-- The **button only appears when the key is visibly malformed** — the `:0` (or
-  missing) year a failed slug lookup leaves behind (`keyNeedsIdentityRepair`).
-  Identity repair is for broken keys, not a standing chore, and hiding it on a
-  well-formed key is also what a *successful* repair looks like.
+- The **identity is displayed, and the button is always available**. The card
+  header shows the raw `library_key` next to "Fix identity" (which is no longer
+  gated on `keyNeedsIdentityRepair`). That gate was wrong: a key built from a
+  mangled title is *well-formed and wrong* — `movie:hobbit:2012` and
+  `movie:hobbit:2014` both parse cleanly — and hiding the button there meant the
+  only way to see a bad identity was to already suspect one. The key is what
+  Fix Names, the folder veto and the canonical filename all key off, so it is
+  worth reading. `identityKeyIssue` only colours it for the unambiguous failures
+  (`:0` year, unparseable key) rather than guessing at the rest.
+
+#### A movie identity repair must never guess
+Fixing a key *is* re-attributing files, and identity outranks every read-time
+signal afterwards, so a wrong binding is far harder to undo than an unrepaired
+one. The resolver used to take `search/results[0]`, which for a shared franchise
+title binds the card to whichever film TMDB happened to rank first. `fix-identity`
+now hands the decision to `decideMovieIdentity` (exported, pure, unit-tested) and
+returns `{ ambiguous: true, candidates: [...] }` instead of applying, in two cases:
+1. **the resolution contradicts a year the request already states** — `ownYear`
+   is `requestYear(seed)` (the `(1994)` in the title or the `:2012` tail of the
+   key) falling back to `nameYear` of the on-disk folder. A stated year is
+   evidence, so a match that disagrees with it is a guess about a *different*
+   film; and
+2. **no year to disambiguate with and several films match the title** — "Hobbit"
+   is three films, so only TMDB's ranking separates them and that ranking is
+   arbitrary.
+
+A candidate is *plausible* only when it carries **every** significant word of the
+stored title (`plausibleMovieCandidate` / `titleWords`): partial overlap must not
+read as confirmation, or "Hobbit" would match the franchise once and be taken as
+decided. Conversely a stated year makes ambiguity moot, which is exactly why the
+two real Hobbit rows (`movie:hobbit:2012` / `movie:hobbit:2014`) repair
+unattended — TMDB's `year=` filter already separated them, and the rule only
+interferes when the year is absent or contradicted.
+
+`POST /api/requests/:id/retitle { tmdbId }` applies the user's pick and is the
+**only** path that rewrites `media_requests.title`. Repairing just the key is not
+enough: a mangled title is the *input* that produced the bad identity, and a card
+still titled `Hobbit` goes on matching its sibling's files no matter how canonical
+its key is. It shares `applyMovieIdentity` with `fix-identity` (single migration
+transaction, plus the cache repopulate above); only the title column differs.
+Both still 409 rather than merge when the target key is already taken.
+
 Its disk fallback is `processedMovieDirFromFiles` — which returns a folder only
 when the movie is **foldered**, since movies are mostly flat in
 `PROCESSED_MOVIES` and that root names nothing.
+
+#### Keys fold diacritics
+`slugForKeyTitle` strips accents via `foldDiacritics` before its `[^a-z0-9]`
+sweep. It did not, and that sweep turned **every** non-ASCII letter into a
+separator: `Niezwykła podróż` → `niezwyk-a-podr`, so a movie resolved under a
+Polish TMDB language minted a garbage identity. `ł` (U+0142) is mapped
+explicitly because NFD has no canonical decomposition for it. This is on the
+identity path (fix-identity, retitle, discover, seerr sync, import), so a key
+minted before the fix may be junk for a diacritic title and is repaired by
+re-running the repair.
 
 ### Language pref
 `tmdb_franchise_prefs` is keyed by `library_key` (post-fix-identity key, i.e.
@@ -934,4 +982,12 @@ SEERR_API_KEY=
 - [ ] Discover series pick shows the season selector (lazy-loaded from `/discover/tv/:id/seasons`, S00 excluded)
 - [ ] Discover request creates native `NEW` request; duplicate pick returns `existed: true` + existing request_id
 - [ ] Discover navigation lands on RequestDetail where `POST /:id/search` (Prowlarr) takes over
+- [ ] Movie card header shows the raw `library_key`, and "Fix identity" is present on every native movie (not just `:0` keys)
+- [ ] `decideMovieIdentity`: a resolution contradicting the request's own year is refused (`ambiguous`, no write)
+- [ ] `decideMovieIdentity`: no stated year + several plausible films is refused rather than taking TMDB's first hit
+- [ ] `plausibleMovieCandidate` requires EVERY significant title word ("Hobbit" does not "match" the franchise once and read as decided)
+- [ ] A stated year DOES disambiguate: `movie:hobbit:2012` and `movie:hobbit:2014` both repair unattended to distinct keys
+- [ ] `POST /:id/retitle` rewrites title + key, migrates requests/cache/prefs, and repopulates `tmdb_external_ids`
+- [ ] `retitle` and `fix-identity` 409 when the target key is already owned by another movie (never merge)
+- [ ] `slugForKeyTitle` folds diacritics: `Niezwykła podróż` → `niezwykla-podroz` (incl. `ł`), and leaves ASCII keys unchanged
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb

@@ -81,6 +81,14 @@ export async function fixMovieIdentity(requestId: number) {
   return response.data;
 }
 
+/** Apply the film the user picked from the identity shortlist. Unlike fix-identity
+ *  this also rewrites the stored `title`, which is the mangled input that caused
+ *  the wrong identity in the first place. */
+export async function retitleMovie(requestId: number, tmdbId: number) {
+  const response = await api.post(`/requests/${requestId}/retitle`, { tmdbId });
+  return response.data;
+}
+
 /** TMDB languages offered for episode/movie titles. Shared by the franchise and
  *  the movie page so both offer exactly the same set. */
 export const LANGUAGES = [

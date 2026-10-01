@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, fixMovieIdentity, LANGUAGES } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, fixMovieIdentity, retitleMovie, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -172,15 +172,17 @@ function Breakdown({ r, profile }: { r: any; profile: ScoreProfile }) {
   );
 }
 
-/** The identity repair is for BROKEN keys, not a standing chore, so the button
- *  only appears when the key is visibly malformed - the `:0` year (or missing
- *  year) a failed slug lookup leaves behind. A well-formed key hides it, which
- *  is also what a successful repair looks like. */
-function keyNeedsIdentityRepair(libraryKey?: string | null): boolean {
-  if (!libraryKey) return false;
+/** A definite problem with this movie's identity, for the button's tooltip. Only
+ *  flags what is unambiguously broken (a `:0` year from a failed slug lookup, or
+ *  a key that does not parse) — a well-formed key built from a mangled title
+ *  (`movie:hobbit:2012`) is just as wrong, but nothing local can tell, so the key
+ *  is displayed verbatim instead of guessed at. */
+function identityKeyIssue(libraryKey?: string | null): string | null {
+  if (!libraryKey) return null;
   const m = libraryKey.match(/^movie:(.+):(\d*)$/);
-  if (!m) return true;
-  return m[2] === "0" || m[2] === "";
+  if (!m) return "this key is malformed";
+  if (m[2] === "0" || m[2] === "") return "the `:0` year means the original slug lookup failed";
+  return null;
 }
 
 export default function RequestDetail() {
@@ -227,6 +229,10 @@ export default function RequestDetail() {
   const [scanSelected, setScanSelected] = useState<Set<string>>(new Set());
   const [scanning, setScanning] = useState(false);
   const [fixNamesOpen, setFixNamesOpen] = useState(false);
+  const [fixingIdentity, setFixingIdentity] = useState(false);
+  const [retitlingId, setRetitlingId] = useState<number | null>(null);
+  /** Set when fix-identity refuses to guess: the films a human could have meant. */
+  const [identityPicker, setIdentityPicker] = useState<{ reason: string; candidates: any[] } | null>(null);
 
   const refreshMoveStatus = async () => {
     try {
@@ -321,16 +327,38 @@ export default function RequestDetail() {
   };
 
   const handleFixIdentity = async () => {
+    setFixingIdentity(true);
     try {
       const res = await fixMovieIdentity(Number(id));
       if (res.fixed) {
         toast(`Identity fixed: ${res.old_key} → ${res.new_key}`, "success");
         loadData();
+      } else if (res.ambiguous) {
+        // Several films match, or TMDB's best match contradicts a year this
+        // request states. Binding the card to the wrong film is worse than
+        // leaving it broken, so the server hands back the shortlist instead.
+        setIdentityPicker({ reason: res.reason || "Several films match", candidates: res.candidates || [] });
       } else {
         toast(res.reason === "unresolved on TMDB" ? "Could not resolve movie on TMDB (server offline / no API key?)" : "Identity already canonical", "info");
       }
     } catch (e: any) {
       toast(e.response?.data?.error || e.message || "Fix identity failed", "error");
+    } finally {
+      setFixingIdentity(false);
+    }
+  };
+
+  const handleRetitle = async (tmdbId: number) => {
+    setRetitlingId(tmdbId);
+    try {
+      const res = await retitleMovie(Number(id), tmdbId);
+      setIdentityPicker(null);
+      toast(`Re-attached as ${res.new_key}`, "success");
+      loadData();
+    } catch (e: any) {
+      toast(e.response?.data?.error || e.message || "Re-attach failed", "error");
+    } finally {
+      setRetitlingId(null);
     }
   };
 
@@ -614,6 +642,69 @@ export default function RequestDetail() {
         busy={movingProcessed === procWsPickerFile}
       />
 
+      {identityPicker && (
+        <div className="modal-overlay" onClick={() => setIdentityPicker(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>Re-attach to the correct movie</span>
+              <button className="modal-close" onClick={() => setIdentityPicker(null)}>&times;</button>
+            </div>
+            <div className="modal-body" style={{ maxHeight: 460, overflowY: "auto" }}>
+              <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted)" }}>
+                {identityPicker.reason}. Picking one rewrites this card's title and{" "}
+                <code>library_key</code> to that film — and its files stop being offered to sibling films
+                that merely share a title.
+              </p>
+              {identityPicker.candidates.length === 0 ? (
+                <div style={{ padding: 16, color: "var(--text-muted)" }}>No candidates found on TMDB.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {identityPicker.candidates.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => handleRetitle(c.id)}
+                      disabled={retitlingId !== null}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "8px 10px",
+                        textAlign: "left",
+                        background: "var(--card-bg, #1e293b)",
+                        border: "1px solid #334155",
+                        borderRadius: 6,
+                        color: "#e2e8f0",
+                        cursor: retitlingId !== null ? "wait" : "pointer",
+                        opacity: retitlingId !== null && retitlingId !== c.id ? 0.5 : 1,
+                      }}
+                    >
+                      {c.poster && (
+                        <img
+                          src={`https://image.tmdb.org/t/p/w92${c.poster}`}
+                          alt=""
+                          style={{ width: 46, height: 69, objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
+                        />
+                      )}
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 13 }}>{c.title}</span>
+                        {c.overview && (
+                          <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {c.overview}
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
+                        {retitlingId === c.id ? "Re-attaching…" : c.year || "?"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {scanOpen && (
         <div className="modal-overlay" onClick={() => setScanOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -672,19 +763,43 @@ export default function RequestDetail() {
               so it only shows where the pref is actually honoured. */}
           {request.library_key && (
             <>
-              {/* Only when the key is actually broken - see keyNeedsIdentityRepair.
-                  Series repairs live on the franchise page; this endpoint is the
-                  movie counterpart and rejects anything else. */}
-              {keyNeedsIdentityRepair(request.library_key) && (
-                <button
-                  className="btn btn-secondary btn-tiny"
-                  style={{ marginLeft: 8 }}
-                  title="This movie's library_key is malformed (usually a `:0` year from a failed slug lookup). Re-resolve it on TMDB and rewrite it to `movie:<slug>:<year>`, migrating requests, the TMDB cache and the language pref."
-                  onClick={handleFixIdentity}
-                >
-                  Fix identity
-                </button>
-              )}
+              {/* The identity itself, verbatim. A movie's `library_key` is what
+                  Fix Names, the folder veto and the canonical filename all key
+                  off, so it is worth reading rather than hiding behind a button
+                  that only appears when something is obviously broken — a key
+                  built from a mangled title (`movie:hobbit:2012`) is just as
+                  wrong while looking perfectly well-formed. */}
+              <code
+                title={
+                  identityKeyIssue(request.library_key)
+                    ? `library_key — the identity every match keys off. Note: ${identityKeyIssue(request.library_key)}.`
+                    : "library_key — the identity every match keys off (Fix Names, folder veto, canonical filename)."
+                }
+                style={{
+                  marginLeft: 8,
+                  fontSize: 11,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: "#0f172a",
+                  border: "1px solid #334155",
+                  color: identityKeyIssue(request.library_key) ? "#fbbf24" : "#94a3b8",
+                }}
+              >
+                {request.library_key}
+              </code>
+              {/* Always available, not gated: the repair is also how you correct
+                  a key that looks fine but names the wrong film. Series repairs
+                  live on the franchise page; this endpoint is the movie
+                  counterpart and rejects anything else. */}
+              <button
+                className="btn btn-secondary btn-tiny"
+                style={{ marginLeft: 6 }}
+                title="Re-resolve this movie on TMDB and rewrite library_key to `movie:<slug>:<year>`, migrating requests, the TMDB cache and the language pref. If several films match, it asks which one instead of guessing."
+                onClick={handleFixIdentity}
+                disabled={fixingIdentity}
+              >
+                {fixingIdentity ? "Fixing…" : "Fix identity"}
+              </button>
               <select
                 className="lang-select"
                 value={language}

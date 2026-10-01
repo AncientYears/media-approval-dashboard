@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -1035,10 +1035,18 @@ export function cleanFranchiseTitle(title: string): string {
   return t;
 }
 
+/** Strip accents so a diacritic language still slugifies to real words.
+ *  NFD does not decompose "ł" (U+0142 has no canonical mapping), so it is
+ *  mapped explicitly — without that, every non-ASCII letter fell through to a
+ *  separator and "Niezwykła podróż" became "niezwyk-a-podr". */
+function foldDiacritics(s: string): string {
+  return s.replace(/\u0142/g, "l").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 /** Slug for a library_key identity: lowercase alnum dashed, bracketed year
  * dropped (the year is carried by the key's own segment). */
 export function slugForKeyTitle(title: string): string {
-  return (title || "")
+  return foldDiacritics(title || "")
     .toLowerCase()
     .replace(/&/g, "and")
     .replace(/[\[(]\d{4}[\])]/g, "")
@@ -1361,6 +1369,54 @@ function imdbIdOwnerKey(db: Database, imdbId: string): string | null {
  *  "(YYYY)" in the stored title, else the ":YYYY" tail of its library_key. That
  *  tail comes from TMDB, so it is a fact about the film rather than a guess
  *  scraped out of a release name. */
+/** Significant words in a title, for deciding whether a TMDB hit plausibly IS
+ *  the same film. Diacritics are folded so "Niezwykla" matches "Niezwyklą". */
+function titleWords(t: string): string[] {
+  return foldDiacritics(String(t || "").toLowerCase())
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+}
+
+/** A TMDB hit is a plausible match for a stored title only when it carries
+ *  EVERY significant word of that title. Partial overlap must not read as
+ *  confirmation: "Hobbit" legitimately matches "The Hobbit: An Unexpected
+ *  Journey", "…Desolation of Smaug" and "…Battle of the Five Armies" equally,
+ *  and that is the whole ambiguity. */
+function plausibleMovieCandidate(candidateTitle: string, storedTitle: string): boolean {
+  const wanted = titleWords(storedTitle);
+  if (!wanted.length) return false;
+  const have = new Set(titleWords(candidateTitle));
+  return wanted.every((w) => have.has(w));
+}
+
+/** Whether a resolved movie identity may be applied unattended.
+ *
+ *  Two ways a search result is not a resolution but a guess, and both silently
+ *  bind the card to the wrong film — which then outranks every other signal on
+ *  read, so undoing it is far harder than leaving the key alone:
+ *   1. it contradicts a year the request already states, or
+ *   2. the request states no year and several films match the title, leaving
+ *      only TMDB's ranking to choose (and the ranking is arbitrary).
+ *  A stated year is a real disambiguator, so (2) only applies without one. */
+export function decideMovieIdentity(opts: {
+  resolvedYear: number | null;
+  /** A year the request states about itself — "(1994)", the key's ":2012", or
+   *  the on-disk folder name. Null when it states none. */
+  ownYear: string | null;
+  /** Titles of TMDB hits that plausibly match the stored title. */
+  plausibleTitles: string[];
+}): { apply: true } | { apply: false; reason: string } {
+  const { resolvedYear, ownYear, plausibleTitles } = opts;
+  if (ownYear && resolvedYear && String(resolvedYear) !== String(ownYear)) {
+    return { apply: false, reason: `best TMDB match is ${resolvedYear}, but this request states ${ownYear}` };
+  }
+  if (!ownYear && plausibleTitles.length > 1) {
+    return { apply: false, reason: `${plausibleTitles.length} films match this title — pick the right one` };
+  }
+  return { apply: true };
+}
+
 function requestYear(request: any): string | null {
   const inTitle = String(request?.title || "").match(/\((19|20)\d{2}\)/)?.[0]?.slice(1, -1);
   if (inTitle) return inTitle;
@@ -6749,7 +6805,56 @@ let episodes: any[];
   // than the stored one: a movie's key is what Fix Names mints the canonical
   // filename and folder from, so keying it off the mangled Polish row title
   // would only relocate the junk.
-  router.post("/:id/fix-identity", async (req: Request, res: Response) => {
+/** Rewrite a movie's identity across every dependent row, then repopulate the
+ *  external-id cache under the new key. Never touches the filesystem. */
+async function applyMovieIdentity(
+  db: Database,
+  oldKey: string,
+  resolved: { name: string; year: number | null },
+  lang: string,
+  opts?: { alsoSetTitle?: boolean },
+): Promise<{ newKey: string } | { error: string; status: number }> {
+  const slug = slugForKeyTitle(resolved.name);
+  if (!slug || slug.length < 3) {
+    return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
+  }
+  const newKey = `movie:${slug}:${resolved.year ?? 0}`;
+  if (newKey === oldKey) return { error: "already canonical", status: 200 };
+  const clash =
+    (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ?").get(newKey) as any)?.c || 0;
+  if (clash > 0) {
+    // Two requests claiming one film is the misattribution this whole feature
+    // exists to prevent, so never merge them silently.
+    return { error: `Key ${newKey} is already in use by another movie — not overwriting`, status: 409 };
+  }
+  db.transaction(() => {
+    if (opts?.alsoSetTitle) {
+      db.prepare("UPDATE media_requests SET title = ?, library_key = ? WHERE library_key = ? AND type = 'movie'").run(
+        resolved.name,
+        newKey,
+        oldKey,
+      );
+    } else {
+      db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'movie'").run(newKey, oldKey);
+    }
+    db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The stale row must NOT follow the key across: it holds the pre-fix
+    // resolved title, so the next preview would keep printing it. Drop it and
+    // let the repopulate below write the correct one instead.
+    db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
+  })();
+  // Re-resolve under the NEW key so the cache carries the post-fix title AND the
+  // IMDb id. Seeding it is not optional: requestImdbId reads this table first,
+  // and a slug-keyed row for a localized movie ("Niekonczaca sie opowiesc III"
+  // -> movie:the-neverending-story-iii:1994) can find no id in its key or its
+  // stored title, so without this the request silently loses the id that the
+  // folder veto and the canonical name both depend on.
+  await resolveExternalIds(db, newKey, "movie", resolved.name, lang, { ignoreCache: true }).catch(() => null);
+  return { newKey };
+}
+
+router.post("/:id/fix-identity", async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
       const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
@@ -6764,55 +6869,91 @@ let episodes: any[];
       // Stored movie titles are routinely localized or mangled, so a search can
       // miss what the on-disk folder names correctly - retry with that, the same
       // way the series repair retries with the show folder.
-      let usedDiskTitle = false;
+      let diskDir: string | null = null;
       if (!resolved) {
         const rows = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").all(oldKey) as any[];
-        const dir = processedMovieDirFromFiles(db, rows.map((r: any) => r.id));
-        if (dir) {
-          resolved = await resolveMovieIdentity(oldKey, path.basename(dir), lang);
-          usedDiskTitle = true;
-        }
+        diskDir = processedMovieDirFromFiles(db, rows.map((r: any) => r.id));
+        if (diskDir) resolved = await resolveMovieIdentity(oldKey, path.basename(diskDir), lang);
       }
-      if (!resolved) {
-        return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "unresolved on TMDB" });
+      // Whatever we search under, these are the films a human could have meant.
+      const query = cleaned || seed.title || "";
+      const candidates = query ? await searchTMDB(query, "movie", lang).catch(() => []) : [];
+      const plausible = candidates.filter((c) => plausibleMovieCandidate(c.title, query));
+
+      // A year the request states about itself — "(1994)" in the title, the
+      // ":2012" tail of the key, or a year in the on-disk folder name.
+      const ownYear = requestYear(seed) || (diskDir ? nameYear(diskDir) : null);
+
+      if (!resolved) {        return res.json(
+          plausible.length
+            ? { fixed: false, old_key: oldKey, ambiguous: true, candidates: plausible, reason: "pick the right film" }
+            : { fixed: false, old_key: oldKey, new_key: null, reason: "unresolved on TMDB" },
+        );
       }
-      const slug = slugForKeyTitle(resolved.name) || slugForKeyTitle(cleaned);
-      if (!slug || slug.length < 3) {
-        return res.json({ fixed: false, old_key: oldKey, new_key: null, reason: "Could not build a key from the resolved title" });
+      // Never apply a resolution that contradicts a year the request already
+      // states: that is not a resolution, it is a guess, and guessing here binds
+      // a card to the wrong film — which outranks every other signal later and
+      // is far harder to undo than an unrepaired key. Nor will it pick between
+      // several matching films when the request states no year to separate them
+      // ("Hobbit" is three films, and TMDB's first hit is arbitrary).
+      const decision = decideMovieIdentity({
+        resolvedYear: resolved?.year ?? null,
+        ownYear,
+        plausibleTitles: plausible.map((c) => c.title),
+      });
+      if (!decision.apply) {
+        return res.json({
+          fixed: false,
+          old_key: oldKey,
+          ambiguous: true,
+          candidates: plausible.length ? plausible : candidates,
+          reason: decision.reason,
+        });
       }
-      const newKey = `movie:${slug}:${resolved.year ?? 0}`;
-      if (newKey === oldKey) {
-        return res.json({ fixed: false, old_key: oldKey, new_key: newKey, reason: "already canonical" });
+      const applied = await applyMovieIdentity(db, oldKey, { name: resolved.name, year: resolved.year }, lang);
+      if ("error" in applied) {
+        return res.status(applied.status).json({ fixed: false, old_key: oldKey, new_key: null, reason: applied.error });
       }
-      const clash = (db.prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ?").get(newKey) as any)?.c || 0;
-      if (clash > 0) {
-        return res.status(409).json({ error: `Key ${newKey} is already in use by another movie — not overwriting` });
-      }
-      db.transaction(() => {
-        db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'movie'").run(newKey, oldKey);
-        db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-        db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-        // The stale row must NOT follow the key across: it holds the pre-fix
-        // resolved title, so the next preview would keep printing it. Drop it and
-        // let the repopulate below write the correct one instead.
-        db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
-      })();
-      // Re-resolve under the NEW key so the cache carries the post-fix title AND
-      // the IMDb id. Seeding it is not optional: requestImdbId reads this table
-      // first, and a slug-keyed row for a localized movie ("Niekonczaca sie
-      // opowiesc III" -> movie:the-neverending-story-iii:1994) can find no id in
-      // its key or its stored title, so without this the request silently loses
-      // the id that the folder veto and the canonical name both depend on.
-      await resolveExternalIds(db, newKey, "movie", resolved.name, lang, { ignoreCache: true }).catch(() => null);
       res.json({
         fixed: true,
         old_key: oldKey,
-        new_key: newKey,
-        resolved: { id: resolved.id, name: resolved.name, year: resolved.year, via: usedDiskTitle ? `${resolved.via}+disk` : resolved.via },
+        new_key: applied.newKey,
+        resolved: { id: resolved.id, name: resolved.name, year: resolved.year, via: diskDir ? `${resolved.via}+disk` : resolved.via },
       });
     } catch (error: any) {
       console.error("Error fixing movie identity:", error.message || error);
       res.status(500).json({ error: "Failed to fix movie identity" });
+    }
+  });
+
+  // POST /api/requests/:id/retitle - the user picked the film. This is the only
+  // path that rewrites `title`, because a mangled title is the input that caused
+  // the bad identity in the first place; repairing only the key would leave the
+  // card matching its sibling's files all over again.
+  router.post("/:id/retitle", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const tmdbId = Number(req.body?.tmdbId);
+      if (!Number.isFinite(tmdbId) || tmdbId <= 0) return res.status(400).json({ error: "tmdbId is required" });
+      const seed = db.prepare("SELECT id, title, library_key, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!seed) return res.status(404).json({ error: "Request not found" });
+      if (seed.type !== "movie" || !seed.library_key) {
+        return res.status(400).json({ error: "Native movie request with library_key required" });
+      }
+      const oldKey = seed.library_key;
+      const lang = franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US";
+      const info = await fetchTMDBById("movie", tmdbId, lang);
+      if (!info?.title) return res.status(404).json({ error: `TMDB has no movie ${tmdbId}` });
+      const applied = await applyMovieIdentity(db, oldKey, { name: info.title, year: info.year }, lang, {
+        alsoSetTitle: true,
+      });
+      if ("error" in applied) {
+        return res.status(applied.status).json({ fixed: false, old_key: oldKey, new_key: null, reason: applied.error });
+      }
+      res.json({ fixed: true, old_key: oldKey, new_key: applied.newKey, title: info.title, resolved: info });
+    } catch (error: any) {
+      console.error("Error retitling movie:", error.message || error);
+      res.status(500).json({ error: "Failed to retitle movie" });
     }
   });
 
