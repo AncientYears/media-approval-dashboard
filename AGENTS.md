@@ -120,14 +120,17 @@ session can start with P0 without re-deriving the design.
    release group.** Language is the exception to "title keeps language": a Polish
    dub says nothing in its file NAME, so the stream tag outranks it — but ONLY
    while exactly one foreign language sits beside English (`pol + eng` → `[PL]`).
-   Two or more foreign languages is a **multi** release and is tagged `[MULTI]`,
-   never with whichever language the encoder listed first (The Lion King 8-track
-   remux was `[FRA]` for that reason). A title that already enumerates them
-   (`[EN+FR+ES+DE+JA+KO+ZH+PL]`, which `parseReleaseTags` reads and keeps) is
-   more informative and survives; a title naming one language is contradicted
-   and becomes `[MULTI]`. ISO-639 codes are folded to the same two-letter
-   alphabet `LANG_TAGS` uses, so `[FRE]` normalises to `[FR]` and canonical names
-   round-trip. Folders keep their structure; `move-to-library` dirs,
+   Two or more foreign languages is a **multi** release: no single one
+   identifies it, so the tag is the enumeration the streams actually name
+   (`[EN+FR+ES+DE+JA+KO+ZH+PL]`, distinct codes in track order — not
+   whichever the encoder listed first; the Lion King 8-track remux was
+   `[FRA]` for that reason). A title that already enumerates them is kept
+   (`parseReleaseTags` reads `+` lists, guarded so `x264+x265` is never one);
+   a title saying only `MULTI`, or naming one language that eight tracks
+   contradict, defers to the probe. Bare `[MULTI]` remains for a Matroska `mul`
+   track, whose sub-languages are unknown. ISO-639 codes are folded to the
+   same two-letter alphabet `LANG_TAGS` uses, so `[FRE]` normalises to `[FR]`
+   and canonical names round-trip. Folders keep their structure; `move-to-library` dirs,
   workspace outputs, adopt and library-import are NOT renamed (P2's Fix Names
   owns existing trees). Native requests only — arr-linked moves still defer
   naming to Radarr/Sonarr. `uniqueDestPath` idempotently reuses same-inode
@@ -573,7 +576,7 @@ resolution inherits the pref through every call site.
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
-| `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge; probe language is `MULTI` when 2+ foreign streams, dub only when exactly one), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
+| `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]`→group), `assembleCanonicalTags` (probe-over-title merge; probe language enumerates 2+ foreign streams in track order, dub only when exactly one), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment` |
 | `src/services/mediaProbe.ts` | ffprobe probe (P1b): raw stream facts — resolution/height, video+audio codecs, channel layout, bit depth, HDR flags (DV/HDR10+/HDR10/HLG) |
 | `src/services/tmdb.ts` | TMDB client: `fetchTMDBSeason` (per-key season cache + `altTitle` fallback), `resolveShowIdentity` (`{id,name,year,via}`), yearless retry |
 | `src/routes/requests.ts` | All API endpoints (~7200 lines) |
