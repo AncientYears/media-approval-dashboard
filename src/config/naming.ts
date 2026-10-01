@@ -193,6 +193,13 @@ function withChannel(label: string, tok: string): string {
   return ch ? `${label} ${ch[1]}` : label;
 }
 
+/** Entries in `audio` that name a real codec family, i.e. can carry a channel
+ *  number or an Atmos flag. "Atmos" and "Dolby" on their own are mixing formats. */
+function lastAudioCodecIndex(audio: string[]): number {
+  for (let i = audio.length - 1; i >= 0; i--) if (!/^(atmos|dolby)$/i.test(audio[i].trim())) return i;
+  return -1;
+}
+
 function parseAudioToken(tok: string): string | null {
   const m = tok.match(/\b(AC3|AAC)\s*[- ]\s*(\d\.\d)/i);
   if (m) return `${m[1].toUpperCase()} ${m[2]}`;
@@ -640,7 +647,18 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     // channels; the most specific same-family title label wins so detail
     // survives instead of flattening "DTS-HD MA" to "DTS".
     const sameFam = audio.filter((a) => audioFamilyOf(a) === fam);
-    const atmos = fam === "truehd" && audio.some((a) => /atmos/i.test(a)) ? " Atmos" : "";
+    // Atmos is the one thing ffprobe cannot see (it is a mixing flag in the
+    // stream metadata, not a codec), so the TITLE is the only evidence for it —
+    // which is why it must be preserved for E-AC3 too. Streaming Atmos ships as
+    // E-AC3, so restricting this to TrueHD dropped "[EAC3 Atmos 5.1]" to
+    // "[EAC3 5.1]" and lost the one fact a reader cares about.
+    //
+    // Read it off the SAME-FAMILY entry only. The flag describes the track it was
+    // written beside, so a name carrying a TrueHD Atmos track must not lend that
+    // Atmos to a probed AAC dub of the same film: the Polish Soul dub measured
+    // AAC 2.0 and rendered "[AAC Atmos 2.0]". With no same-family title entry
+    // there is nothing to carry the claim, so it is simply not made.
+    const atmos = sameFam.some((a) => /atmos/i.test(a)) ? " Atmos" : "";
     let base = probedAudioLabel;
     if (sameFam.length) {
       if (fam === "dts") {
@@ -650,7 +668,12 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
       } else if (fam === "truehd") {
         base = "TrueHD";
       } else {
-        base = sameFam[0].replace(/\s+\d\.\d$/, "");
+        // Keep the family spelling the title used, minus any channel number it
+        // carried — the probe supplies the layout, and the two must not disagree.
+        // The Atmos word is stripped too: it is appended once, from the single
+        // `atmos` decision above, so keeping the title's own copy would double it
+        // ("EAC3 Atmos Atmos 5.1") now that E-AC3 is a legal carrier.
+        base = sameFam[0].replace(/\s+\d\.\d$/, "").replace(/\s+Atmos$/i, "").trim();
       }
     }
     const entry = `${base}${atmos}${ch ? ` ${ch}` : ""}`;
@@ -1069,6 +1092,11 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   const misc: string[] = [];
   // "2160p" is an explicit claim; "4K"/"UHD" is a class that only fills a gap.
   let sawNumericRes = false;
+  // Where out.audio stood when the current bracket began. Tokens inside one
+  // bracket belong together, so a bare "Atmos" may only claim a carrier named in
+  // the same bracket — that is what makes "[EAC3 Atmos 5.1]" round-trip while
+  // still refusing to jump across "[DTS] [Atmos]".
+  let audioMark = 0;
   const tryToken = (tok: string, fromBracket: boolean) => {
     const at = tok.trim();
     if (!at) return;
@@ -1117,10 +1145,16 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       return;
     }
     // A bare channel number ("7.1", "2.0") right after an audio token appends
-    // to that track ("TrueHD Atmos" + "7.1" → "TrueHD Atmos 7.1").
+    // to that track ("TrueHD Atmos" + "7.1" → "TrueHD Atmos 7.1"). It must land
+    // on a CODEC: "Atmos" is a mixing format, not a layout, so letting "5.1"
+    // attach to a standalone "[Atmos]" rendered a meaningless "[Atmos 5.1]" —
+    // which is what a title saying "[EAC3 Atmos 5.1]" produced. Attach to the
+    // nearest real codec, or drop the number when the name states no codec.
     if (/^\d\.\d$/.test(at) && out.audio.length) {
-      const last = out.audio[out.audio.length - 1];
-      if (!last.includes(at)) out.audio[out.audio.length - 1] = `${last} ${at}`;
+      const idx = lastAudioCodecIndex(out.audio);
+      if (idx < 0) return;
+      const last = out.audio[idx];
+      if (!last.includes(at)) out.audio[idx] = `${last} ${at}`;
       return;
     }
     const srcM = at.match(SOURCE_RE);
@@ -1141,13 +1175,22 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const audio = parseAudioToken(at);
     if (audio) {
       if (audio === "Atmos") {
-        // "Atmos" belongs to TrueHD and to nothing else — there is no such thing
-        // as "DTS-HD MA Atmos". Matching any family here attached it to whichever
-        // entry happened to sit first, so Soul's DTS track claimed it too and
-        // rendered a non-existent [DTS-HD MA Atmos] next to a correct
-        // [TrueHD Atmos 7.1]. Only TrueHD (or an entry already carrying it) is a
-        // legal target; otherwise it stays a standalone tag.
-        const idx = out.audio.findIndex((a) => /^TrueHD(\s|$)/i.test(a));
+        // Atmos is a MIXING FORMAT that rides a carrier codec, and the carrier is
+        // named right beside it: streaming Atmos is E-AC3 (Netflix/Disney+/Max),
+        // disc Atmos is TrueHD. So the codec in the SAME bracket is the legal
+        // target, and it makes "[EAC3 Atmos 5.1]" round-trip as itself.
+        //
+        // A bare "[Atmos]" in its own bracket must NOT attach to an arbitrary
+        // family: matching any family grabbed whichever entry sat first, so
+        // Soul's DTS track claimed it and rendered a non-existent
+        // [DTS-HD MA Atmos] beside a correct [TrueHD Atmos 7.1]. TrueHD stays
+        // the one cross-bracket fallback (it is the only disc carrier), and
+        // with no carrier at all it stays a standalone tag.
+        const sameBracket = out.audio.findIndex((a, i) => i >= audioMark && !/^atmos\b/i.test(a));
+        const idx =
+          sameBracket >= 0
+            ? sameBracket
+            : out.audio.findIndex((a) => /^TrueHD(\s|$)/i.test(a));
         if (idx >= 0 && !/atmos/i.test(out.audio[idx])) {
           // Insert BEFORE any channel number so the entry reads "TrueHD Atmos 7.1",
           // the canonical order, not "TrueHD 7.1 Atmos".
@@ -1205,6 +1248,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       misc.push(phrase);
       continue;
     }
+    audioMark = out.audio.length;
     // Split on whitespace, and on a dot that is NOT between digits, so
     // "[UHD.BluRay]" becomes two recognizable tags while channel numbers
     // ("[AC3 2.0]", "[DD+5.1]") stay in one piece and never get torn apart.
@@ -1222,6 +1266,13 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   const looseTokens = keepNums.replace(/[\[({][^\])}]*[\])}]/g, " ").split(/[.\s_]+/).filter((t) => t).map((t) => t.replace(/\x00/g, "."));
   for (let i = 0; i < looseTokens.length; i++) {
     const t = looseTokens[i];
+    // The loose tail has NO bracket to scope it, so a dotted tail like
+    // "DTS-HD.MA.TrueHD.7.1.Atmos" must not let a bare "Atmos" claim the DTS that
+    // happens to sit earlier in the same run. Each loose token is its own group,
+    // which sends "Atmos" to the cross-bracket TrueHD fallback — the pairing that
+    // is actually correct. Leaving the mark at its previous value made every
+    // earlier entry "same bracket" and handed Atmos to DTS.
+    audioMark = out.audio.length;
     const next = looseTokens[i + 1] || "";
     if (/^web$/i.test(t) && /^(dl|rip)$/i.test(next)) { tryToken(`${t}-${next}`, false); i++; continue; }
     if (/^(bd|dvd|blu)$/i.test(t) && /^rip$/i.test(next)) { tryToken(`${t}-${next}`, false); i++; continue; }
@@ -1237,6 +1288,23 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       }
     }
     tryToken(t, false);
+  }
+
+  // Order-independent TrueHD fallback. A bare "[Atmos]" can be tokenized BEFORE
+  // its carrier — "[Atmos]" is bracketed (so it is read in the bracket pass)
+  // while "DTS-HD.MA.TrueHD.7.1" is a loose dotted tail read afterwards. The
+  // in-tokenizer rule could not see a TrueHD that had not been seen yet, so
+  // "...TrueHD.7.1.[Atmos]" rendered a detached "[Atmos]". Re-run the one legal
+  // cross-bracket pairing now that every token has been read. Only TrueHD, and
+  // only onto an entry that does not already carry the flag.
+  const strayAtmos = out.audio.findIndex((a) => /^atmos$/i.test(a.trim()));
+  if (strayAtmos >= 0) {
+    const thd = out.audio.findIndex((a) => /^TrueHD(\s|$)/i.test(a));
+    if (thd >= 0) {
+      const m = out.audio[thd].match(/^(.*?)\s+(\d\.\d)$/);
+      out.audio[thd] = m ? `${m[1]} Atmos ${m[2]}` : `${out.audio[thd]} Atmos`;
+      out.audio.splice(strayAtmos, 1);
+    }
   }
 
   // Split encode-quality modifiers out of misc before they render: they belong

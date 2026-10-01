@@ -100,11 +100,29 @@ session can start with P0 without re-deriving the design.
   it is real evidence: it is consumed *only* when removing it actually uncovers a
   group, and is then applied as the language it is; otherwise it stays for the
   tokenizer. That also stops `-GRP-polish` being read as a group named "polish".
-- **`Atmos` belongs to TrueHD and nothing else.** There is no `DTS-HD MA Atmos`:
-  a bare `Atmos` used to attach to the first family entry matching by exact name,
-  which in Soul was the DTS track. It now targets TrueHD only and is inserted
-  *before* any channel number (`TrueHD Atmos 7.1`, not `TrueHD 7.1 Atmos`); with
-  no TrueHD present it stays a standalone tag.
+- **`Atmos` rides a CARRIER, and the carrier is named in the same bracket.** It is a
+  mixing format, not a codec, and ffprobe cannot see it at all (it lives in stream
+  metadata), so the title is the only evidence. Two carriers are real: **TrueHD**
+  (disc) and **E-AC3** (streaming — Netflix/Disney+/Max). A bare `Atmos` may only
+  claim a codec named in the *same* bracket, which makes `[EAC3 Atmos 5.1]`
+  round-trip as itself. Matching any family instead attached it to whichever entry
+  sat first, so Soul's DTS track claimed it and rendered a non-existent
+  `[DTS-HD MA Atmos]` beside a correct `[TrueHD Atmos 7.1]`. A bare `Atmos` in its
+  OWN bracket may still fall back across to TrueHD (the one disc carrier), and with
+  no carrier at all it stays standalone. Because the loose dotted tail has no
+  bracket to scope it, each loose token is its own group — otherwise
+  `DTS-HD.MA.TrueHD.7.1.Atmos` let the bare `Atmos` reach back to the DTS. And a
+  bracketed `[Atmos]` is read *before* the dotted tail that may hold its carrier,
+  so the TrueHD fallback is re-run once every token is parsed.
+- **A channel number must land on a CODEC.** `Atmos` is not a layout, so letting
+  `5.1` append to a standalone `[Atmos]` rendered a meaningless `[Atmos 5.1]` —
+  which is exactly what a name saying `[EAC3 Atmos 5.1]` produced. A bare channel
+  number attaches to the nearest entry naming a real codec family, or is dropped
+  when the name states none.
+- **A probed codec does not inherit an Atmos from a DIFFERENT family's track.** The
+  flag describes the track it was written beside, so the Polish Soul dub (measured
+  AAC 2.0, named after a TrueHD Atmos remux) rendered `[AAC Atmos 2.0]`. The flag
+  is read off the *same-family* title entry only.
 - **One stream cannot have two video codecs.** Only the first video stream is
   probed, so a title codec from a *different* family is dropped rather than kept
   beside the probed one (a Polish mp4 inherited `[HEVC]` from the remux it was
@@ -186,10 +204,10 @@ session can start with P0 without re-deriving the design.
    inference — resolution TIER from the measured frame (width-primary, so a
    letterbox crop cannot lower it), video codec + bit depth, HDR
   flags (DV/HDR10+/HDR10/HLG from `side_data_list`/`color_transfer`), primary
-     audio codec + channel layout (TrueHD → TrueHD 7.1 / "Atmos" still only from
-   the title). Probe wins for codec/resolution/channels; title keeps
-   source/language/group. Multi-word brackets (`[DV HDR10+]`,
-   `[TrueHD Atmos 7.1]`, `[AC3 2.0]`) are split and merged, channel numbers are
+audio codec + channel layout (`Atmos` still only from the title, and only from
+    the same-family entry). Probe wins for codec/resolution/channels; title keeps
+    source/language/group. Multi-word brackets (`[DV HDR10+]`,
+    `[TrueHD Atmos 7.1]`, `[EAC3 Atmos 5.1]`, `[AC3 2.0]`) are split and merged, channel numbers are
 kept intact (`DD+5.1`). A bracketed `[Unknown]`/`[Group]` is a "not stated"
     placeholder and is dropped as **neither a tag nor a group** (`PLACEHOLDER_WORDS`) — an earlier
     version promoted it to the group and wrote `-Unknown` to disk, where it then
@@ -1077,4 +1095,9 @@ SEERR_API_KEY=
 - [ ] Fix Names and the processed panel veto on the SAME folder-year evidence (a file listed on the card is never refused as a rename proposal)
 - [ ] A sibling's library folder is not listed as a candidate at all (no `Hobbit (2014)` row on the 2012 card)
 - [ ] A file with an embedded id still blocks folder ownership even when the folder's year matches the request's
+- [ ] `[EAC3 Atmos 5.1]` round-trips as itself (streaming Atmos ships as E-AC3, so Atmos is not TrueHD-only)
+- [ ] A channel number never renders as `[Atmos 5.1]` — it lands on the nearest codec, or is dropped
+- [ ] A bare `[Atmos]` never attaches to a non-TrueHD family (Soul's DTS must stay `[DTS-HD MA 7.1]`)
+- [ ] A bare `[Atmos]` still merges into a TrueHD track regardless of token order (`...TrueHD.7.1.[Atmos]`)
+- [ ] A probed codec does not inherit Atmos from another family's track (AAC 2.0 Polish dub stays `[AAC 2.0]`)
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
