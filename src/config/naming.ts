@@ -362,6 +362,9 @@ function hdrFlagOf(tok: string): string | null {
 
 /** Render the canonical tag run: "[PL] [Remux-2160p][TrueHD Atmos 7.1][DV HDR10Plus][HEVC][10bit][Custom]". */
 const HDR_RANK = ["DV", "HDR10+", "HDR10", "HDR", "HLG", "WCG"];
+/** Every HDR_RANK entry but the bare umbrella "HDR" — i.e. flags that name a
+ *  specific transfer function, and therefore make a plain "HDR" redundant. */
+const SPECIFIC_HDR = new Set(HDR_RANK.filter((f) => f !== "HDR"));
 function renderTags(f: {
   language: string | null;
   dubbed: boolean;
@@ -381,9 +384,15 @@ function renderTags(f: {
   else if (f.source) tags += `[${f.source}]`;
   else if (f.resolution) tags += `[${f.resolution}]`;
   for (const a of f.audio) tags += `[${a}]`;
-  // HDR10+ implies the HDR10 base layer — never print both (redundant).
+  // One bracket, and never a redundant member. HDR10+ implies the HDR10 base
+  // layer, and a plain "HDR" is only the umbrella: once a specific flag is
+  // present it adds nothing and reads as a duplicate. That pairing is easy to
+  // get — the title claims HDR, the probe reads HDR10, and the merge keeps
+  // both, printing "[HDR10 HDR]".
+  const specific = f.hdr.some((x) => SPECIFIC_HDR.has(x));
   const hdr = [...f.hdr]
     .filter((x) => !(x === "HDR10" && f.hdr.includes("HDR10+")))
+    .filter((x) => !(x === "HDR" && specific))
     .sort((a, b) => {
       const ra = HDR_RANK.indexOf(a);
       const rb = HDR_RANK.indexOf(b);
