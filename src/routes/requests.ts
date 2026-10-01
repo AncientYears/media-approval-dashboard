@@ -8480,7 +8480,7 @@ const type = request.type === "series" ? "series" : "movie";
 
         const processedPath = path.join(processedDir, basename);
 
-        const wsDirs = listWorkspaces(request.id, request.title);
+      const wsDirs = listWorkspaces(request.id, request.title);
         let foundInWorkspace = false;
         for (const ws of wsDirs) {
           const wsInput = path.join(ws.path, "inputs", basename);
@@ -8784,6 +8784,28 @@ const type = request.type === "series" ? "series" : "movie";
           const names = JSON.parse(ah.processed_files);
           for (const n of names) matchedNames.add(n);
         } catch {}
+      }
+
+      // Register the inodes this request already claims, BEFORE the library scan
+      // below. The two lookups would otherwise deadlock exactly as they do in Fix
+      // Names: a processed twin and its library copy are the same inode, and the
+      // identity fallback is the only signal that can reach a folder whose name
+      // states neither the card title nor an id ("Asterix i Obelix W sluzbie Jej
+      // Krolewskiej Mosci (2012)"). Without this, "is it already in the library?"
+      // is answered from an empty library scan, so the panel offers "To Library"
+      // for a file that is sitting in the library right now. Runs after
+      // matchedNames is complete, keyed by approval_history (an explicit
+      // association) - never a fuzzy title guess.
+      if (request.library_key) {
+        const procDir = getProcessedDir(request.type === "series" ? "series" : "movie");
+        for (const n of matchedNames) {
+          const full = path.join(procDir, n);
+          if (!fs.existsSync(full)) continue;
+          try {
+            if (!fs.statSync(full).isFile()) continue;
+            registerVideoTree(db, full, { library_key: request.library_key, title: request.title || "", season: request.season ?? 0 });
+          } catch {}
+        }
       }
 
       // Fallback: scan the season-specific folder when no explicit associations
