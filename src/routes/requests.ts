@@ -2091,8 +2091,76 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     }
   } catch {}
 
+  // Library files with NO processed counterpart. Every group above is built from an
+  // accepted PROCESSED file, with its library row emitted only as that file's
+  // hardlink twin — so a file living solely in /Filmy (root-owned, link count 1:
+  // hand-placed, or imported straight into the library) produces no group at all
+  // and is never renamed. That left six files unstandardized while their folders
+  // were renamed around them, which is the worst outcome: the folder now states
+  // the film's identity and the file inside it does not.
+  //
+  // Attribution has to be earned, not assumed. A library file is proposed when it
+  // sits in a folder that is either (a) one this request's own folders resolved
+  // to, or (b) owned outright - no file inside maps to a different library_key -
+  // AND nothing about its own name contradicts this film. (a) alone is unsafe: a
+  // single folder can hold a different version the app never registered.
+  const libraryOnly: { fullPath: string; inLibraryFolder: string }[] = [];
+  if (type === "movie") {
+    const ownFolders = new Set(
+      nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key),
+    );
+    for (const folder of ownFolders) {
+      if (!fs.existsSync(folder)) continue;
+      let owned = true;
+      try {
+        owned = folderOwnedExclusively(db, folder, request.library_key, requestImdbId(db, request));
+      } catch {
+        owned = false;
+      }
+      if (!owned) continue;
+      for (const f of fs.readdirSync(folder)) {
+        if (!VIDEO_FILE_RE.test(f)) continue;
+        const fp = path.join(folder, f);
+        if (libraryByIno.has((() => { try { const st = fs.statSync(fp); return `${st.dev}:${st.ino}`; } catch { return ""; } })())) continue;
+        // Its own name must not pin a different film, and a registered row for
+        // another key is absolute - both would make the folder look like ours when
+        // the file is not.
+        if (nameContradictsRequest(db, request, f)) continue;
+        try {
+          const row = identifyByPath(db, fp);
+          if (row && row.library_key !== request.library_key) continue;
+        } catch {}
+        libraryOnly.push({ fullPath: fp, inLibraryFolder: folder });
+      }
+    }
+  } else {
+    for (const showFolder of matchLibraryShowFolders((request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, ""))) {
+      let owned = true;
+      try {
+        owned = folderOwnedExclusively(db, showFolder, request.library_key, requestImdbId(db, request));
+      } catch {
+        owned = false;
+      }
+      if (!owned) continue;
+      const nestedVideos: string[] = [];
+      scanVideoTreeFiles(showFolder, (fp) => nestedVideos.push(fp));
+      for (const f of nestedVideos) {
+        if (libraryByIno.has((() => { try { const st = fs.statSync(f); return `${st.dev}:${st.ino}`; } catch { return ""; } })())) continue;
+        if (nameContradictsRequest(db, request, path.basename(f))) continue;
+        try {
+          const row = identifyByPath(db, f);
+          if (row && row.library_key !== request.library_key) continue;
+        } catch {}
+        libraryOnly.push({ fullPath: f, inLibraryFolder: showFolder });
+      }
+    }
+  }
+
   // Probe all involved files once per dev:ino (parallel, cached).
-  const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
+  const probePaths = accepted
+    .map((a) => a.fullPath)
+    .concat(libraryOnly.map((l) => l.fullPath))
+    .concat([...libraryByIno.values()]);
   const probes = await probeInodesConcurrently(probePaths);
 
   // Episode titles + identity both come from TMDB, so warm this request's season
@@ -2110,6 +2178,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   const identityNote = cachedPieces ? null : `Could not resolve identity — ${identityReason || "no IMDb/TVDB id found"}`;
 
   const groups: FixNameGroup[] = [];
+  const withExt = (name: string | null, p: string) => (name ? `${name}${path.extname(p)}` : null);
   let gid = 0;
   for (const a of accepted) {
     let ino: number | null = null;
@@ -2132,7 +2201,6 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     // Canonical file proposals are extensionless by construction — append the
     // source extension unconditionally (never detect one from the name: channel
     // layouts like "[DTS-HD MA 2.0]" contain dots that would fool extname).
-    const withExt = (name: string | null, p: string) => (name ? `${name}${path.extname(p)}` : null);
     const processed: FixNameRow = {
       id: `p-${gid}`,
       ino,
@@ -2160,6 +2228,36 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     }
 
     groups.push({ id: `g${gid++}`, ino, processed, library });
+  }
+
+  // Library-only files become their own group with no processed half. Nothing
+  // touches /Processed here: the file was never adopted, and adopting it is a
+  // separate, explicit action (adopt-into-processed) — this tool only tidies
+  // names, so it must not create links as a side effect of proposing a rename.
+  for (const l of libraryOnly) {
+    let ino: number | null = null;
+    let probe: ProbeInfo | null = null;
+    try {
+      const st = fs.statSync(l.fullPath);
+      ino = st.ino;
+      probe = probes.get(`${st.dev}:${st.ino}`) || null;
+    } catch {}
+    const lb = await proposeCanonicalName(db, request, path.basename(l.fullPath), probe, cachedPieces, null);
+    groups.push({
+      id: `g${gid++}`,
+      ino,
+      processed: null,
+      library: {
+        id: `l-${gid}`,
+        ino,
+        path: l.fullPath,
+        tree: "library",
+        currentName: path.basename(l.fullPath),
+        proposedName: withExt(lb.name, l.fullPath),
+        role: lb.role,
+        note: lb.note,
+      },
+    });
   }
 
   // Two DIFFERENT files can legitimately claim one SxxExx — that's just two
