@@ -356,6 +356,14 @@ const HDR_FLAGS: Record<string, string> = {
   DOLBYVISION: "DV",
   HDR10PLUS: "HDR10+",
   "HDR10+": "HDR10+",
+  // "HDR10P"/"HDR10Pr" are the abbreviations release groups actually write
+  // ("DV.HDR10P.H.265"). HDR10+ is dynamic metadata that ffprobe only reports
+  // when it survives muxing as SMPTE ST 2094 side data — it is routinely absent,
+  // leaving only the ST 2086 base layer, so the NAME is often the sole evidence
+  // and dropping the spelling as an unknown token silently downgraded a release
+  // to plain "[DV HDR10]".
+  HDR10P: "HDR10+",
+  HDR10PR: "HDR10+",
   HDR10: "HDR10",
   HDR: "HDR",
   HLG: "HLG",
@@ -552,7 +560,20 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   }
   if (v?.bitDepth && Number(v.bitDepth) >= 10 && !video.some((x) => /10bit/i.test(x))) video.push("10bit");
 
-  const hdr = Array.from(new Set([...t.hdr, ...(v?.hdr || [])]));
+  // HDR10+ is dynamic metadata layered ON the ST 2086 base layer, so within the
+  // HDR10 family the title REFINES the probe rather than contradicting it:
+  // ffprobe routinely reports only the base, leaving "[DV HDR10]" where the
+  // release plainly said HDR10P, and the title is then the better evidence.
+  // Across transfer functions it IS a conflict, and there the probe is the
+  // accurate one. HLG is its own signal, mutually exclusive with PQ-based HDR10
+  // and Dolby Vision alike, so a name claiming either on a stream the probe
+  // measured as HLG loses. WCG/BT.2020 is a gamut rather than a transfer, so it
+  // coexists with everything and is never dropped.
+  const probeHdr = v?.hdr || [];
+  const titleHdr = probeHdr.includes("HLG")
+    ? t.hdr.filter((x) => !/^(DV|HDR10\+?)$/i.test(x))
+    : t.hdr;
+  const hdr = Array.from(new Set([...titleHdr, ...probeHdr]));
   const resolution = t.resolution ?? probeResolution(v?.height);
 
   // A Polish dub says nothing in its file NAME — the audio stream tag is the only
