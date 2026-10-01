@@ -26,8 +26,11 @@ export async function probeVideoFile(filePath: string): Promise<ProbeInfo | null
     ], { timeout: 20000 });
     const info = JSON.parse(stdout);
     const streams: any[] = Array.isArray(info.streams) ? info.streams : [];
-    const videoStream = streams.find((s) => s.codec_type === "video");
-    const audioStreams = streams.filter((s) => s.codec_type === "audio");
+const videoStream = streams.find((s) => s.codec_type === "video");
+  const audioStreams = streams.filter((s) => s.codec_type === "audio");
+  // Cover art masquerades as a video stream ("mjpeg" attached_pic), which would
+  // otherwise be counted as a second codec and let a title name one.
+  const videoStreams = streams.filter((s) => s.codec_type === "video" && !s.disposition?.attached_pic);
 
     let video: ProbeInfo["video"] = null;
     if (videoStream) {
@@ -55,6 +58,7 @@ export async function probeVideoFile(filePath: string): Promise<ProbeInfo | null
         height: videoStream.height ? Number(videoStream.height) : null,
         bitDepth: bits,
         hdr,
+        streamCount: videoStreams.length,
       };
     }
 

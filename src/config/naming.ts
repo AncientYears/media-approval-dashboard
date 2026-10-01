@@ -37,7 +37,7 @@ export interface NamingConf {
 /** Vendors recognized when the setting is absent. Polish streaming rips append
  *  their brand as a bare trailing word with no hyphen and no bracket, which is
  *  why it is dropped today: the group rule only reads a "-WORD" tail. */
-export const DEFAULT_VENDORS = ["Bajeczki24"];
+export const DEFAULT_VENDORS = ["Bajeczki24", "FGT"];
 
 /** The configured vendor list, split and trimmed. This is the single choke point
  *  where the brands become one regex, so it is also where a malformed or
@@ -376,6 +376,10 @@ export interface ProbeVideoInfo {
   height: number | null;
   bitDepth: number | null;
   hdr: string[];
+  /** How many video streams the file holds. Only the first is measured, so a
+   *  title naming a SECOND codec is only credible when there is more than one —
+   *  see the codec-conflict rule in `assembleCanonicalTags`. */
+  streamCount?: number;
 }
 
 /** Raw ffprobe facts for one audio stream. */
@@ -590,18 +594,33 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
   const probedVideoLabel = v?.codecName ? probeVideoLabel(v.codecName) : null;
   if (probedVideoLabel) {
     const fam = videoFamilyOf(probedVideoLabel);
-    const kept = video.filter((x) => videoFamilyOf(x) !== fam);
-    // Same rule as audio: the probe is authoritative for the family, but the
-    // most specific label in the NAME wins. ffprobe reports codec_name "mpeg4"
-    // for Xvid, DivX and plain MPEG-4 alike, so without this a release named
-    // DivX would be silently relabelled Xvid by the probe.
+    // Same rule as audio: within the family the most specific label in the NAME
+    // wins (ffprobe reports "mpeg4" for Xvid, DivX and plain MPEG-4 alike, so
+    // without this a release named DivX would be silently relabelled Xvid).
+    // ACROSS families, though, the two cannot both describe one stream, and
+    // printing them side by side produced a name with two video codecs — Soul's
+    // Polish mp4 inherited HEVC from the remux it was dubbed from, next to the
+    // probed x264. There the probe is the accurate one and the title's claim is
+    // dropped. The single exception is a file that genuinely carries more than
+    // one video stream (only the first is measured), where the title's second
+    // codec is the only evidence of it.
+    // One stream collapses every same-family title label into the refined base,
+    // mirroring audio; keeping them would print "[DivX][Xvid]" for one stream.
+    const multiStream = (v?.streamCount ?? 1) > 1;
+    const kept = multiStream ? video.slice() : [];
     let base = probedVideoLabel;
     if (fam === "mpeg4asp") {
       const named = video.find((x) => videoFamilyOf(x) === fam);
       if (named) base = named.replace(/\s+\d\.\d$/, "");
     }
+    // Avoid duplicating the same label twice: a name's codec might have been
+    // merged in the same way, and without this the refined "base" was pushed
+    // onto a list that already contained it (or something that canonicalizes to
+    // it). Compare case-insensitively, so "HEVC" and "Hevc" don't duplicate.
+    const lower = (s: string) => s.toLowerCase().replace(/\s+/g, "");
     video.length = 0;
-    video.push(base, ...kept);
+    if (!video.some((x) => lower(x) === lower(base))) video.push(base);
+    for (const x of kept) if (!video.some((y) => lower(y) === lower(x))) video.push(x);
   }
   if (v?.bitDepth && Number(v.bitDepth) >= 10 && !video.some((x) => /10bit/i.test(x))) video.push("10bit");
 
@@ -777,6 +796,33 @@ function streamLanguageCode(raw: string | null | undefined): string | null {
   return null;
 }
 
+/** Strip end-of-name qualifiers that sit after the release group and would
+ *  otherwise hide it. Only a collision suffix is peeled here (" (1)", "(2)"),
+ *  and only when the parentheses hold bare digits — so "San Andreas (2015)" and
+ *  an edition in parentheses are never touched. A trailing language word is NOT
+ *  peeled blindly: it is real evidence for the language tag, so it is handled
+ *  by the group retry below, which only consumes it when doing so actually
+ *  uncovers a group. */
+function peelTrailingQualifiers(base: string): string {
+  let out = base;
+  for (let i = 0; i < 4; i++) {
+    const before = out;
+    out = out.replace(/(?:\s*-\s*|\s*)\(\d{1,3}\)$/, "").replace(/\(\d{1,3}\)$/, "");
+    out = out.replace(/[\s.\-]+$/, "");
+    if (out === before) break;
+  }
+  return out;
+}
+
+/** The trailing word when it is a known language or dub marker (" - polish",
+ *  " - Lektor"), else null. */
+function trailingLanguageWord(base: string): { word: string; index: number } | null {
+  const m = base.match(/[-.\s]([A-Za-z]{2,12})$/);
+  if (!m || m.index === undefined) return null;
+  const up = m[1].toUpperCase();
+  return LANG_ALIASES[up] || DUB_WORDS.has(up) || DUB_MARKERS.has(up) || LANG_TAGS.has(up) ? { word: m[1], index: m.index } : null;
+}
+
 /** Escape a user-supplied vendor name for use inside a RegExp — a brand may
  *  legitimately contain "." or "+" (e.g. "Canal+"), which would otherwise
  *  compile into a pattern that matches far more than the name. */
@@ -800,7 +846,7 @@ function escapeRe(s: string): string {
 export function inheritReleaseFacts(
   target: ReleaseTags,
   siblingBase: string | null | undefined,
-  vendors: readonly string[] = DEFAULT_VENDORS,
+  vendors?: readonly string[] | null,
 ): ReleaseTags {
   if (!siblingBase) return target;
   const sibling = parseReleaseTags(siblingBase.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, ""), vendors);
@@ -830,7 +876,10 @@ const isEditionLabel = (misc: string): boolean => EDITION_TEST_RE.test(misc);
  * plus a "-GROUP" tail. Unknown pieces are dropped, never guessed at — other
  * than preserving unrecognized short bracket tags verbatim.
  */
-export function parseReleaseTags(baseName: string, vendors: readonly string[] = DEFAULT_VENDORS): ReleaseTags {
+export function parseReleaseTags(baseName: string, vendors?: readonly string[] | null): ReleaseTags {
+  // `?? DEFAULT_VENDORS` rather than a parameter default: a caller passing an
+  // explicit null would otherwise skip the default and crash on `.length`.
+  const vList = vendors ?? DEFAULT_VENDORS;
   const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
@@ -839,6 +888,15 @@ export function parseReleaseTags(baseName: string, vendors: readonly string[] = 
   // being treated as a release group.
   const editions = collectEditions(base);
 
+  // Tail qualifiers that sit AFTER the release group and break every tail rule,
+  // because both the group regex and the vendor peel anchor at end-of-string:
+  //   "…Atmos-FGT (1)"  a collision suffix from a previous rename
+  //   "…Atmos-FGT - polish"  a language word trailing the group
+  // Both are peeled only when positively recognized — "(1)" must be bare digits
+  // so "San Andreas (2015)" and "(Director's Cut)" are never touched, and the
+  // word must already be a known language/dub marker.
+  base = peelTrailingQualifiers(base);
+
   // A vendor is the one piece that arrives as a BARE trailing word, with no
   // hyphen and no bracket ("… i stara szafa 2005 Bajeczki24"), because that is
   // how streaming rips brand themselves. Nothing else would read it: the group
@@ -846,7 +904,7 @@ export function parseReleaseTags(baseName: string, vendors: readonly string[] = 
   // it is lifted out first, before either rule can misjudge it. Boundaries are
   // Unicode-aware so a Polish vendor name is not cut in half, and the name's own
   // spelling is kept.
-  const vRe = vendors.length ? new RegExp(`(^|[^\\p{L}\\p{N}])(${vendors.map(escapeRe).join("|")})(?![\\p{L}\\p{N}])`, "iu") : null;
+  const vRe = vList.length ? new RegExp(`(^|[^\\p{L}\\p{N}])(${vList.map(escapeRe).join("|")})(?![\\p{L}\\p{N}])`, "iu") : null;
   const vHit = vRe ? base.match(vRe) : null;
   if (vHit && vHit.index !== undefined) {
     out.vendor = vHit[2];
@@ -865,10 +923,28 @@ export function parseReleaseTags(baseName: string, vendors: readonly string[] = 
     const tail = new RegExp(`[-.]${escapeRe(out.vendor)}$`, "i");
     if (tail.test(base)) base = base.replace(tail, "").replace(/[-.\s]+$/g, "").trim();
   }
-  const grp = base.match(/-([A-Za-z0-9]{2,12})$/);
+  // A trailing language/dub word is evidence, not a group, so it is only
+  // consumed when it is demonstrably hiding one: "…Atmos-FGT - polish" and
+  // "…-GRP-polish" both end in a marker that the anchored group regex would
+  // otherwise either miss (spaced) or misread as the group itself (hyphenated).
+  // When nothing is found behind it the word stays in the name and the tokenizer
+  // reads it as the language it is — which is the only reason to touch it at all.
+  const langWord = trailingLanguageWord(base);
+  const grp = langWord ? null : base.match(/-([A-Za-z0-9]{2,12})$/);
   if (grp && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase())) {
     out.group = grp[1];
     base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
+  } else if (langWord) {
+    const trimmed = base.slice(0, langWord.index).replace(/[-.\s]+$/g, "");
+    const retry = trimmed.match(/-([A-Za-z0-9]{2,12})$/);
+    if (retry && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase())) {
+      out.group = retry[1];
+      const up = langWord.word.toUpperCase();
+      const code = LANG_ALIASES[up] || (LANG_TAGS.has(up) ? up : null);
+      if (code) out.language = code;
+      else out.dubbed = true;
+      base = trimmed.slice(0, retry.index).replace(/[-.\s]+$/g, "");
+    }
   }
 
   const misc: string[] = [];
@@ -946,9 +1022,19 @@ export function parseReleaseTags(baseName: string, vendors: readonly string[] = 
     const audio = parseAudioToken(at);
     if (audio) {
       if (audio === "Atmos") {
-        const idx = out.audio.findIndex((a) => a === "TrueHD" || a === "DTS-HD" || a === "DTS-HD MA" || a === "TrueHD Atmos");
-        if (idx >= 0) out.audio[idx] = `${out.audio[idx]} Atmos`;
-        else if (!out.audio.includes("Atmos")) out.audio.push("Atmos");
+        // "Atmos" belongs to TrueHD and to nothing else — there is no such thing
+        // as "DTS-HD MA Atmos". Matching any family here attached it to whichever
+        // entry happened to sit first, so Soul's DTS track claimed it too and
+        // rendered a non-existent [DTS-HD MA Atmos] next to a correct
+        // [TrueHD Atmos 7.1]. Only TrueHD (or an entry already carrying it) is a
+        // legal target; otherwise it stays a standalone tag.
+        const idx = out.audio.findIndex((a) => /^TrueHD(\s|$)/i.test(a));
+        if (idx >= 0 && !/atmos/i.test(out.audio[idx])) {
+          // Insert BEFORE any channel number so the entry reads "TrueHD Atmos 7.1",
+          // the canonical order, not "TrueHD 7.1 Atmos".
+          const m = out.audio[idx].match(/^(.*?)\s+(\d\.\d)$/);
+          out.audio[idx] = m ? `${m[1]} Atmos ${m[2]}` : `${out.audio[idx]} Atmos`;
+        } else if (!out.audio.some((a) => /atmos/i.test(a))) out.audio.push("Atmos");
       } else if (!out.audio.includes(audio)) {
         out.audio.push(audio);
       }
