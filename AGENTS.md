@@ -972,6 +972,17 @@ SEERR_API_KEY=
 - `--card-bg: #1e293b` CSS variable fixes transparent modals
 - **Import-library processed_files**: Always targets/creates `release_id IS NULL` AH rows (not torrent-linked rows). Skips adding files already in /processed by inode check (`alreadyImported`).
 - **Native identity (`library_key`)**: `media_requests.library_key` is the arr-free identity (`movie:<imdb|slug>:<year>` / `series:<tvdb|imdb|slug>:<year>`). `/managed` groups series by `sonarr_id` OR `library_key`. Reconcile (`POST /import-library/native`) only creates/adopts dormant rows; rows in DOWNLOADING/SEEDING/SEARCHING/AWAITING_APPROVAL/APPROVED are never touched. Native series cards have no sonarr_id — frontend "Manage" falls back to `/requests/{first_request_id}`, and the Delete button is hidden (needs Sonarr).
+- **A movie repair PREFERS the IMDb id, never the slug.** `movieKeySegment`
+  (`requests.ts`) takes the id whenever TMDB returns a real one (`^tt\d{6,}$`),
+  so a re-attach cannot *downgrade* an id-anchored key
+  (`movie:tt0100240:1990`) into a slug one — which is what `applyMovieIdentity`
+  used to do unconditionally, on every retitle. The id is the deterministic anchor
+  `imdbIdOwnerKey` and the folder veto depend on; a slug key leaves both leaning on
+  the `tmdb_external_ids` cache alone. The id is resolved **fresh** for the film the
+  user actually picked, never read from the old key's cache row: that row describes
+  whatever film the key used to name, which is exactly what the repair disputes.
+  The slug stays the fallback when TMDB has no id (or the lookup fails), and a slug
+  key still resolves — `requestImdbId` reads the cache this path repopulates.
 - **Scan endpoint movie import**: Skips importing the main movie file from Radarr library if the request already has a tracked torrent (`torrent_hash != ''`). Extras still imported.
 - **Dashboard version count**: `release_count + processed_count`. `processed_count` queries only `release_id IS NULL` AH rows. Startup inode-dedup removes processed files that are hardlinks of torrent download files (same inode → not a separate version).
 - **Processed endpoint series scanning**: Only scans the specific season subfolder matching the request's season (e.g. only `S02/` for season 2), not all seasons. No longer adds directory entries as files.
