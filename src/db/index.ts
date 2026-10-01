@@ -2,11 +2,31 @@
 import path from "path";
 import fs from "fs";
 import { fromQBittorrentPath, PROCESSED_MOVIES, PROCESSED_TV } from "../config/paths";
-import { identifyByPath, deriveIdentityFromFilename } from "../services/identity";
+import { identifyByPath, deriveIdentityFromFilename, registerVideoTree } from "../services/identity";
 
 export interface DBInstance {
   db: Database.Database;
   close: () => void;
+}
+
+/** An explicit IMDb id embedded in a canonical name ("[imdbid-tt0110357]"). */
+function nameImdbId(name: string): string | null {
+  const m = name.match(/imdbid[-\s]*(tt\d{6,9})/i) || name.match(/\b(tt\d{6,9})\b/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** The IMDb id a request owns, offline: cache first, then the id-anchored
+ *  library_key, then an id already embedded in the stored title. */
+function requestImdbId(db: Database.Database, req: { library_key?: string | null; title?: string | null }): string | null {
+  if (req.library_key) {
+    try {
+      const row = db.prepare("SELECT imdb_id FROM tmdb_external_ids WHERE library_key = ?").get(req.library_key) as any;
+      if (row?.imdb_id) return String(row.imdb_id).toLowerCase();
+    } catch {}
+    const fromKey = String(req.library_key).match(/\b(tt\d{6,9})\b/i);
+    if (fromKey) return fromKey[1].toLowerCase();
+  }
+  return req.title ? nameImdbId(req.title) : null;
 }
 
 /**
@@ -187,6 +207,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
       year INTEGER,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_tmdb_external_ids_imdb ON tmdb_external_ids(imdb_id);
 
 CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -414,7 +435,7 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
     const processedMoviesDir = PROCESSED_MOVIES;
     const processedTvDir = PROCESSED_TV;
     const ahWithRequest = db.prepare(`
-      SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id, mr.library_key, mr.season FROM approval_history ah
+      SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id, mr.library_key, mr.season, mr.title FROM approval_history ah
       JOIN media_requests mr ON mr.id = ah.request_id
       WHERE ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
     `).all() as any[];
@@ -425,7 +446,29 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
         const baseDir = r.type === "series" ? processedTvDir : processedMoviesDir;
         const filtered: string[] = [];
         const relocated: string[] = [];
+        const contradicted: string[] = [];
+        const mine = requestImdbId(db, r);
         for (const f of arr) {
+          // A stored path whose name pins a DIFFERENT film's IMDb id is a forged
+          // link from an earlier title-only fuzzy match ("Mufasa The Lion King
+          // (2024)" listed under "The Lion King (1994)"). The file exists on disk,
+          // so neither the existence check nor inode relocation would drop it —
+          // it must be dropped explicitly and re-attributed to its real owner.
+          const fileImdb = nameImdbId(path.basename(f));
+          if (mine && fileImdb && fileImdb !== mine) {
+            contradicted.push(f);
+            try {
+              const owner = db.prepare("SELECT mr.library_key, mr.title, mr.type, mr.season FROM tmdb_external_ids e JOIN media_requests mr ON mr.library_key = e.library_key WHERE e.imdb_id = ? LIMIT 1").get(fileImdb) as any;
+              if (owner?.library_key) {
+                registerVideoTree(db, path.join(baseDir, f), {
+                  library_key: owner.library_key,
+                  title: owner.title || "",
+                  season: owner.season ?? (owner.type === "movie" ? 0 : 1),
+                });
+              }
+            } catch {}
+            continue;
+          }
           if (fs.existsSync(path.join(baseDir, f))) {
             filtered.push(f);
             continue;
@@ -437,9 +480,9 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
           }
         }
         const deduped = [...new Set(filtered)];
-        if (relocated.length > 0 || deduped.length !== arr.length) {
+        if (relocated.length > 0 || contradicted.length > 0 || deduped.length !== arr.length) {
           db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(deduped), r.id);
-          console.log(`[DB] Cleaned dangling processed_files for approval_history id=${r.id}: ${arr.length} -> ${deduped.length}${relocated.length ? ` (relocated: ${relocated.join(", ")})` : ""}`);
+          console.log(`[DB] Cleaned processed_files for approval_history id=${r.id}: ${arr.length} -> ${deduped.length}${relocated.length ? ` (relocated: ${relocated.join(", ")})` : ""}${contradicted.length ? ` (cross-franchise dropped: ${contradicted.join(", ")})` : ""}`);
         }
       } catch {}
     }

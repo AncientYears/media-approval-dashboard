@@ -151,6 +151,37 @@ session can start with P0 without re-deriving the design.
 - Verify with `npm run type-check` + deployed coverage counts unchanged for a
   sample franchise before/after.
 
+### P2b — explicit IMDb id veto (cross-franchise same-title movies)
+
+Mufasa (2024) and The Lion King (1994) are the movie-space version of the
+DuckTales 1987/2017 problem: movies live **flat** in `PROCESSED_MOVIES`, so
+`titlesMatch` word overlap happily matches them to each other. Because canonical
+names embed `[imdbid-ttNNNNNNN]`, that id is deterministic and outranks every
+fuzzy signal:
+
+- `nameImdbId(name)` — pull an embedded id out of a name (`[imdbid-tt0110357]`
+  or a bare `tt0110357`). `requestImdbId(db, request)` — the request's own id,
+  offline: `tmdb_external_ids` cache → id-anchored `library_key`
+  (`movie:tt0110357:1994`) → id in the stored title.
+- `nameContradictsRequest(...)` — a name carrying a DIFFERENT film's id is
+  rejected **before** identity, `approval_history` names and title fallback.
+  When either side is unknown it returns false, so it can only ever exclude a
+  file, never admit one (raw release names keep working as before).
+- Applied in `processedFileMatchesRequest`, `GET /:id/processed`,
+  `backfillRequestIdentity` (movie branch), `POST /:id/processed/scan` (picker
+  no longer offers it), `POST /:id/processed/associate` (**409** with the
+  rejected names), `findBestRequestForDownload`, scan-downloads native match,
+  remove-from-library size-based twin lookup, and `nativeMovieLibraryFolders`
+  (library folder resolution skips foreign-id dirs).
+- `autodetectIdentity` resolves the embedded id through `tmdb_external_ids`
+  first, so adopt/import cannot claim a foreign film either.
+- **Repair**: `healProcessedFilesForRequest` drops forged
+  `approval_history.processed_files` entries whose name pins another film and
+  re-registers the inode under the id's real owner (`reassignContradictedFile`);
+  startup cleanup in `db/index.ts` does the same in bulk, before the read-time
+  heal. Files are never touched on disk — only bookkeeping. `idx_tmdb_external_ids_imdb`
+  backs the id→owner lookups.
+
 ## Folder Structure
 
 ```
@@ -680,6 +711,9 @@ SEERR_API_KEY=
 - [ ] Content-info endpoint scans content_path for video files and BDMV directories
 - [ ] titlesMatch rejects sequel numbers (e.g. "moana 2" does NOT match "moana")
 - [ ] titlesMatch tolerates 1 missing word for 3+ word titles (e.g. "LEGO Ninjago" matches "Ninjago Dragons Rising")
+- [ ] Embedded `[imdbid-tt…]` veto: Mufasa's file is rejected under The Lion King (1994) and vice versa, in the processed panel, Fix Names, the scan picker and library folder resolution
+- [ ] Embedded-id veto is inert when either side has no id (raw release names still match)
+- [ ] Startup repair drops forged `processed_files` entries and re-registers the inode under the real owner (no file touched on disk)
 - [ ] Import: magnet link adds to qBittorrent and polls for hash
 - [ ] Import: .torrent file upload creates RC and polls for hash
 - [ ] Import: bypassApproval creates AWAITING_APPROVAL status immediately

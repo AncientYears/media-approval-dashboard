@@ -184,6 +184,33 @@ export function autodetectIdentity(db: Database, absPath: string): FileIdentity 
       .all() as Array<{ library_key: string; title: string; season: number | null; type: string }>;
     const wantTitle = normTitle(parsed.title);
     if (!wantTitle) return null;
+    // An id embedded in the path ("[imdbid-tt13186482]") is deterministic and
+    // outranks the title guess below: tmdb_external_ids already knows which
+    // library_key owns that film. This is what keeps "Mufasa The Lion King
+    // (2024)" from being adopted into "The Lion King (1994)" merely because the
+    // titles overlap.
+    const embedded = absPath.match(/imdbid[-\s]*(tt\d{6,9})/i) || absPath.match(/\b(tt\d{6,9})\b/i);
+    if (embedded) {
+      const idOwner = db
+        .prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1")
+        .get(embedded[1].toLowerCase()) as any;
+      if (idOwner?.library_key) {
+        const owner = db
+          .prepare("SELECT library_key, title, season FROM media_requests WHERE library_key = ? LIMIT 1")
+          .get(idOwner.library_key) as any;
+        if (owner?.library_key) {
+          const { role, episodeNumbers } = deriveIdentityFromFilename(path.basename(absPath));
+          return {
+            library_key: owner.library_key,
+            title: owner.title || parsed.title,
+            season: owner.season ?? parsed.season,
+            episodeNumbers,
+            role,
+            releaseName: path.basename(absPath),
+          };
+        }
+      }
+    }
     let best: { library_key: string; title: string; season: number; type: string } | null = null;
     for (const r of rows) {
       if (normTitle(r.title) !== wantTitle) continue;

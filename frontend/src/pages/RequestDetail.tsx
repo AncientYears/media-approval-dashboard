@@ -551,7 +551,10 @@ export default function RequestDetail() {
       await associateProcessedFiles(Number(id), names);
       await refreshProcessedAndWorkspaces();
       setScanOpen(false);
-    } catch {}
+    } catch (e: any) {
+      // The backend refuses files whose name pins another film's IMDb id.
+      toast(e?.response?.data?.error || "Could not link those files", "error");
+    }
   };
 
   const openProcWsPicker = async (fileName: string) => {

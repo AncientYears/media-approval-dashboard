@@ -308,6 +308,16 @@ function healProcessedFilesForRequest(db: Database, request: any): string[] {
     let changed = false;
     const next: string[] = [];
     for (const f of list) {
+      // A stored path whose name pins a DIFFERENT film's IMDb id is a forged link
+      // left by an earlier title-only match ("Mufasa The Lion King (2024)" listed
+      // under "The Lion King (1994)"). The file exists, so the inode healing below
+      // would keep it -- drop it here instead, and re-register it under its real owner.
+      if (nameContradictsRequest(db, request, path.basename(f))) {
+        changed = true;
+        reassignContradictedFile(db, path.join(processedDir, f), f);
+        console.log(`[Identity] dropped cross-franchise processed_files entry "${f}" from AH#${ah.id} (#${request.id})`);
+        continue;
+      }
       if (fs.existsSync(path.join(processedDir, f))) {
         next.push(f);
         out.push(f);
@@ -369,6 +379,10 @@ function backfillRequestIdentity(db: Database, request: any): number {
       if (fs.existsSync(processedDir)) {
         for (const f of fs.readdirSync(processedDir)) {
           if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+          // Registering here is what MAKES the file belong to this request, so a
+          // title match alone must never do it: "Mufasa The Lion King (2024)"
+          // title-matches "The Lion King (1994)". An embedded id settles it.
+          if (nameContradictsRequest(db, request, f)) continue;
           const entryNorm = f.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
           if (titlesMatch(reqNorm, entryNorm)) registered += registerVideoTree(db, path.join(processedDir, f), identity);
         }
@@ -553,8 +567,15 @@ function findBestRequestForDownload(db: Database, name: string, type: string, se
   let best: any = null;
   let bestScore = 0;
   const wantWords = new Set(want.split(/\s+/));
+  // A torrent name that embeds a film's IMDb id ("Mufasa The Lion King (2024)
+  // [imdbid-tt13186482]") must not be grabbed for a same-titled request of a
+  // different film ("The Lion King (1994)"). Checked before word overlap so it
+  // can only ever exclude a candidate.
+  const wantImdb = nameImdbId(name || "");
   for (const r of rows) {
     if (season != null && r.season != null && r.season !== season) continue;
+    const mine = wantImdb ? requestImdbId(db, r) : null;
+    if (wantImdb && mine && wantImdb !== mine) continue;
     const rn = normalizeTitleForMatch(r.title);
     if (!rn || !titlesMatch(rn, want)) continue;
     let score = 0;
@@ -620,7 +641,7 @@ function linkTorrentToRequest(db: Database, torrent: any, entryName: string, typ
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
 // localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
-function nativeMovieLibraryFolders(requestTitle: string): string[] {
+function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | null): string[] {
   const want = normalizeFolder((requestTitle || "").replace(/ \(\d{4}\)$/i, ""));
   if (!want) return [MEDIA_MOVIES];
   const exact: string[] = [];
@@ -633,6 +654,12 @@ function nativeMovieLibraryFolders(requestTitle: string): string[] {
       } catch {
         continue;
       }
+      // Our canonical movie dirs embed the film's real IMDb id, so a folder
+      // carrying a DIFFERENT one is a different film that merely shares a title
+      // ("Mufasa The Lion King (2024)" vs "The Lion King (1994)"). Never let it
+      // match, no matter how well the titles line up.
+      const folderImdb = nameImdbId(d);
+      if (ownImdbId && folderImdb && folderImdb !== ownImdbId) continue;
       const norm = normalizeFolder(d);
       const normNoYear = normalizeFolder(d.replace(/\(\d{4}\)[-\s].*$/i, "").replace(/\(\d{4}\)$/i, ""));
       if (normNoYear === want || norm === want) {
@@ -1181,6 +1208,65 @@ function isFixNameTarget(p: string): string | null {
   return null;
 }
 
+/** An explicit IMDb id written into a file/folder name ("[imdbid-tt0110357]",
+ *  or a bare "tt0110357"). Our own canonical writer always embeds the request's
+ *  real id, so when one is present it is a DETERMINISTIC statement about which
+ *  film this is — never a fuzzy hint. */
+function nameImdbId(name: string): string | null {
+  const m = name.match(/imdbid[-\s]*(tt\d{6,9})/i) || name.match(/\b(tt\d{6,9})\b/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** The IMDb id for this request, read from cache only (no network). Falls back
+ *  to an id already embedded in the stored title, which happens when the row
+ *  was imported from an already-canonical name. Null when TMDB has not resolved
+ *  it yet, in which case an embedded id in a file name has nothing to disagree
+ *  with and the veto stays inert (it can only exclude, never admit). */
+function requestImdbId(db: Database, request: any): string | null {
+  if (request?.library_key) {
+    try {
+      const row = db.prepare("SELECT imdb_id FROM tmdb_external_ids WHERE library_key = ?").get(request.library_key) as any;
+      if (row?.imdb_id) return String(row.imdb_id).toLowerCase();
+    } catch {}
+  }
+  // A canonical native key is itself id-anchored ("movie:tt0110357:1994"), so
+  // this works offline and before TMDB has ever been asked.
+  const fromKey = String(request?.library_key || "").match(/\b(tt\d{6,9})\b/i);
+  if (fromKey) return fromKey[1].toLowerCase();
+  return nameImdbId(request?.title || "");
+}
+
+/** True when a name carries an explicit IMDb id that belongs to a DIFFERENT film
+ *  than this request. "Mufasa The Lion King (2024) [imdbid-tt13186482]" inside
+ *  The Lion King (1994) is the same cross-wiring as DuckTales 1987/2017: titles
+ *  overlap, ids do not. Returns false when either side is unknown, so it can
+ *  only ever exclude a file, never admit one. */
+function nameContradictsRequest(db: Database, request: any, base: string): boolean {
+  const mine = nameImdbId(base);
+  if (!mine) return false;
+  const theirs = requestImdbId(db, request);
+  return !!theirs && mine !== theirs;
+}
+
+/** Re-register a wrongly-attributed file under the library_key that owns its
+ *  embedded IMDb id. Without this, media_files would keep claiming the inode
+ *  belongs to the old key and every later read would trust that stale row. */
+function reassignContradictedFile(db: Database, fullPath: string, storedName: string): void {
+  try {
+    const id = nameImdbId(storedName);
+    if (!id) return;
+    const owner = db.prepare("SELECT library_key FROM tmdb_external_ids WHERE imdb_id = ? LIMIT 1").get(id) as any;
+    if (!owner?.library_key) return;
+    const req = db.prepare("SELECT library_key, title, type, season FROM media_requests WHERE library_key = ? LIMIT 1").get(owner.library_key) as any;
+    if (!req?.library_key) return;
+    registerVideoTree(db, fullPath, {
+      library_key: req.library_key,
+      title: req.title || "",
+      season: req.season ?? (req.type === "movie" ? 0 : 1),
+    });
+  } catch {}
+}
+
 /**
  * Whether a processed-panel file belongs to this request: explicit association
  * (approval_history processed_files / torrent content basenames), registered
@@ -1191,6 +1277,10 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
   const base = path.basename(fullPath);
   const processedDir = getProcessedDir(request.type === "series" ? "series" : "movie");
   const rel = path.relative(processedDir, fullPath);
+  // An explicit id in the name beats everything below, including registered
+  // identity: a name can only carry an id because something wrote the film's real
+  // id there, so a mismatch is proof the file is not this request's.
+  if (nameContradictsRequest(db, request, base)) return false;
   // Identity (dev, inode) is the source of truth and outranks everything else —
   // including the approval_history association, which can be stale: a same-named
   // franchise (DuckTales 1987 vs 2017) may hold the other's basenames after an
@@ -1460,7 +1550,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     } catch {}
   };
   if (type === "movie") {
-    for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+    for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
       if (!fs.existsSync(folder)) continue;
       for (const f of fs.readdirSync(folder)) {
         if (!VIDEO_FILE_RE.test(f)) continue;
@@ -1490,7 +1580,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     ...(type === "movie" ? movieDirs : []),
     ...(type === "series" ? [...showSeasons.keys()] : []),
     ...(type === "series" ? [resolveLibraryShowFolder(request) || ""] : []),
-    ...(type === "movie" ? nativeMovieLibraryFolders(request.title || "") : []),
+    ...(type === "movie" ? nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request)) : []),
   ]);
   // When nothing resolves, say why in the row note — one short, actionable
   // sentence, never an internal step dump.
@@ -1654,7 +1744,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     }
     // Library movie dir(s) — nativeMovieLibraryFolders falls back to the movie
     // root itself when nothing matches; skip proposing the root.
-    for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+    for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
       if (!folder || path.normalize(folder) === path.normalize(MEDIA_MOVIES)) continue;
       if (!fs.existsSync(folder)) continue;
       const name = path.basename(folder);
@@ -3827,8 +3917,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // attached without needing Radarr/Sonarr at all.
           let nativeMatch: any = null;
           if (!matchedRadarr && !matchedSonarr) {
+            // A torrent whose name pins a film's IMDb id belongs to exactly that
+            // film. Without this veto, "Mufasa The Lion King (2024) [imdbid-
+            // tt13186482]" gets attached to The Lion King (1994) on title
+            // overlap alone, which then propagates into the processed panel.
+            const tImdb = nameImdbId(torrent.name || "");
             if (type === "movie") {
               nativeMatch = allNativeMovies.find((m: any) => {
+                const mine = tImdb ? requestImdbId(db, m) : null;
+                if (tImdb && mine && tImdb !== mine) return false;
                 const mNorm = normalizeTitleForMatch(m.title);
                 return titlesMatch(mNorm, tNorm);
               }) || null;
@@ -6659,7 +6756,7 @@ let episodes: any[];
       } catch {}
       try {
         if (request?.library_key && request.type === "movie") {
-          for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
             if (fs.existsSync(folder)) libraryFolders.add(folder);
           }
         }
@@ -6799,7 +6896,7 @@ let episodes: any[];
       } catch {}
       try {
         if (request?.library_key && request.type === "movie") {
-          for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
             if (fs.existsSync(folder)) libraryFolders.add(folder);
           }
         }
@@ -7166,7 +7263,7 @@ const type = request.type === "series" ? "series" : "movie";
           try {
             libraryDir = request.type === "series"
               ? (resolveLibraryFolder(request) || "")
-              : (nativeMovieLibraryFolders(request.title || "")[0] || "");
+              : (nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))[0] || "");
           } catch {}
         }
 
@@ -7243,7 +7340,7 @@ const type = request.type === "series" ? "series" : "movie";
         try {
           libraryDir = request.type === "series"
             ? (resolveLibraryFolder(request) || "")
-            : (nativeMovieLibraryFolders(request.title || "")[0] || "");
+            : (nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))[0] || "");
         } catch {}
       }
       console.log(`[RemoveFromLib] libraryDir=${libraryDir} exists=${libraryDir ? fs.existsSync(libraryDir) : false}`);
@@ -7289,6 +7386,9 @@ const type = request.type === "series" ? "series" : "movie";
           if (!fs.existsSync(procDir)) continue;
           for (const f of fs.readdirSync(procDir)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
+            // Never resolve a library twin by size from another film's file just
+            // because the titles overlap (Mufasa vs The Lion King).
+            if (nameContradictsRequest(db, request, f)) continue;
             if (!titlesMatch(request.title, f)) continue;
             const fPath = path.join(procDir, f);
             try {
@@ -7893,7 +7993,7 @@ const type = request.type === "series" ? "series" : "movie";
         // Native (arr-free) movie — movies live in a "<Title> (Year)/" subfolder
         // under MEDIA_MOVIES, so resolve the folder(s) and scan each.
         try {
-          for (const folder of nativeMovieLibraryFolders(request.title || "")) {
+          for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request))) {
             if (!fs.existsSync(folder)) continue;
             for (const f of fs.readdirSync(folder)) {
               if (/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) {
@@ -7960,6 +8060,10 @@ const type = request.type === "series" ? "series" : "movie";
         const linkedToLibrary = ino > 0 && libraryInodes.has(ino);
         const identityRow = request.library_key ? identifyByPath(db, fullPath) : null;
         const identityHit = !!(identityRow && identityRow.library_key === request.library_key);
+        // An embedded id belonging to another film is decisive: "Mufasa The Lion
+        // King (2024)" is not a file of "The Lion King (1994)" no matter which
+        // names, inode or title heuristic happens to line up.
+        if (nameContradictsRequest(db, request, e.name)) continue;
         if (!matchedNames.has(e.name) && !matchedNames.has(e.relPath) && !linkedToLibrary && !identityHit) {
           if (!hasExplicitAssociations) {
             const entryNorm = e.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -8090,6 +8194,10 @@ const type = request.type === "series" ? "series" : "movie";
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
         if (otherNames.has(entry.name)) continue;
+        // Movies live flat in one shared dir, so the unlinked-files picker must
+        // not offer a same-titled other film ("Mufasa The Lion King (2024)" for
+        // "The Lion King (1994)") — associating it would forge the link.
+        if (nameContradictsRequest(db, request, entry.name)) continue;
         const fullPath = path.join(processedDir, entry.name);
         let size = 0;
         try { size = fs.statSync(fullPath).size; } catch {}
@@ -8129,6 +8237,17 @@ const type = request.type === "series" ? "series" : "movie";
             try { const st = fs.statSync(path.join(processedDir, f)); if (st.ino > 0) existingInodes.add(st.ino); } catch {}
           }
         } catch {}
+      }
+
+      // A name carrying another film's IMDb id is refused outright: associating it
+      // would create exactly the false link the picker filters out (same title,
+      // different movie). Report it rather than silently accepting.
+      const rejected = fileNames.filter((f: string) => nameContradictsRequest(db, request, f));
+      if (rejected.length) {
+        return res.status(409).json({
+          error: `These files belong to a different movie (mismatched IMDb id): ${rejected.join(", ")}`,
+          rejected,
+        });
       }
 
       // Filter out filenames already associated by name OR inode (hardlink dedup)
@@ -8541,7 +8660,7 @@ const type = request.type === "series" ? "series" : "movie";
           // Native movie: place into the matching "<Title> (Year)/" library
           // subfolder when one exists (same resolution the processed panel's
           // in-library scan uses), else the MEDIA_MOVIES root.
-          const folders = nativeMovieLibraryFolders(request.title || "");
+          const folders = nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request));
           destFolder = folders[0] && folders[0] !== MEDIA_MOVIES ? folders[0] : MEDIA_MOVIES;
         }
         try {
