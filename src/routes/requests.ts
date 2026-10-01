@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -7120,10 +7120,21 @@ let episodes: any[];
   // would only relocate the junk.
 /** Rewrite a movie's identity across every dependent row, then repopulate the
  *  external-id cache under the new key. Never touches the filesystem. */
+/** The middle segment of a movie `library_key`: the IMDb id when one is known,
+ *  else the title slug. The id is the deterministic anchor -- `imdbIdOwnerKey`
+ *  resolves a file's embedded `[imdbid-tt...]` straight to the key that owns it,
+ *  and the folder veto reads it -- so it wins whenever it is available. Returns
+ *  null for anything that is not a real IMDb id, which is how a bad value falls
+ *  back to the slug instead of minting a nonsense key. */
+function movieKeySegment(name: string, imdbId: string | null | undefined): string {
+  if (imdbId && /^tt\d{6,}$/i.test(imdbId.trim())) return imdbId.trim().toLowerCase();
+  return slugForKeyTitle(name);
+}
+
 async function applyMovieIdentity(
   db: Database,
   oldKey: string,
-  resolved: { name: string; year: number | null },
+  resolved: { name: string; year: number | null; tmdbId?: number },
   lang: string,
   opts?: { alsoSetTitle?: boolean },
 ): Promise<{ newKey: string } | { error: string; status: number }> {
@@ -7131,7 +7142,17 @@ async function applyMovieIdentity(
   if (!slug || slug.length < 3) {
     return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
   }
-  const newKey = `movie:${slug}:${resolved.year ?? 0}`;
+  // Fresh resolution only -- never the old key's cached id, which belongs to
+  // whatever film that key used to name, which is exactly what a repair disputes.
+  let imdbId: string | null = null;
+  if (resolved.tmdbId) {
+    const ids = await fetchExternalIds("movie", resolved.tmdbId, lang).catch(() => null);
+    if (ids?.imdbId) imdbId = ids.imdbId;
+  }
+  // No id from TMDB (a film it has none for, or a lookup that failed) falls back to
+  // the slug, which still round-trips: requestImdbId() reads the cache this function
+  // repopulates below, so a slug-keyed request is not left without an id.
+  const newKey = `movie:${movieKeySegment(resolved.name, imdbId)}:${resolved.year ?? 0}`;
   // Re-attaching to the film the key ALREADY names is not a no-op: the stored
   // title is a separate column and is frequently still mangled ("Hobbit" beside
   // movie:the-hobbit-an-unexpected-journey:2012). That title is what card
@@ -7243,7 +7264,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
           reason: decision.reason,
         });
       }
-      const applied = await applyMovieIdentity(db, oldKey, { name: resolved.name, year: resolved.year }, lang);
+      const applied = await applyMovieIdentity(db, oldKey, { name: resolved.name, year: resolved.year, tmdbId: resolved.id }, lang);
       if ("error" in applied) {
         return res.status(applied.status).json({ fixed: false, old_key: oldKey, new_key: null, reason: applied.error });
       }
@@ -7332,7 +7353,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       const lang = franchiseLanguage(db, oldKey) || process.env.TMDB_LANGUAGE || "en-US";
       const info = await fetchTMDBById("movie", tmdbId, lang);
       if (!info?.title) return res.status(404).json({ error: `TMDB has no movie ${tmdbId}` });
-      const applied = await applyMovieIdentity(db, oldKey, { name: info.title, year: info.year }, lang, {
+      const applied = await applyMovieIdentity(db, oldKey, { name: info.title, year: info.year, tmdbId }, lang, {
         alsoSetTitle: true,
       });
       if ("error" in applied) {
