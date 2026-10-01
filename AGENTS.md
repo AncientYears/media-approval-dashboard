@@ -785,6 +785,24 @@ SEERR_API_KEY=
 - **Startup DB cleanup order**: Dedup → dangling cleanup → merge null-release_id rows → migrate non-null processed_files to null rows → inode dedup
 - **Startup season mismatch check**: Uses `\\bS{req_season}\\b` regex to check if the specific season string exists in the torrent name, instead of matching the first S## — prevents deleting RCs for S02/S03 in multi-season packs like `S01-S03`.
 - **titlesMatch stop word filter**: Common English stop words (`the`, `a`, `an`, `and`, `or`, `of`, `in`, `on`, `at`, `to`, `for`, `with`, `by`, `is`, `it`, `its`) excluded from word overlap count — prevents false positives like "The Adventures of the Mole" matching "Puss in Boots".
+- **Roman numerals are sequels too.** The sequel guard that keeps "moana 2" from
+  matching "moana" only knew arabic digits, so *The NeverEnding Story II* matched
+  NES III: NES III's freshly-canonical name is a **prefix** of the NES II title
+  ("The NeverEnding Story III (1994) [imdbid-tt0110647] - …" starts with "The
+  NeverEnding Story II"), the digit test could not see the trailing `iii`, and NES
+  II's Fix Names then proposed renaming NES III's file and folder.
+  `trailingSequelNumber` (anchored at the end, canonical roman spellings 1–10 only)
+  plus `SEQUEL_EXTENSION` fix both halves: a numeral both sides carry must agree,
+  and a sequel extension on a prefix match is now a **final** rejection — falling
+  through to word overlap readmitted it, because the two titles share two of three
+  words and three-word titles carry a one-word tolerance.
+- **Folder ownership reads ids out of names, not just `media_files`.**
+  `folderOwnedExclusively` treated a file with no registered identity as *owned*,
+  so one card could rename a sibling's folder whenever the other card's file had
+  no `media_files` row. It now also refuses when a file inside pins a **different**
+  `[imdbid-tt…]` than the request's own id — a canonical name states identity
+  outright, settling what a missing row could not. Applied at all four preview
+  sites *and* the apply path, or preview and apply would disagree.
 - **Version count excludes DOWNLOADING**: `release_count` and `total_size_mb` subqueries add `AND mr.status != 'DOWNLOADING'` so in-progress torrents are not counted as versions. Dashboard outer WHERE includes `IN ('DOWNLOADING', 'COMPLETED')` to keep visible. Managed endpoint at line 646-660.
 - **Unmatched match (series) multi-season**: `POST /unmatched/:id/match` for series scans `content_path` for season subdirectories, creates one request per detected season. Response includes `seasons` array.
 - **isSeasonPackTitle range patterns**: Handles `S##-S##` and `S##-##` ranges in torrent names (e.g. `[S01-S03]` covers S01, S02, S03). Used by franchise coverage detection.

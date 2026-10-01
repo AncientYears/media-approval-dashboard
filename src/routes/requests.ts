@@ -1774,7 +1774,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   const sharedNote = "Folder holds files of another franchise — fix identities first";
   if (type === "series") {
     for (const [showDir, seasons] of showSeasons) {
-      const ownedShow = folderOwnedExclusively(db, showDir, request.library_key);
+      const ownedShow = folderOwnedExclusively(db, showDir, request.library_key, requestImdbId(db, request));
       const showName = path.basename(showDir);
       const showCanonical = namingEnabled && cachedPieces ? canonicalSeriesDir(conf, cachedPieces) : null;
       dirs.push({
@@ -1804,7 +1804,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     // Library: show folder + this request's season folder.
     const libShow = resolveLibraryShowFolder(request);
     if (libShow) {
-      const libOwned = folderOwnedExclusively(db, libShow, request.library_key);
+      const libOwned = folderOwnedExclusively(db, libShow, request.library_key, requestImdbId(db, request));
       const libShowName = path.basename(libShow);
       const libShowCanonical = namingEnabled && cachedPieces ? canonicalSeriesDir(conf, cachedPieces) : null;
       dirs.push({
@@ -1836,7 +1836,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   } else {
     for (const movieDir of movieDirs) {
       const name = path.basename(movieDir);
-      const owned = folderOwnedExclusively(db, movieDir, request.library_key);
+      const owned = folderOwnedExclusively(db, movieDir, request.library_key, requestImdbId(db, request));
       const canonical = namingEnabled && cachedPieces ? canonicalMovieDir(conf, cachedPieces) : null;
       dirs.push({
         id: `d${did++}`,
@@ -1854,7 +1854,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       if (!folder || path.normalize(folder) === path.normalize(MEDIA_MOVIES)) continue;
       if (!fs.existsSync(folder)) continue;
       const name = path.basename(folder);
-      const owned = folderOwnedExclusively(db, folder, request.library_key);
+      const owned = folderOwnedExclusively(db, folder, request.library_key, requestImdbId(db, request));
       const canonical = namingEnabled && cachedPieces ? canonicalMovieDir(conf, cachedPieces) : null;
       dirs.push({
         id: `d${did++}`,
@@ -1937,10 +1937,12 @@ function isDirectChildOfRoot(p: string, root: string): boolean {
 }
 
 /** Folder ownership gate: block renames of folders that contain files of a
- * DIFFERENT franchise. Files with no registered identity are treated as owned.
- * This is what makes multi-season franchises safe — every season row of the
- * same show shares the show folder (same library_key) and stays non-blocking. */
-function folderOwnedExclusively(db: Database, folder: string, libraryKey: string | null): boolean {
+ *  DIFFERENT franchise. Files with no registered identity are treated as owned —
+ *  EXCEPT when their own NAME pins a different IMDb id, because a canonical name
+ *  states the film's identity outright. This is what makes multi-season
+ *  franchises safe: every season row of the same show shares the show folder
+ *  (same library_key) and stays non-blocking. */
+function folderOwnedExclusively(db: Database, folder: string, libraryKey: string | null, ownImdbId?: string | null): boolean {
   if (!libraryKey) return false;
   const videoFiles: string[] = [];
   const walk = (dir: string, depth: number) => {
@@ -1966,6 +1968,10 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
       const ident = identifyByPath(db, f);
       if (ident && ident.library_key && ident.library_key !== libraryKey) return false;
     } catch {}
+    // No media_files row means "unknown", and unknown used to read as "mine" —
+    // which let one card rename a sibling's folder. An embedded id settles it.
+    const named = nameImdbId(path.basename(f));
+    if (ownImdbId && named && named !== ownImdbId) return false;
   }
   return true;
 }
@@ -2055,7 +2061,7 @@ async function applyDirRename(
 
   const oldName = path.basename(oldDir);
   if (canonical === oldName) return { ok: true, skipped: true, old: oldName, new: canonical, kind };
-  if (!folderOwnedExclusively(db, oldDir, request.library_key)) {
+  if (!folderOwnedExclusively(db, oldDir, request.library_key, requestImdbId(db, request))) {
     return { ok: false, error: "Folder contains files of another franchise — fix identities first", kind };
   }
 
@@ -2086,15 +2092,56 @@ async function applyDirRename(
   return { ok: true, old: oldName, new: canonical, kind };
 }
 
+/** Roman numeral -> number, canonical spellings only (1-10). A bare "v" is 5, so
+ *  non-canonical forms like "IIX" fail the round-trip and read as no numeral. */
+const ROMAN_SEQUELS: Record<number, string> = { 1: "i", 2: "ii", 3: "iii", 4: "iv", 5: "v", 6: "vi", 7: "vii", 8: "viii", 9: "ix", 10: "x" };
+function romanValue(tok: string): number | null {
+  const t = tok.toLowerCase();
+  const VALS = [1, 5, 10, 50, 100, 500, 1000];
+  let total = 0;
+  for (let i = 0; i < t.length; i++) {
+    const v = "ivxlcdm".indexOf(t[i]);
+    if (v < 0) return null;
+    const nxt = i + 1 < t.length ? "ivxlcdm".indexOf(t[i + 1]) : -1;
+    total += nxt >= 0 && VALS[nxt] > VALS[v] ? -VALS[v] : VALS[v];
+  }
+  return ROMAN_SEQUELS[total] === t ? total : null;
+}
+
+/** The sequel numeral a normalized title ENDS with, as a number: 2 for "moana 2",
+ *  3 for "the neverending story iii". Null when it carries none. */
+function trailingSequelNumber(norm: string): number | null {
+  const m = norm.match(/(?:^|[\s._-])(?:part|chapter|vol|volume)?[\s._-]*([ivxlcdm]{1,7}|\d{1,3})[\s._-]*$/i);
+  if (!m) return null;
+  return /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : romanValue(m[1]);
+}
+
+/** A title extended by a sequel numeral: "moana" -> "moana 2", "story ii" ->
+ *  "story iii". Roman numerals belong here, not just digits: The NeverEnding
+ *  Story II and III share every other word, and NES III's freshly-canonical name
+ *  ("The NeverEnding Story III (1994) [imdbid-tt0110647] - ...") is a PREFIX of
+ *  the NES II request's title, so the digit-only guard waved it straight through
+ *  and NES II's Fix Names proposed renaming NES III's file and folder. */
+const SEQUEL_EXTENSION = /^(?:\d{1,3}|[ivxlcdm]{1,7})\b/i;
+
 export function titlesMatch(lookupNorm: string, torrentNorm: string): boolean {
-  // Primary: prefix match — but reject when suffix is a bare 1-3 digit number (sequel like "2", "3")
+  // A numeral both sides carry is part of the title's identity, never noise.
+  const lookupSeq = trailingSequelNumber(lookupNorm);
+  const torrentSeq = trailingSequelNumber(torrentNorm);
+  if (lookupSeq != null && torrentSeq != null && lookupSeq !== torrentSeq) return false;
+  // Primary: prefix match. A sequel numeral means a DIFFERENT film, so the
+  // rejection is FINAL here: falling through to word overlap re-admitted the
+  // exact case this guards, since "the neverending story ii" shares two of its
+  // three words with NES III and three-word titles carry a one-word tolerance.
   if (torrentNorm.startsWith(lookupNorm)) {
     const suffix = torrentNorm.slice(lookupNorm.length).trimStart();
-    if (!suffix || !/^\d{1,3}\b/.test(suffix)) return true;
+    if (suffix && SEQUEL_EXTENSION.test(suffix)) return false;
+    return true;
   }
   if (lookupNorm.startsWith(torrentNorm)) {
     const suffix = lookupNorm.slice(torrentNorm.length).trimStart();
-    if (!suffix || !/^\d{1,3}\b/.test(suffix)) return true;
+    if (suffix && SEQUEL_EXTENSION.test(suffix)) return false;
+    return true;
   }
   // Secondary: lookup title appears in torrent, but must be >= 10 chars to avoid false positives
   // like "Dragons" matching "Ninjago Dragons Rising"
