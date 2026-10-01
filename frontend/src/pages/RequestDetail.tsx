@@ -627,7 +627,9 @@ export default function RequestDetail() {
       )}
 
       <div className="torrent-panel processed-panel">
-        <div className="section-divider">
+        {/* Flex row: the label and buttons stay left, the language select is
+            pushed to the far right like the franchise page's header. */}
+        <div className="section-divider processed-divider">
           Processed
           <button className="btn btn-secondary btn-tiny" style={{ marginLeft: 8 }} onClick={handleScanProcessed} disabled={scanning}>
             {scanning ? "Scanning..." : "Scan Folder"}
@@ -646,7 +648,7 @@ export default function RequestDetail() {
               value={language}
               onChange={(e) => handleLanguage(e.target.value)}
               title="TMDB language for the canonical title (per movie/franchise; default = TMDB_LANGUAGE or en-US). Applies to the next Fix Names preview."
-              style={{ marginLeft: 4, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+              style={{ marginLeft: "auto", fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
             >
               <option value="">Default language</option>
               {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}

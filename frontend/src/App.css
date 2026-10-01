@@ -1764,6 +1764,14 @@ body {
   margin-bottom: 8px;
 }
 
+/* A section-divider that also holds controls: lay them out in one row instead of
+   letting the label, the buttons and the select wrap onto separate lines. */
+.processed-divider {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .franchise-season {
   margin-bottom: 16px;
 }
