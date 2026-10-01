@@ -331,10 +331,11 @@ function renderTags(f: {
   video: string[];
   misc: string[];
 }): string {
-  let tags = f.language ? `[${f.language}] ` : "";
-  // Right after the language, because a dub is a property OF the audio: the
-  // same Polish language covers both the dubbed track and the original one.
-  if (f.dubbed) tags += `[DUB]`;
+  // Language and dub share ONE bracket ("[PL DUB]") because they describe the
+  // same track: the same Polish language covers a dubbed and an original one,
+  // and splitting them read as two unrelated tags.
+  const lang = f.language ? (f.dubbed ? `${f.language} DUB` : f.language) : f.dubbed ? "DUB" : null;
+  let tags = lang ? `[${lang}] ` : "";
   if (f.source && f.resolution) tags += `[${f.source}-${f.resolution}]`;
   else if (f.source) tags += `[${f.source}]`;
   else if (f.resolution) tags += `[${f.resolution}]`;
@@ -398,7 +399,11 @@ function probeResolution(height: number | null | undefined): string | null {
   if (height >= 1300) return "1440p";
   if (height >= 900) return "1080p";
   if (height >= 700) return "720p";
-  if (height >= 550) return "480p";
+  // Anamorphic and letterboxed encodes land BELOW the nominal tier: a real
+  // 1280x534 transfer is a 480p source, and a 550 floor left those files with no
+  // resolution at all — the one case where naming the tier is still honest.
+  if (height >= 400) return "480p";
+  if (height >= 200) return "360p";
   return null;
 }
 
