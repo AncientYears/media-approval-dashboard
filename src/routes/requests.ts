@@ -1691,7 +1691,25 @@ function processedFileMatchesRequest(db: Database, request: any, fullPath: strin
   if (request.library_key) {
     try {
       const identityRow = identifyByPath(db, fullPath);
-      if (identityRow) return identityRow.library_key === request.library_key;
+      if (identityRow) {
+        if (identityRow.library_key === request.library_key) return true;
+        // A row naming a library_key NO request holds is unattributable, not a
+        // statement about this file. That is exactly what a retitle performed
+        // before media_files was migrated with the key leaves behind: the row
+        // keeps the dead key, so identity vetoes the file for every request and
+        // the file disappears from its own card ("Nothing to rename in this
+        // layer") while still sitting in /Processed. A disproven attribution is
+        // worse than none - identity outranks every signal, so leave the row for
+        // the name/id fallback to claim and do not let a phantom veto decide.
+        const owner = db
+          .prepare("SELECT COUNT(*) c FROM media_requests WHERE library_key = ?")
+          .get(identityRow.library_key) as any;
+        if (!owner || !owner.c) {
+          registerVideoTree(db, fullPath, { library_key: request.library_key, title: request.title || "", season: request.season ?? 0 });
+          return true;
+        }
+        return false;
+      }
     } catch {}
   }
   if (matchedNames.has(base) || matchedNames.has(rel)) return true;
@@ -8841,7 +8859,23 @@ const type = request.type === "series" ? "series" : "movie";
         // title-match fallback when the request has zero explicit associations.
         const linkedToLibrary = ino > 0 && libraryInodes.has(ino);
         const identityRow = request.library_key ? identifyByPath(db, fullPath) : null;
-        const identityHit = !!(identityRow && identityRow.library_key === request.library_key);
+        let identityHit = !!(identityRow && identityRow.library_key === request.library_key);
+        // A row naming a library_key no request holds is unattributable, not a
+        // statement about this file — a retitle performed before media_files was
+        // migrated with the key leaves exactly that behind. Treat it as carrying
+        // no identity here too, so the panel does not drop a file the card does
+        // own (the same phantom veto that hid it from Fix Names).
+        if (identityRow && !identityHit && request.library_key) {
+          try {
+            const owner = db
+              .prepare("SELECT COUNT(*) c FROM media_requests WHERE library_key = ?")
+              .get(identityRow.library_key) as any;
+            if (!owner || !owner.c) {
+              registerVideoTree(db, fullPath, { library_key: request.library_key, title: request.title || "", season: request.season ?? 0 });
+              identityHit = true;
+            }
+          } catch {}
+        }
         // An embedded id belonging to another film is decisive: "Mufasa The Lion
         // King (2024)" is not a file of "The Lion King (1994)" no matter which
         // names, inode or title heuristic happens to line up.

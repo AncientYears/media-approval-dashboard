@@ -717,6 +717,32 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
     }
     if (ghostRows.length > 0) console.log(`[DB] Cleaned up ${ghostRows.length} degenerate request row(s).`);
 
+    // Identity rows left pointing at a library_key NO request holds. These are the
+    // residue of a retitle/fix-identity performed before media_files was migrated
+    // alongside the key: the request moved, the row did not. Because every read is
+    // inode-first, such a row vetoes its own file for every card ("Nothing to
+    // rename in this layer" while the file still sits in /Processed), and identity
+    // outranks every weaker signal, so nothing downstream can rescue it. Deleting
+    // is the honest repair — the row asserts an owner that does not exist, and the
+    // name/id fallback re-claims the inode on the next read. Files on disk are
+    // never touched.
+    const orphanIdentities = db
+      .prepare(
+        `SELECT mf.dev, mf.inode, mf.library_key FROM media_files mf
+         WHERE mf.library_key != ''
+           AND NOT EXISTS (SELECT 1 FROM media_requests mr WHERE mr.library_key = mf.library_key)`,
+      )
+      .all() as any[];
+    for (const o of orphanIdentities) {
+      db.prepare("DELETE FROM media_files WHERE dev = ? AND inode = ?").run(o.dev, o.inode);
+    }
+    if (orphanIdentities.length > 0) {
+      const keys = Array.from(new Set(orphanIdentities.map((o) => o.library_key)));
+      console.log(
+        `[DB] Cleared ${orphanIdentities.length} orphaned identity row(s) pointing at ${keys.length} unowned key(s): ${keys.slice(0, 5).join(", ")}${keys.length > 5 ? ", …" : ""}`,
+      );
+    }
+
     // Migration: create unmatched_torrents table if not exists
     db.exec(`CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
