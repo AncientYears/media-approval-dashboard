@@ -269,6 +269,16 @@ const DUB_MARKERS = new Set(["DUB", "DUBBED", "DUBBING"]);
  *  real quality tier: dropping the marker made `[PL] [AC3]` look like the same
  *  thing whether the audio was dubbed or not. */
 const DUB_WORDS = new Set([...DUB_MARKERS, "LEKTOR", "LEKTORSKI", "LEKTORSKIE", "NAUKA"]);
+/**
+ * A LEKTOR is a MONOTONE VOICEOVER laid over the picture, not a dub: the
+ * characters are not actually voiced, a single narrator reads the dialogue. That
+ * is a genuinely different audio tier from a full dub, so it must not collapse
+ * into `[PL DUB]` — two releases of one film differing only in this would render
+ * identical names and become indistinguishable in the library. The Polish
+ * adjectives ("lektorski"/"lektorskie") are the same claim. NAUKA stays a plain
+ * DUB: it is a studio name with no established voiceover meaning.
+ */
+const LEKTOR_WORDS = new Set(["LEKTOR", "LEKTORSKI", "LEKTORSKIE"]);
 
 /** Word-form resolutions. A title often states the class ("4K", "UHD", "2K")
  *  instead of a pixel count, and the class IS the tier we render — so "UHD
@@ -378,10 +388,12 @@ export interface ReleaseTags {
    *  inherited from a same-inode twin and never measured. */
   vendor: string | null;
   language: string | null;
-  /** A dub was explicitly marked (DUB/DUBBING/LEKTOR/NAUKA/…). Polish releases
-   *  are split between a dubbed and an original track, so the audio *source*
-   *  is a real quality tier and must survive naming — see `DUB_WORDS`. */
-  dubbed: boolean;
+  /** Which non-original audio the name states: a full DUB, or a LEKTOR
+   *  voiceover. Polish releases are split between a dubbed track, a voiceover
+   *  laid over the picture, and the original, so the audio *source* is a real
+   *  quality tier and must survive naming. Null means the name says nothing, in
+   *  which case the original track is implied. */
+  dubKind: "DUB" | "LEKTOR" | null;
   source: string | null;
   resolution: string | null;
   audio: string[];
@@ -473,7 +485,7 @@ const HDR_RANK = ["DV", "HDR10+", "HDR10", "HDR", "HLG", "WCG"];
 const SPECIFIC_HDR = new Set(HDR_RANK.filter((f) => f !== "HDR"));
 function renderTags(f: {
   language: string | null;
-  dubbed: boolean;
+  dubKind: "DUB" | "LEKTOR" | null;
   source: string | null;
   resolution: string | null;
   audio: string[];
@@ -482,10 +494,12 @@ function renderTags(f: {
   misc: string[];
   qualityMods?: string[];
 }): string {
-  // Language and dub share ONE bracket ("[PL DUB]") because they describe the
-  // same track: the same Polish language covers a dubbed and an original one,
-  // and splitting them read as two unrelated tags.
-  const lang = f.language ? (f.dubbed ? `${f.language} DUB` : f.language) : f.dubbed ? "DUB" : null;
+  // Language and dub share ONE bracket ("[PL DUB]" / "[PL LEKTOR]") because they
+  // describe the same track: the same Polish language covers a dubbed, a
+  // voiceover'd and an original one, and splitting them read as unrelated tags.
+  // DUB and LEKTOR are kept apart because they are different tiers — a real dub
+  // voices the characters, a lektor is one narrator over the picture.
+  const lang = f.language ? (f.dubKind ? `${f.language} ${f.dubKind}` : f.language) : f.dubKind;
   let tags = lang ? `[${lang}] ` : "";
   // Encode-quality modifiers ride inside the resolution group ("[Remux-2160p
   // Proper]"), which is where groups write them. They are dropped rather than
@@ -1027,7 +1041,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // `?? DEFAULT_VENDORS` rather than a parameter default: a caller passing an
   // explicit null would otherwise skip the default and crash on `.length`.
   const vList = vendors ?? DEFAULT_VENDORS;
-  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubbed: false, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [], qualityMods: [] };
+  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubKind: null, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [], qualityMods: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
   // Editions ("International", "Extended", "Director's Cut", …) are preserved
@@ -1096,7 +1110,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       const up = langWord.word.toUpperCase();
       const code = LANG_ALIASES[up] || (LANG_TAGS.has(up) ? up : null);
       if (code) out.language = code;
-      else out.dubbed = true;
+      else out.dubKind = LEKTOR_WORDS.has(langWord.word.toUpperCase()) ? "LEKTOR" : "DUB";
       base = trimmed.slice(0, retry.index).replace(/[-.\s]+$/g, "");
     }
   }
@@ -1120,9 +1134,11 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const alias = LANG_ALIASES[up];
     if (alias) {
       out.language = alias;
-      // "Lektor"/"Nauka" name the dubbing studio, so they say the audio is a
-      // dub on top of saying the language.
-      if (DUB_WORDS.has(up)) out.dubbed = true;
+      // "Lektor"/"Nauka" name the dubbing studio, so they say the audio is NOT the
+      // original track on top of saying the language — but a lektor is a voiceover
+      // rather than a dub, so it keeps its own tag.
+      if (LEKTOR_WORDS.has(up)) out.dubKind = "LEKTOR";
+      else if (DUB_WORDS.has(up)) out.dubKind = "DUB";
       return;
     }
     // "PLDUB", "PL-DUB", "PL.DUB" — the country code glued to a dub marker.
@@ -1130,14 +1146,14 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const dubbed = at.toUpperCase().match(/^([A-Z]{2})[-_.]?(?:DUB|DUBBED|DUBBING)$/);
     if (dubbed) {
       out.language = dubbed[1];
-      out.dubbed = true;
+      out.dubKind = "DUB";
       return;
     }
     if (DUB_MARKERS.has(up)) {
       // A bare "DUB"/"DUBBED"/"DUBBING" names the audio SOURCE, not a language,
       // so it must never become one ("[Dubbing]" alone was rendering as
       // `[DUBBING]`) — it only marks the dub.
-      out.dubbed = true;
+      out.dubKind = "DUB";
       return;
     }
     // "EN+FR+ES+DE+JA+KO+ZH+PL", "PL+EN" — a multi-language release enumerates
@@ -1148,7 +1164,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const parts = at.toUpperCase().split("+").map((p) => p.trim()).filter(Boolean);
     if (parts.length > 1 && parts.every((p) => LANG_TAGS.has(p) || LANG_ALIASES[p])) {
       const codes = parts.map((p) => LANG_ALIASES[p] || p);
-      out.dubbed = out.dubbed || codes.some((c) => DUB_MARKERS.has(c));
+      out.dubKind = out.dubKind || (codes.some((c) => DUB_MARKERS.has(c)) ? "DUB" : null);
       out.language = codes.filter((c) => !DUB_MARKERS.has(c)).join("+") || "MULTI";
       return;
     }
