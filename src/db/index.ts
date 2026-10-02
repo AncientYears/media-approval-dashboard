@@ -511,12 +511,30 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
     // entry when nothing can be relocated.
     const processedMoviesDir = PROCESSED_MOVIES;
     const processedTvDir = PROCESSED_TV;
+    // A processed root that is missing or empty means the storage is not mounted
+    // yet (NFS timing at boot), NOT that every file was deleted. Dropping the
+    // dangling entries in that state wiped every processed_files list in one bad
+    // startup, because existsSync() failed for all of them and relocation had
+    // nothing to read. Keep bookkeeping until the root actually holds something;
+    // genuine deletions are still cleaned once the tree is readable.
+    const rootHasVideos = (p: string): boolean => {
+      try {
+        return fs
+          .readdirSync(p, { withFileTypes: true })
+          .some((e) => e.isDirectory() || /\.(mkv|mp4|avi|mov|ts|wmv|m4v)$/i.test(e.name));
+      } catch {
+        return false;
+      }
+    };
+    const moviesRootUsable = rootHasVideos(PROCESSED_MOVIES);
+    const tvRootUsable = rootHasVideos(PROCESSED_TV);
     const ahWithRequest = db.prepare(`
       SELECT ah.id, ah.processed_files, mr.type, mr.id as request_id, mr.library_key, mr.season, mr.title FROM approval_history ah
       JOIN media_requests mr ON mr.id = ah.request_id
       WHERE ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
     `).all() as any[];
     for (const r of ahWithRequest) {
+      if (r.type === "series" ? !tvRootUsable : !moviesRootUsable) continue;
       try {
         const arr = JSON.parse(r.processed_files);
         if (!Array.isArray(arr)) continue;
@@ -791,6 +809,77 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
         console.log(`[DB] Refreshed ${renamed.length} stale media_files.release_name value(s) from disk:`);
         for (const line of renamed) console.log(`[DB]   ${line}`);
       }
+    }
+
+    // Rebuild approval_history.processed_files from the identity layer when a
+    // request's lists are ENTIRELY empty. processed_files is only a path cache;
+    // media_files (dev,inode -> library_key+season) is the source of truth, and
+    // the files are still on disk, so the lists can be regenerated exactly. This
+    // is the recovery path for a startup that ran while /media was unmounted and
+    // let the dangling cleanup above drop every entry. Only fills requests with
+    // NO processed_files anywhere, so it never disturbs good data; idempotent.
+    const movieRels = new Map<string, string[]>();
+    const seriesRels = new Map<string, string[]>();
+    const collectRels = (root: string, into: Map<string, string[]>, series: boolean): void => {
+      const walk = (dir: string): void => {
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const e of entries) {
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) {
+            walk(full);
+            continue;
+          }
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv|m4v)$/i.test(e.name)) continue;
+          const row = identifyByPath(db, full);
+          if (!row || !row.library_key) continue;
+          const rel = path.relative(root, full);
+          if (!rel || rel.startsWith("..")) continue;
+          const key = series ? `${row.library_key}\u0000${row.season ?? 0}` : row.library_key;
+          const list = into.get(key) || [];
+          if (!list.includes(rel)) list.push(rel);
+          into.set(key, list);
+        }
+      };
+      walk(root);
+    };
+    collectRels(PROCESSED_MOVIES, movieRels, false);
+    collectRels(PROCESSED_TV, seriesRels, true);
+    if (movieRels.size > 0 || seriesRels.size > 0) {
+      const reqs = db
+        .prepare("SELECT id, type, library_key, season FROM media_requests WHERE library_key IS NOT NULL AND library_key != ''")
+        .all() as any[];
+      const hasFiles = db.prepare(
+        "SELECT 1 FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]' LIMIT 1",
+      );
+      const findAh = db.prepare(
+        "SELECT id FROM approval_history WHERE request_id = ? AND release_id IS NULL ORDER BY approved_at DESC LIMIT 1",
+      );
+      const insertAh = db.prepare(
+        "INSERT INTO approval_history (request_id, release_id, approved_by, processed_files) VALUES (?, NULL, 'system', ?)",
+      );
+      const updateAh = db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?");
+      let rebuilt = 0;
+      const rebuild = db.transaction(() => {
+        for (const r of reqs) {
+          if (hasFiles.get(r.id)) continue;
+          const rels =
+            r.type === "series"
+              ? seriesRels.get(`${r.library_key}\u0000${r.season ?? 0}`)
+              : movieRels.get(r.library_key);
+          if (!rels || rels.length === 0) continue;
+          const ah = findAh.get(r.id) as any;
+          if (ah) updateAh.run(JSON.stringify(rels), ah.id);
+          else insertAh.run(r.id, JSON.stringify(rels));
+          rebuilt++;
+        }
+      });
+      rebuild();
+      if (rebuilt > 0) console.log(`[DB] Rebuilt processed_files for ${rebuilt} request(s) from disk identity.`);
     }
 
     // Migration: create unmatched_torrents table if not exists
