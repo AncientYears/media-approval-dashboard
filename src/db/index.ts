@@ -728,6 +728,10 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
         WHERE ah.request_id = mr.id
         AND (ah.release_id IS NOT NULL OR (ah.processed_files IS NOT NULL AND ah.processed_files != '[]'))
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM media_files mf
+        WHERE mf.library_key = mr.library_key AND mf.library_key != ''
+      )
     `).all() as any[];
     for (const g of ghostRows) {
       db.prepare("DELETE FROM media_requests WHERE id = ?").run(g.id);
