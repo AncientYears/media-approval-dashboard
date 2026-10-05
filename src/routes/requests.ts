@@ -2354,7 +2354,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         kind: "show",
         currentName: showName,
         proposedName: showCanonical && showCanonical !== showName && ownedShow ? showCanonical : null,
-        note: !namingEnabled ? "Naming disabled in Settings" : ownedShow ? (showCanonical == null ? identityNote : showCanonical === showName ? null : null) : sharedNote,
+        note: !namingEnabled ? "Naming disabled in Settings" : showCanonical === showName ? null : ownedShow ? (showCanonical == null ? identityNote : null) : sharedNote,
       });
       for (const seasonDir of seasons) {
         const seasonName = path.basename(seasonDir);
@@ -2367,7 +2367,12 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
           kind: "season",
           currentName: seasonName,
           proposedName: !namingEnabled || !ownedShow || !canonical || canonical === seasonName ? null : canonical,
-          note: !namingEnabled ? "Naming disabled in Settings" : !ownedShow ? sharedNote : sn == null ? "Could not parse season number" : canonical === seasonName ? null : null,
+          // "Already canonical" is tested BEFORE ownership. A folder that needs no
+          // rename has nothing to refuse, so answering "holds files of another
+          // franchise — fix identities first" about it invites work that cannot change
+          // anything; the frontend renders a null note on an unrenamable row as
+          // "Already canonical", which is the true state.
+          note: !namingEnabled ? "Naming disabled in Settings" : canonical === seasonName ? null : !ownedShow ? sharedNote : sn == null ? "Could not parse season number" : null,
         });
       }
     }
@@ -2384,7 +2389,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         kind: "show",
         currentName: libShowName,
         proposedName: libShowCanonical && libShowCanonical !== libShowName && libOwned ? libShowCanonical : null,
-        note: !namingEnabled ? "Naming disabled in Settings" : libOwned ? (libShowCanonical == null ? identityNote : libShowCanonical === libShowName ? null : null) : sharedNote,
+        note: !namingEnabled ? "Naming disabled in Settings" : libShowCanonical === libShowName ? null : libOwned ? (libShowCanonical == null ? identityNote : null) : sharedNote,
       });
       const wantSeason = request.season ?? (targetSeason ? parseInt(targetSeason.slice(1), 10) : 1);
       const libSeason = findExistingSeasonFolder(libShow, wantSeason) || path.join(libShow, `S${String(wantSeason).padStart(2, "0")}`);
@@ -2399,7 +2404,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
           kind: "season",
           currentName: seasonName,
           proposedName: !namingEnabled || !libOwned || !canonical || canonical === seasonName ? null : canonical,
-          note: !namingEnabled ? "Naming disabled in Settings" : !libOwned ? sharedNote : sn == null ? "Could not parse season number" : canonical === seasonName ? null : null,
+          note: !namingEnabled ? "Naming disabled in Settings" : canonical === seasonName ? null : !libOwned ? sharedNote : sn == null ? "Could not parse season number" : null,
         });
       }
     }
@@ -2415,7 +2420,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         kind: "movie",
         currentName: name,
         proposedName: canonical && canonical !== name && owned ? canonical : null,
-        note: !namingEnabled ? "Naming disabled in Settings" : owned ? (canonical == null ? identityNote : canonical === name ? null : null) : sharedNote,
+        note: !namingEnabled ? "Naming disabled in Settings" : canonical === name ? null : owned ? (canonical == null ? identityNote : null) : sharedNote,
       });
     }
     // Library movie dir(s) — nativeMovieLibraryFolders falls back to the movie
@@ -2440,7 +2445,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         kind: "movie",
         currentName: name,
         proposedName: canonical && canonical !== name && owned ? canonical : null,
-        note: !namingEnabled ? "Naming disabled in Settings" : owned ? (canonical == null ? identityNote : canonical === name ? null : null) : sharedNote,
+        note: !namingEnabled ? "Naming disabled in Settings" : canonical === name ? null : owned ? (canonical == null ? identityNote : null) : sharedNote,
       });
     }
   }
