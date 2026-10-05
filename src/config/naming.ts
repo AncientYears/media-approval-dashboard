@@ -1404,6 +1404,57 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       tryToken(pieces[i], true);
     }
   }
+
+  // A PARENTHESISED run of tags is as real as a bracketed one. Polish releases in
+  // particular wrap the whole encode in parens — "Arriving in Paradise (1080p NF
+  // Webrip x265 10bit EAC3 2.0 - WEM)" — and neither pass could see it: the
+  // bracket pass is squares-only, and the loose tail strips [...] and (...)
+  // alike before splitting. So the source, the provider and the video codec were
+  // all dropped, and the canonical name kept only what ffprobe measured
+  // ("[1080p][EAC3 2.0][HEVC][10bit]", WEB-DL and NF simply gone).
+  //
+  // Parentheses are still NOT read wholesale, because that is why they were
+  // excluded: they also hold disambiguators — "(Inna historia)", "(2019)",
+  // "(2011)", "(1)" — which emitted junk like "[Inna]". So a paren is tokenized
+  // only when it actually states a release tag, and prose, an edition or a bare
+  // year is left alone (editions have their own pass, which does read parens).
+  const PAREN_TAG_RE =
+    /\b\d{3,4}[pi]\b|blu-?ray|remux|web-?dl|web-?rip|hdtv|bd-?rip|dvd-?rip|\bx26[45]\b|h\.?26[45]|\bhevc\b|\bavc\b|\bav1\b|\bvp9\b|\bxvid\b|\bdivx\b|true-?hd|dts-?hd|\bdts\b|e-?ac3|\beac3\b|\bac3\b|\baac\b|\bflac\b|\batmos\b|10-?bit|8-?bit|\bhdr10?\b|\bdv\b/i;
+  for (const m of base.matchAll(/\(([^()]+)\)/g)) {
+    if (!PAREN_TAG_RE.test(m[1])) continue;
+    // Same shape as the square-bracket pass. A paren can carry the release group
+    // the same way a bracket can ("... EAC3 2.0 - WEM)"), and left as an unknown
+    // token it printed a stray "[WEM]" beside the name's other stray bracket.
+    // The group tail is cut from the content before splitting, rather than peeled
+    // out of `base` as the bracket pass does — nothing downstream re-reads the
+    // parens, so there is no second pass to keep consistent.
+    let content = m[1];
+    if (!out.group) {
+      const inner = content.match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})\s*$/);
+      const cand = inner ? inner[1].replace(/-+$/, "") : null;
+      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand)) {
+        out.group = cand;
+        content = content.replace(/-[A-Za-z0-9][A-Za-z0-9-]{1,20}\s*$/, "");
+      }
+    }
+    const phrase = MISC_PHRASES[content.trim().toLowerCase()];
+    if (phrase) {
+      if (!misc.includes(phrase)) misc.push(phrase);
+      continue;
+    }
+    audioMark = out.audio.length;
+    const pieces = content.split(/(?<!\d)\.(?!\d)|\s+/);
+    for (let i = 0; i < pieces.length; i++) {
+      if (!pieces[i].trim()) continue;
+      const pair = MISC_PHRASES[`${pieces[i]} ${pieces[i + 1] || ""}`.trim().toLowerCase()];
+      if (pair) {
+        if (!misc.includes(pair)) misc.push(pair);
+        i++;
+        continue;
+      }
+      tryToken(pieces[i], true);
+    }
+  }
   // Loose dotted/separated release tail. Re-join known multi-word compounds
   // ("WEB" "DL", "BD" "RIP", "BLU" "RAY") so "1080p.WEB-DL.x265" classifies.
   // A protected placeholder keeps channel numbers ("DD+5.1", "7.1") intact so

@@ -1047,6 +1047,34 @@ function nativeSpecialDenominator(db: Database, library_key: string | null | und
   return Math.max(tmdb, covered.size + extras, maxSpecialNumberInS00(db, library_key, baseTitle));
 }
 
+/** Denominator for a native REGULAR season. Same defect as
+ *  nativeSpecialDenominator: a native row's `episode_count` is a file-count
+ *  snapshot taken at library import, not an episode total. Death in Paradise S11
+ *  imported as 9 files because its release numbered the Christmas special
+ *  "S11E00"; moving that file into S00 left a genuine 8, but the denominator
+ *  stayed 9 and the pill read "1 missing 8/9" against TMDB's 8. TMDB is the
+ *  authority for how many episodes a season HAS — the folder only floors it, since
+ *  release numbering legitimately exceeds TMDB (a split or a double episode), and
+ *  the snapshot is the last resort when TMDB has never been reached. */
+function nativeSeasonDenominator(
+  db: Database,
+  library_key: string | null | undefined,
+  season: number,
+  covered: Set<number>,
+  extras: number,
+  snapshot: number | null | undefined,
+): number {
+  let tmdb = 0;
+  if (library_key) {
+    try {
+      const tc = db.prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ?").get(library_key, season) as any;
+      if (tc) tmdb = ((JSON.parse(tc.payload)?.episodes || []) as any[]).length || 0;
+    } catch {}
+  }
+  if (!tmdb) return snapshot || covered.size + extras;
+  return Math.max(tmdb, covered.size + extras);
+}
+
 /** Highest special position attested by video files in the processed S00
  * folder. Null returns from extractEpisodeFromFilename ("S0X" releases) are
  * re-parsed here for their trailing E## — the file still renders as an
@@ -2023,6 +2051,23 @@ function specialTitleFromBareName(base: string): string | null {
 /** Resolve an S00 special's own title/year/imdbId, preferring TMDB and falling
  *  back to the on-disk name. Two sources: the name after the episode code, and
  *  that with a leading show-name prefix stripped. */
+/** True when a special's on-disk title is a generic SLOT marker rather than a
+ *  film title. "Episode 1", "Christmas Special 2022", "Pilot" name a position in
+ *  the show, not a film — and searching TMDB's movie catalogue with one matched
+ *  Death in Paradise's S11E00 to an unrelated 2003 film, injecting its year (and
+ *  potentially an `[imdbid-tt…]`) into the canonical name. Such a title can only
+ *  be resolved against the show's own data, never the film catalogue, so it is
+ *  kept as the on-disk title. A real film in S00 ("Niezwykła podróż") matches none
+ *  of these and is still looked up. */
+function isGenericSpecialSlot(title: string): boolean {
+  const t = title.trim().toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!t) return true;
+  if (/^(episode|ep|special|odcinek|pilot|final|part|volume|vol|chapter|bonus|feature|extra)s? ?\d*$/.test(t)) return true;
+  // "special 2022", "episode one", "the pilot" — a slot word plus little else.
+  if (/(^| )(episode|special|pilot|odcinek)\b/.test(t) && t.split(" ").length <= 4) return true;
+  return false;
+}
+
 async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null, episode?: number | null): Promise<{ title: string; year: number | null; imdbId: string | null; onTmdb: boolean } | null> {
   const rest = episodeTitleFromSourceName(sourceBase);
   const stripped = specialTitleFromSourceName(sourceBase, request, showPieces?.title);
@@ -2043,6 +2088,8 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
   const searchLang = lang || "pl-PL";
   for (const candidate of [stripped, rest, bare]) {
     if (!candidate) continue;
+    // A slot marker is not a film title, so it must not reach the film catalogue.
+    if (isGenericSpecialSlot(candidate)) continue;
     try {
       const id = await resolveSpecialIdentity(candidate, searchLang);
       if (id) return { title: id.title, year: id.year, imdbId: id.imdbId, onTmdb: true };
@@ -3669,9 +3716,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             release_count: s.release_count,
             title: s.title,
             // Specials rows imported from a loose-root library miscast their
-            // episode_count as a file snapshot; the real denominator is TMDB's
-            // named specials plus anything physically in the S00 folder.
-            episode_count: sonarrId == null && s.season === 0 ? nativeSpecialDenominator(db, libraryKey, franchiseTitle, coveredEps, extras) : s.episode_count,
+            // episode_count as a file snapshot; so does a regular season that
+            // imported a numbered special ("S11E00"). The real denominator is
+            // TMDB's count for the season, floored by what the folder holds.
+            episode_count:
+              sonarrId == null
+                ? s.season === 0
+                  ? nativeSpecialDenominator(db, libraryKey, franchiseTitle, coveredEps, extras)
+                  : nativeSeasonDenominator(db, libraryKey, s.season, coveredEps, extras, s.episode_count)
+                : s.episode_count,
             covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
             extras,
           };
@@ -7121,7 +7174,12 @@ let episodes: any[];
           request_id: s.id,
           status: s.status,
           title: s.title,
-          episode_count: s.season === 0 ? nativeSpecialDenominator(db, s.library_key, baseTitle, covered, extras) : s.episode_count,
+          episode_count:
+            s.season === 0
+              ? nativeSpecialDenominator(db, s.library_key, baseTitle, covered, extras)
+              : s.sonarr_id == null
+                ? nativeSeasonDenominator(db, s.library_key, s.season ?? 0, covered, extras, s.episode_count)
+                : s.episode_count,
           covered_episodes: Array.from(covered).sort((a, b) => a - b),
           extras,
           file_count: fileCount,
