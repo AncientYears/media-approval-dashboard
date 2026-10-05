@@ -1248,6 +1248,8 @@ SEERR_API_KEY=
 - [ ] A **detached** `Atmos` rides a probed E-AC3 carrier: `2160p.NF.WEB-DL.DDP5.1.Atmos` renders `[EAC3 Atmos 5.1]`, not `[EAC3 5.1][Atmos]` — the dotted tail gives each loose token its own group, so `Atmos` cannot reach its own carrier in-token
 - [ ] A streaming provider renders INSIDE the source bracket (`[WEBDL-2160p NF]`, `[WEBRip-1080p HMAX]`), not as a standalone `[NF]`, and round-trips
 - [ ] A provider is matched case-sensitively (`nf` is title text, not a provider) and only `truehd`/`eac3` may claim a detached Atmos
+- [ ] An on-disk episode title is cut at a **dotted** resolution too, not just a spaced one: `Death.in.Paradise.S11E00.Episode.1.1080p.AMZN.WEB-DL` yields `Episode 1`, never `Episode.1.1080p.AMZN.WEB-DL.DDP2.0.H.264` — dots/underscores in the remainder are then normalized to spaces so it agrees with a cached TMDB title
+- [ ] A season that owns no processed file of its own (S00 whose specials live only in the library) still lists the franchise's **processed** show folder — the processed side is found via same-`library_key` siblings, since the library side is resolved independently and used to show `LIB DIR` alone
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
 - [ ] Fix Names refuses the WHOLE batch when a target directory is not writable, naming the dir and both uids — and a mixed batch never half-applies
 - [ ] A fully failed Fix Names batch says so: journal ends with `0 renamed … N FAILED`, and N identical EACCES rows collapse to one `N× …` headline (even when a name carries an apostrophe) instead of looking like a no-op

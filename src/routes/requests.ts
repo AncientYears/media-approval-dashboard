@@ -1955,14 +1955,34 @@ function episodeTitleFromSourceName(base: string): string | null {
   const m = base.match(/(?<![A-Za-z0-9])[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
   if (!m) return null;
   let rest = m[1];
-  // Cut the release tail: first bracket group, or a trailing tag word run. A
-  // leading bracket means the name went straight from the code to tags ("- S03E01
-  // [Dual Audio]") — there is no title to keep.
+  // Cut the release tail at whichever comes first: the first bracket group, or the
+  // run of tags starting at the resolution. The resolution is matched after a DOT
+  // as well as a space — a dotted release name is the common form
+  // ("...S11E01.Episode.1.1080p.AMZN.WEB-DL") and the space-only pattern never
+  // fired on one, so the whole tag run survived as the "title" and the canonical
+  // name read "S11E00 - Episode.1.1080p.AMZN.WEB-DL.DDP2.0.H.264-WADU". Matching
+  // the EARLIER of the two also keeps a bracketed title ahead of a later
+  // resolution from truncating it.
   const bracket = rest.search(/[[({]/);
-  if (bracket === 0) return null;
-  if (bracket > 0) rest = rest.slice(0, bracket);
-  else rest = rest.replace(/\s+[\w.]*\d{3,4}p\b.*$/i, "").replace(/\s+-\s*[A-Za-z0-9]{2,12}$/, "");
+  const res = rest.search(/[\s._-][\w]*\d{3,4}[pi]\b/i);
+  if (bracket >= 0 && (res < 0 || bracket <= res)) {
+    // A leading bracket means the name went straight from the code to tags
+    // ("- S03E01 [Dual Audio]") — there is no title to keep.
+    if (bracket === 0) return null;
+    rest = rest.slice(0, bracket);
+  } else if (res === 0) {
+    return null;
+  } else if (res > 0) {
+    rest = rest.slice(0, res);
+  } else {
+    // Neither marker: still drop a trailing tag word run, as before.
+    rest = rest.replace(/\s+-\s*[A-Za-z0-9]{2,12}$/, "");
+  }
   rest = rest.replace(/[[({]\s*$/, "").replace(/\s*[\])}]\s*$/, "").trim().replace(/[-_]+$/, "").trim();
+  // Dots and underscores are how a release delimits words; a real title has
+  // spaces. Normalizing here also lets the cached TMDB title agree with it, so
+  // the packed-episode trailing check and the tail-shift search match on words.
+  rest = rest.replace(/[._]+/g, " ").replace(/\s+/g, " ").trim();
   if (!rest || rest.length > 90) return null;
   // A leftover tag run ("1080p WEB-DL") is not a title.
   if (/^\[.*\]$/.test(rest) || /^\d{3,4}[pi]$/i.test(rest)) return null;
@@ -2240,6 +2260,27 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
       }
     }
   } catch {}
+
+  // The processed show folder is a FRANCHISE-level folder, but the scan above only
+  // reaches it through a file this request owns. A season with nothing of its own
+  // on disk — S00 whose specials live only in the library, or an empty grip —
+  // therefore saw no processed folder at all, while the library side (resolved
+  // independently by resolveLibraryShowFolder) still listed one: the modal showed
+  // "LIB DIR" alone and the non-canonical processed name was invisible from that
+  // season. Fall back to the sibling seasons of the same library_key, which share
+  // one show folder — folderOwnedExclusively already treats same-key files as
+  // owned, so this proposes exactly the folder the franchise owns. Added with an
+  // EMPTY season set on purpose: the siblings' season dirs are renamed from their
+  // own modal, not from this one.
+  if (type === "series" && showSeasons.size === 0 && request.library_key) {
+    try {
+      const sibs = db
+        .prepare("SELECT id FROM media_requests WHERE library_key = ? AND id != ?")
+        .all(request.library_key, request.id) as any[];
+      const sibShow = sibs.length ? processedShowDirFromFiles(db, sibs.map((s) => s.id)) : null;
+      if (sibShow && fs.existsSync(sibShow)) showSeasons.set(sibShow, new Set());
+    } catch {}
+  }
 
   // Probe all involved files once per dev:ino (parallel, cached).
   const probePaths = accepted.map((a) => a.fullPath).concat([...libraryByIno.values()]);
@@ -6168,7 +6209,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                   for (const existing of fs.readdirSync(processedMoviesDir)) {
                     try {
                       if (fs.statSync(path.join(processedMoviesDir, existing)).ino === extraIno) {
-                        alreadyExtra = true;
+alreadyExtra = true;
                         break;
                       }
                     } catch {}
