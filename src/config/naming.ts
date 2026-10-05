@@ -1079,6 +1079,24 @@ function isLanguageishWord(word: string): boolean {
   return !!LANG_ALIASES[up] || DUB_WORDS.has(up) || DUB_MARKERS.has(up) || LANG_TAGS.has(up);
 }
 
+/** An episode or season code is never a release group — it is a position, and
+ *  this app writes it into the name it then has to re-read.
+ *
+ *  The canonical special template puts a SPACED dash before the marker
+ *  ("Krecik i balonik - S00E01 [tags]"), and all three group rules accept
+ *  `-\s*`, so `S00E01` was claimed as the group and re-rendered at the tail as
+ *  `-S00E01` after the tags. The rename then never converged: the file was
+ *  already correct on disk and every pass proposed to change it again. A bare
+ *  season code is the same shape from a season pack ("Show - S01 [1080p]").
+ *
+ *  A release group is a name someone chose, and no one picks "S01E01", so the
+ *  exclusion costs nothing real. Anchored on purpose — "S0X" inside a longer
+ *  handle is not a code. The `S0xE03` spelling is included because
+ *  parseEpisodeCode reads it as a real season-0 marker. */
+function isEpisodeCodeWord(word: string): boolean {
+  return /^s\d{1,2}e\d{1,3}$/i.test(word) || /^s0xe\d{1,3}$/i.test(word) || /^s\d{1,2}$/i.test(word);
+}
+
 /** A trailing release group, tolerating the bracket run that may close over it.
  *
  *  Polish rips put the group LAST inside the tag run and then close the bracket,
@@ -1244,13 +1262,13 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // would never converge - the same failure mode as the vendor tail. The last
   // hyphen is the separator; everything before it is the group.
   const grp = langWord ? null : matchGroupTail(base);
-  if (grp && !looksLikeCodec(grp.word) && !EDITION_SINGLE.has(grp.word.toLowerCase()) && !isPlaceholderWord(grp.word) && !isLanguageishWord(grp.word)) {
+  if (grp && !looksLikeCodec(grp.word) && !EDITION_SINGLE.has(grp.word.toLowerCase()) && !isPlaceholderWord(grp.word) && !isLanguageishWord(grp.word) && !isEpisodeCodeWord(grp.word)) {
     out.group = grp.word;
     base = (base.slice(0, grp.start).replace(/[-.\s]+$/g, "") + base.slice(grp.end)).trim();
   } else if (langWord) {
     const trimmed = base.slice(0, langWord.index).replace(/[-.\s]+$/g, "");
     const retry = matchGroupTail(trimmed);
-    if (retry && !looksLikeCodec(retry.word) && !EDITION_SINGLE.has(retry.word.toLowerCase()) && !isPlaceholderWord(retry.word) && !isLanguageishWord(retry.word)) {
+    if (retry && !looksLikeCodec(retry.word) && !EDITION_SINGLE.has(retry.word.toLowerCase()) && !isPlaceholderWord(retry.word) && !isLanguageishWord(retry.word) && !isEpisodeCodeWord(retry.word)) {
       out.group = retry.word;
       // Same precedence as the bracket path above: a dub marker names the audio
       // SOURCE, not a language, and must be caught before the LANG_TAGS check —
@@ -1464,7 +1482,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       // "[imdbid-tt13622970]" is not a group: a bare IMDb id is our own id tag,
       // and the widened class above would otherwise read it as one.
       if (cand && /^tt\d{6,9}$/i.test(cand)) continue;
-      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand) && !isLanguageishWord(cand)) {
+      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand) && !isLanguageishWord(cand) && !isEpisodeCodeWord(cand)) {
         out.group = cand;
         // Peel it out of the bracket so the tokenizer does not ALSO read it as
         // an unknown tag, which would print a second [AS76] bracket. The group
@@ -1543,7 +1561,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
             // two rules for one job that disagreed about the same name.
             const inner = content.match(/-\s*([A-Za-z0-9][A-Za-z0-9-]{1,20})\s*$/);
             const cand = inner ? inner[1].replace(/-+$/, "") : null;
-            if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand) && !isLanguageishWord(cand)) {
+            if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand) && !isLanguageishWord(cand) && !isEpisodeCodeWord(cand)) {
               out.group = cand;
               content = content.replace(/-\s*[A-Za-z0-9][A-Za-z0-9-]{1,20}\s*$/, "");
             }
