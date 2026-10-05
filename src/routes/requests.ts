@@ -15,7 +15,7 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename } from "../services/identity";
+import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts } from "../services/identity";
 import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
@@ -1647,7 +1647,9 @@ function libraryFolderContradicts(db: Database, request: any, libraryPath: strin
  *  never admit one. */
 function nameContradictsRequest(db: Database, request: any, base: string): boolean {
   const mine = nameImdbId(base);
-  if (mine) {
+  // Scoped by role: an unnumbered special may legitimately carry another film's
+  // id, so only a movie or a NUMBERED episode treats it as a contradiction.
+  if (mine && embeddedIdContradicts(request?.type === "series", base)) {
     const theirs = requestImdbId(db, request);
     if (theirs) return mine !== theirs;
     const owner = imdbIdOwnerKey(db, mine);
@@ -2655,8 +2657,16 @@ function folderOwnedExclusively(db: Database, folder: string, libraryKey: string
     // outranks the folder's year: a folder can be mis-filed, a name minted by this
     // app cannot name the wrong film. Checked before the year-trust below, which
     // otherwise re-registers an id-bearing file into the folder's year.
+    //
+    // Role-scoped, though: an unnumbered SPECIAL is expected to carry another
+    // film's id (a show's S00 holds films and crossovers), so holding this veto
+    // for one bonus feature refused the entire show folder - and since a season
+    // row inherits the show folder's verdict, it blocked every Season N rename
+    // too. A numbered episode still refuses it, so a foreign show's episodes
+    // cannot ride in. `libraryKey` carries the type, so no signature change.
     const named = nameImdbId(path.basename(f));
-    if (ownImdbId && named && named !== ownImdbId) return false;
+    const isSeries = libraryKey.startsWith("series:");
+    if (ownImdbId && named && named !== ownImdbId && embeddedIdContradicts(isSeries, path.basename(f))) return false;
     if (ownImdbId && named === ownIMDbLower(ownImdbId)) namedOwnId = true;
     try {
       const ident = identifyByPath(db, f);

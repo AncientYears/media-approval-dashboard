@@ -2,7 +2,7 @@
 import path from "path";
 import fs from "fs";
 import { fromQBittorrentPath, PROCESSED_MOVIES, PROCESSED_TV, MEDIA_MOVIES, MEDIA_TV } from "../config/paths";
-import { identifyByPath, deriveIdentityFromFilename, registerVideoTree } from "../services/identity";
+import { identifyByPath, deriveIdentityFromFilename, registerVideoTree, embeddedIdContradicts } from "../services/identity";
 
 export interface DBInstance {
   db: Database.Database;
@@ -93,7 +93,9 @@ function processedFileContradicts(
   storedName: string,
 ): boolean {
   const mine = nameImdbId(storedName);
-  if (mine) {
+  // Same role-scoped rule as the read-time veto in requests.ts (nameContradictsRequest):
+  // an unnumbered special may carry another film's id legitimately.
+  if (mine && embeddedIdContradicts(req.type === "series", storedName)) {
     const theirs = requestImdbId(db, req);
     if (theirs) return mine !== theirs;
     const owner = imdbIdOwnerKey(db, mine);

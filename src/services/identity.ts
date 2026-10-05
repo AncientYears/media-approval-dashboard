@@ -52,8 +52,30 @@ export function deriveIdentityFromFilename(fileBase: string): { role: FileRole; 
   return { role: "extra", episodeNumbers: [] };
 }
 
+/** Whether a file embedding a DIFFERENT IMDb id than the owner genuinely
+ *  contradicts that owner.
+ *
+ *  It does for a MOVIE (a movie folder holds exactly one film) and for a
+ *  NUMBERED episode (S01E01 belongs to exactly one show - that is the DuckTales
+ *  1987/2017 and Mufasa/Lion King protection, and it stays).
+ *
+ *  It does NOT for an UNNUMBERED special. A show's S00 legitimately holds films,
+ *  shorts and crossovers, so a special carrying its own id is the expected shape
+ *  rather than a misfile. DuckTales' S00 holds a bonus feature carrying
+ *  `[imdbid-tt0099472]`; vetoing that refused the whole show folder, and because
+ *  a season row inherits the show folder's verdict, one bonus film then blocked
+ *  every `Season N -> SN` rename in the show.
+ *
+ *  Derived from the NAME rather than the stored role because this runs exactly
+ *  when identity is in doubt - a registered row is what is being second-guessed.
+ */
+export function embeddedIdContradicts(isSeries: boolean, fileBase: string): boolean {
+  if (!isSeries) return true;
+  return deriveIdentityFromFilename(fileBase).role === "numbered";
+}
+
 /** Upsert the identity of one file. Best effort: never throws, never blocks a
- * caller on a stat/DB failure. Skip registration for directories. */
+ *  caller on a stat/DB failure. Skip registration for directories. */
 export function registerFileIdentity(db: Database, absPath: string, identity: FileIdentity): MediaFileRow | null {
   try {
     const st = fs.statSync(absPath);

@@ -341,6 +341,24 @@ fuzzy signal:
   row is worse than no row, and the name/id fallback owns the file until TMDB can
   attribute it. Files are never touched on disk — only bookkeeping.
   `idx_tmdb_external_ids_imdb` backs the id→owner lookups.
+- **The id veto is role-scoped — an UNNUMBERED SPECIAL may carry another film's
+  id** (`embeddedIdContradicts` in `identity.ts`, applied at all three sites:
+  `nameContradictsRequest`, `processedFileContradicts`, and
+  `folderOwnedExclusively`). A differing embedded id is a real contradiction for
+  a **movie** (one film per folder) and for a **numbered episode** (`S01E01`
+  belongs to exactly one show — the DuckTales 1987/2017 and Mufasa/Lion King
+  protection, and it is untouched). It is *not* one for a **special**: a show's
+  `S00` legitimately holds films, shorts and crossovers, so a bonus feature
+  carrying `[imdbid-tt0099472]` is the expected shape, not a misfile. DuckTales'
+  `S00` holds exactly that, and the flat veto refused the **whole show folder**
+  over it — then, because a season row inherits the show folder's verdict
+  (`libOwned`, `requests.ts:2377` → `:2407`), one bonus feature blocked every
+  `Season N → SN` rename in the show at once. Role comes from the NAME
+  (`deriveIdentityFromFilename`), not the stored row, because the veto runs
+  precisely when identity is what is in doubt. Cost accepted knowingly: a foreign
+  film accidentally dropped into any series' `S00` is now adopted as a special
+  rather than flagged. It is still named by its *own* identity, so it does not
+  claim to be an episode of the show.
 - **Known limit**: the flat `PROCESSED_MOVIES` layout is the root cause — every
   movie in one directory, so correctness depends on these signals rather than on
   the filesystem. Per-movie subfolders (`filmy/<Title> (Year) [imdbid-tt…]/`)
