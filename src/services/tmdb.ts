@@ -552,12 +552,21 @@ export function episodeAirDateFromCache(
   }
 }
 
+/** An episode named for its SLOT rather than its content ("Episode 1"). This is
+ *  what a provider ships when an episode has no real name, and for some seasons
+ *  it genuinely IS the title — Death in Paradise S14/S15 are "Episode 1".."8" on
+ *  Disney+ and on TMDB. So it is real evidence, not junk, and naming accepts it
+ *  as a last resort (see `episodeTitleFor`). Callers that COMPARE two titles
+ *  must not, or every placeholder would read as the same episode. */
+const SLOT_TITLE = /^(Episode|Odcinek|Folge|Épisode|Episodio|Episódio)\s+\d+$/i;
+
 export function episodeTitleFromCache(
   db: Database,
   libraryKey: string,
   season: number,
   episode: number,
   language?: string | null,
+  opts?: { allowPlaceholder?: boolean },
 ): string | null {
   const lang = language || process.env.TMDB_LANGUAGE || "en-US";
   try {
@@ -568,7 +577,8 @@ export function episodeTitleFromCache(
     const meta = JSON.parse(row.payload) as SeasonMeta;
     const ep = meta.episodes?.find((e) => e.episode_number === episode);
     const name = ep?.name?.trim();
-    if (!name || /^(Episode|Odcinek|Folge|Épisode|Episodio|Episódio)\s+\d+$/i.test(name)) return null;
+    if (!name) return null;
+    if (SLOT_TITLE.test(name) && !opts?.allowPlaceholder) return null;
     return name;
   } catch {
     return null;

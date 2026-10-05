@@ -1291,6 +1291,20 @@ SEERR_API_KEY=
   real episode title never *begins* with one, whereas the resolution search is a substring
   match and so must keep its separator in front. `tidyTemplate` then drops the template's
   now-dangling ` - `, yielding `Death in Paradise - S14E01 [WEBDL-1080p][AAC 2.0][x264]-RAWR`.
+- **TMDB's SLOT title is real evidence, and naming is the one caller that may use it.**
+  `episodeTitleFromCache` rejected any name matching `^(Episode|Odcinek|Folge|…)\s+\d+$`, which
+  exists so callers that **compare** two titles are not handed eight identical ones. But some
+  providers genuinely ship seasons with no episode names at all — Disney+ titles Death in
+  Paradise S14/S15 "Episode 1".."Episode 8", and TMDB mirrors that — so the only title in
+  existence was being discarded, and a release naming no episode of its own came out with no
+  title while the title on screen went unused. The filter now lives in `SLOT_TITLE` and is
+  bypassed via `allowPlaceholder`, and `episodeTitleFor`'s precedence is
+  **real TMDB title → the release's own name → TMDB's slot title**. A real name from the
+  release still outranks the slot title, so a release that DOES name its episode keeps its own
+  wording; only when nothing else exists does the slot title win, over printing nothing.
+  Deliberately NOT relaxed in `resolveEpisodeSpan`, whose whole job is comparing titles to
+  find a packed or shifted episode — placeholder matches there would manufacture exactly the
+  false agreement that guard exists to prevent.
 - [ ] An S00 special whose title is a generic slot marker (`Episode 1`, `Christmas Special 2022`, `Pilot`) is NOT looked up in TMDB's film catalogue — that matched Death in Paradise's S11E00 to an unrelated 2003 film and printed its year. A real film in S00 is still resolved (`isGenericSpecialSlot`)
 - [ ] An UNNUMBERED special is numbered from TMDB's S00 **air dates** (`findSpecialByAirDate`), because no provider files these in season 0: they number them `E0` of the season they lead into, so `S12E00` = "Christmas Special 2022" (aired 25 Dec 2022, S12 began 3 Feb 2023)
 - [ ] The air-date window for `SxxE00` is bounded by seasons **xx-1 and xx**, never xx and xx+1 — these specials air in the Christmas gap at the END of the previous season's run. Getting the direction wrong made `S11E00` and `S12E00` resolve to the SAME special, which would have collapsed two files onto one name
@@ -1302,6 +1316,8 @@ SEERR_API_KEY=
 - [ ] All of the above round-trip: re-parsing a canonical name yields the identical string, so a second Fix Names pass has nothing to do
 - [ ] A release that names NO episode (`S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR`) gets no episode title — the tag run is not printed twice, as prose and as tags
 - [ ] The same shape with no resolution (`S14E01.WEB-DL.AAC2.0.H.264-GRP`) is also titleless, while a real title that merely CONTAINS a resolution is still cut at it (`Episode.1.1080p.AMZN...` → `Episode 1`)
+- [ ] A release naming no episode still takes TMDB's SLOT title as a last resort (`S14E01.1080p.iP...` → `- Episode 1`), but a release naming its own keeps its own wording over it, a season of real TMDB titles is unchanged, and a season with no cache row still gets nothing
+- [ ] `resolveEpisodeSpan` still REJECTS slot titles — eight identical names would otherwise agree with each other and manufacture a packed-episode match
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
 - [ ] Fix Names refuses the WHOLE batch when a target directory is not writable, naming the dir and both uids — and a mixed batch never half-applies
 - [ ] A fully failed Fix Names batch says so: journal ends with `0 renamed … N FAILED`, and N identical EACCES rows collapse to one `N× …` headline (even when a name carries an apostrophe) instead of looking like a no-op

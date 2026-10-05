@@ -1932,22 +1932,36 @@ function resolveEpisodeSpan(
  *  are joined the way scene releases already write them ("S01E01-02 Kolejka - Fretka
  *  traci głowę"). `ep` must already be resolved by resolveEpisodeSpan, which owns
  *  every correction to the numbering. */
-function episodeTitleFor(db: Database, request: any, base: string, ep: { season: number; episode: number; episodeEnd?: number }): string | null {
+export function episodeTitleFor(db: Database, request: any, base: string, ep: { season: number; episode: number; episodeEnd?: number }): string | null {
   const key = request.library_key;
   const lang = key ? franchiseLanguage(db, key) : null;
-  const own = episodeTitleFromSourceName(base);
-  if (!key) return own;
-  if (ep.episodeEnd && ep.episodeEnd > ep.episode) {
-    const parts: string[] = [];
-    for (let n = ep.episode; n <= ep.episodeEnd; n++) {
-      const t = episodeTitleFromCache(db, key, ep.season, n, lang);
-      if (!t) return own;
-      parts.push(t);
+      const own = episodeTitleFromSourceName(base);
+      if (!key) return own;
+      const at = (n: number, allowPlaceholder = false) =>
+        episodeTitleFromCache(db, key, ep.season, n, lang, { allowPlaceholder });
+      if (ep.episodeEnd && ep.episodeEnd > ep.episode) {
+        const parts: string[] = [];
+        let anyPlaceholder = false;
+        for (let n = ep.episode; n <= ep.episodeEnd; n++) {
+          const real = at(n);
+          if (real) { parts.push(real); continue; }
+          const slot = at(n, true);
+          if (!slot) return own;
+          parts.push(slot);
+          anyPlaceholder = true;
+        }
+        if (!anyPlaceholder) return parts.join(" - ");
+        return own || parts.join(" - ");
+      }
+      // Precedence: a REAL TMDB title, then the release's own name, then TMDB's
+      // slot title. The last step is new and is the whole point — TMDB titles some
+      // seasons "Episode 1".."Episode 8" (Disney+ does), and episodeTitleFromCache
+      // rejects those by default, so a release naming no episode of its own came
+      // out with no title at all while the very title on screen went unused. A real
+      // name from the release still outranks it, so a release that DOES name its
+      // episode keeps its own wording.
+      return at(ep.episode) || own || at(ep.episode, true);
     }
-    return parts.join(" - ");
-  }
-  return (key ? episodeTitleFromCache(db, key, ep.season, ep.episode, lang) : null) || own;
-}
 
 /** Lowercased, apostrophes deleted, everything else collapsed to single spaces.
  *  Apostrophes are DELETED rather than swept to a space: they are the only
