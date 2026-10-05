@@ -1025,6 +1025,43 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** A language or dub word is real evidence about the audio, never a release
+ *  group. The anchored group rule never met one (a trailing "- Polish" was
+ *  peeled by `trailingLanguageWord` first), but it CAN now: a word that ends a
+ *  paren is reachable, so "(Dual Audio - Polish)" would otherwise promote
+ *  "Polish" to a group. */
+function isLanguageishWord(word: string): boolean {
+  const up = word.trim().toUpperCase();
+  return !!LANG_ALIASES[up] || DUB_WORDS.has(up) || DUB_MARKERS.has(up) || LANG_TAGS.has(up);
+}
+
+/** A trailing release group, tolerating the bracket run that may close over it.
+ *
+ *  Polish rips put the group LAST inside the tag run and then close the bracket,
+ *  sometimes with a vendor after it:
+ *    "… (1080p NF Webrip x265 10bit EAC3 2.0 - WEM)[TAoE]"
+ *  The old rule anchored at end-of-string, so that trailing run hid the group
+ *  completely and the word fell through to the tokenizer as a stray "[WEM]" —
+ *  which is not the same thing at all, and a rename could not converge.
+ *
+ *  The closer must follow the group DIRECTLY, with no space. That is the whole
+ *  constraint: a tag run after a space is a separate group that the word is not
+ *  inside, so "… - Title (1080p)" still does not promote "Title" to a group. */
+const GROUP_TAIL = /-\s*([A-Za-z0-9][A-Za-z0-9-]{1,20})(?:\s*\)|\s*)(?:\[[^\]]*\])*$/;
+
+/** The group word, and where the WORD starts and ends — the caller excises
+ *  exactly `- WORD` and keeps whatever followed it. That is not bookkeeping: a
+ *  closer and a vendor bracket sit AFTER the group ("- WEM)[TAoE]"), so slicing
+ *  to the end of the match deleted the vendor before it could ever be read, and
+ *  the whole watermark vanished from the name instead of rendering. */
+function matchGroupTail(s: string): { word: string; start: number; end: number } | null {
+  const m = s.match(GROUP_TAIL);
+  if (!m || m.index === undefined) return null;
+  const start = m.index + m[0].indexOf(m[1]);
+  const word = m[1].replace(/-+$/, "");
+  return word ? { word, start, end: start + m[1].length } : null;
+}
+
 /** Fill the release facts a name cannot prove from a same-inode sibling's name.
  *
  *  A processed file and its library hardlink are the SAME bytes under two names,
@@ -1126,7 +1163,16 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   const vHit = vRe ? base.match(vRe) : null;
   if (vHit && vHit.index !== undefined) {
     out.vendor = vHit[2];
-    base = (base.slice(0, vHit.index) + base.slice(vHit.index + vHit[0].length)).replace(/[-.\s]+$/g, "").replace(/\s{2,}/g, " ").trim();
+    // The match is the boundary char plus the name, so a BRACKETED vendor loses
+    // only the name and leaves its own bracket behind ("…-WEM)[TAoE]" -> "…)"). A
+    // stray "]" is not cosmetic: it is not a word, so no later tail rule can see
+    // past it, and the release group hiding in front of it was dropped entirely —
+    // while the vendor rendered fine, which is why it looked like a group bug.
+    // Take the wrapping brackets with it, wherever they sit.
+    const before = base.slice(0, vHit.index);
+    const after = base.slice(vHit.index + vHit[0].length);
+    const wrapped = before.endsWith("[") && after.startsWith("]");
+    base = (wrapped ? before.slice(0, -1) + after.slice(1) : before + after).replace(/[-.\s]+$/g, "").replace(/\s{2,}/g, " ").trim();
   }
 
   // A trailing "-Group" is a release group whether or not it is ALLCAPS: real
@@ -1153,17 +1199,15 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // the group "FT", so every later pass would shorten it again and the rename
   // would never converge - the same failure mode as the vendor tail. The last
   // hyphen is the separator; everything before it is the group.
-  const grp = langWord ? null : base.match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
-  if (grp) grp[1] = grp[1].replace(/-+$/, "");
-  if (grp && grp[1] && !looksLikeCodec(grp[1]) && !EDITION_SINGLE.has(grp[1].toLowerCase()) && !isPlaceholderWord(grp[1])) {
-    out.group = grp[1];
-    base = base.slice(0, grp.index).replace(/[-.\s]+$/g, "");
+  const grp = langWord ? null : matchGroupTail(base);
+  if (grp && !looksLikeCodec(grp.word) && !EDITION_SINGLE.has(grp.word.toLowerCase()) && !isPlaceholderWord(grp.word) && !isLanguageishWord(grp.word)) {
+    out.group = grp.word;
+    base = (base.slice(0, grp.start).replace(/[-.\s]+$/g, "") + base.slice(grp.end)).trim();
   } else if (langWord) {
     const trimmed = base.slice(0, langWord.index).replace(/[-.\s]+$/g, "");
-    const retry = trimmed.match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
-    if (retry) retry[1] = retry[1].replace(/-+$/, "");
-    if (retry && retry[1] && !looksLikeCodec(retry[1]) && !EDITION_SINGLE.has(retry[1].toLowerCase()) && !isPlaceholderWord(retry[1])) {
-      out.group = retry[1];
+    const retry = matchGroupTail(trimmed);
+    if (retry && !looksLikeCodec(retry.word) && !EDITION_SINGLE.has(retry.word.toLowerCase()) && !isPlaceholderWord(retry.word) && !isLanguageishWord(retry.word)) {
+      out.group = retry.word;
       // Same precedence as the bracket path above: a dub marker names the audio
       // SOURCE, not a language, and must be caught before the LANG_TAGS check —
       // DUB/DUBBED/DUBBING are members of LANG_TAGS, so testing tags first turned
@@ -1181,7 +1225,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       } else if (LANG_TAGS.has(up)) {
         out.language = up;
       }
-      base = trimmed.slice(0, retry.index).replace(/[-.\s]+$/g, "");
+      base = (trimmed.slice(0, retry.start).replace(/[-.\s]+$/g, "") + trimmed.slice(retry.end)).trim();
     }
   }
 
@@ -1360,18 +1404,26 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       // hyphenated ("H265.AC3-AS76-FT") - there the LAST hyphen is the separator
       // and everything before it is the group, so allow internal hyphens. The
       // class stays strict so a trailing year or a resolution cannot qualify.
-      const inner = m[1].match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
+      const inner = m[1].match(/-\s*([A-Za-z0-9][A-Za-z0-9-]{1,20})$/);
       const cand = inner ? inner[1].replace(/-+$/, "") : null;
       // "[imdbid-tt13622970]" is not a group: a bare IMDb id is our own id tag,
       // and the widened class above would otherwise read it as one.
       if (cand && /^tt\d{6,9}$/i.test(cand)) continue;
-      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand)) {
+      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand) && !isLanguageishWord(cand)) {
         out.group = cand;
         // Peel it out of the bracket so the tokenizer does not ALSO read it as
-        // an unknown tag, which would print a second [AS76] bracket.
-        const stripped = m[0].replace(/-[A-Za-z0-9][A-Za-z0-9-]{1,20}$/, "");
+        // an unknown tag, which would print a second [AS76] bracket. The group
+        // sits before the closing bracket, so the "]" is kept rather than
+        // consumed — dropping it would leave the bracket pass nothing to close.
+        const stripped = m[0].replace(/-\s*[A-Za-z0-9][A-Za-z0-9-]{1,20}(\])?$/, "$1");
         base = base.slice(0, m.index) + stripped + base.slice(m.index + m[0].length);
         m[0] = stripped;
+        // The tokenizer below reads m[1], the bracket's ORIGINAL content, so
+        // fixing m[0] alone left the group in place and it was tokenised as an
+        // unknown word — printing "[WEM]" right beside the "-WEM" it had just
+        // claimed. A hyphenated group hid this ("AC3-AS76-FT" is consumed as an
+        // audio codec), which is why only the spaced form showed it.
+        m[1] = m[1].replace(/-\s*[A-Za-z0-9][A-Za-z0-9-]{1,20}\s*$/, "");
       }
     }
     // Split multi-word bracket tags ("[DV HDR10Plus]", "[TrueHD Atmos 7.1]",
@@ -1429,14 +1481,18 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     // out of `base` as the bracket pass does — nothing downstream re-reads the
     // parens, so there is no second pass to keep consistent.
     let content = m[1];
-    if (!out.group) {
-      const inner = content.match(/-([A-Za-z0-9][A-Za-z0-9-]{1,20})\s*$/);
-      const cand = inner ? inner[1].replace(/-+$/, "") : null;
-      if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand)) {
-        out.group = cand;
-        content = content.replace(/-[A-Za-z0-9][A-Za-z0-9-]{1,20}\s*$/, "");
-      }
-    }
+          if (!out.group) {
+            // `-\s*` and the language guard, both matching the tail rule above.
+            // Rips write "- WEM" as often as "-WEM", and without the space this
+            // rule could not read the group at all while the tail rule could —
+            // two rules for one job that disagreed about the same name.
+            const inner = content.match(/-\s*([A-Za-z0-9][A-Za-z0-9-]{1,20})\s*$/);
+            const cand = inner ? inner[1].replace(/-+$/, "") : null;
+            if (cand && !looksLikeCodec(cand) && !EDITION_SINGLE.has(cand.toLowerCase()) && !isPlaceholderWord(cand) && !isLanguageishWord(cand)) {
+              out.group = cand;
+              content = content.replace(/-\s*[A-Za-z0-9][A-Za-z0-9-]{1,20}\s*$/, "");
+            }
+          }
     const phrase = MISC_PHRASES[content.trim().toLowerCase()];
     if (phrase) {
       if (!misc.includes(phrase)) misc.push(phrase);

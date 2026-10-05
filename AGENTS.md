@@ -1253,11 +1253,40 @@ SEERR_API_KEY=
 - [ ] A **parenthesised** tag run is read, not just a bracketed one: `(1080p NF Webrip x265 10bit EAC3 2.0 - WEM)` yields `[WEBRip-1080p NF]`, where before it yielded nothing at all (the bracket pass is squares-only and the loose tail strips `(...)` too)
 - [ ] Parentheses stay excluded for disambiguators and editions: `(Inna historia)`, `(2019)`, `(2011)`, `(1)` and `(Extended)` add no tags — a paren is tokenized only when it states a resolution/source/codec/bit-depth/HDR flag
 - [ ] A native REGULAR season's denominator is TMDB's episode count, not the import-time FILE snapshot: a season whose release numbered its special `S11E00` imports as 9 files, and after moving it to S00 the pill must read `8/8`, not `1 missing 8/9` (`nativeSeasonDenominator`, same defect `nativeSpecialDenominator` already fixed for S00)
+- **The group can end a bracket run, and all three group rules must agree.** A
+  Polish rip puts the group LAST inside the tag run and then closes the bracket,
+  sometimes with a vendor after it: `… (1080p NF Webrip x265 10bit EAC3 2.0 -
+  WEM)[TAoE]`. The anchored tail rule only ever saw end-of-string, so that
+  trailing run hid the group and the word fell through to the tokenizer as a
+  stray `[WEM]`. `GROUP_TAIL` now tolerates a closer and any brackets after the
+  group — but the closer must follow the group **directly**, with no space, which
+  is what stops `… - Title (1080p)` from promoting `Title` to a group. The paren
+  and bracket passes carry their own group rules, and those disagreed with the
+  tail rule about the same name: they required `-WORD` with no space, so `- WEM`
+  (the common spelling) was invisible to them. All three now take `-\s*`, and all
+  three reject a language/dub word (`isLanguageishWord`) — `… (Dual Audio -
+  Polish)` would otherwise have made `Polish` a release group.
+- **A peeled group must leave the tokenizer's input too.** The bracket pass
+  rewrote `m[0]` (the name) but tokenises `m[1]` (the bracket's original
+  content), so the group was still there and printed `[WEM]` right beside the
+  `-WEM` it had just claimed. A *hyphenated* group hid this — `AC3-AS76-FT` is
+  consumed as an audio codec — so only the spaced form showed it.
+- **A vendor takes its wrapping brackets with it.** The vendor pattern matches
+  the boundary character plus the name, so a bracketed vendor (`[TAoE]`) lost only
+  the name and left a bare `]` behind. That is not cosmetic: a `]` is not a word,
+  so no tail rule can see past it, and the release group hiding in front of it was
+  dropped entirely while the vendor still rendered fine — which made it look like
+  a group bug rather than a bracket one. The peel now removes the surrounding
+  `[`/`]` pair, and `GROUP_TAIL` excises `- WORD` while keeping whatever followed.
 - [ ] An S00 special whose title is a generic slot marker (`Episode 1`, `Christmas Special 2022`, `Pilot`) is NOT looked up in TMDB's film catalogue — that matched Death in Paradise's S11E00 to an unrelated 2003 film and printed its year. A real film in S00 is still resolved (`isGenericSpecialSlot`)
 - [ ] An UNNUMBERED special is numbered from TMDB's S00 **air dates** (`findSpecialByAirDate`), because no provider files these in season 0: they number them `E0` of the season they lead into, so `S12E00` = "Christmas Special 2022" (aired 25 Dec 2022, S12 began 3 Feb 2023)
 - [ ] The air-date window for `SxxE00` is bounded by seasons **xx-1 and xx**, never xx and xx+1 — these specials air in the Christmas gap at the END of the previous season's run. Getting the direction wrong made `S11E00` and `S12E00` resolve to the SAME special, which would have collapsed two files onto one name
 - [ ] A year the release states wins outright ("Christmas Special 2022"); a wrong/absent year falls through to the season window; both bounds must be known and yield exactly ONE entry, else the on-disk title is kept (a wrong number claims an identity the file does not have)
 - [ ] An explicit `S00E07` is never second-guessed by air-date inference — only a POSITIVE declared number survives, since `E00` means "no number" (`parseEpisodeCode` returns `episode: 0` for both of these files)
+- [ ] A group that ends a tag run is read, not dropped: `(1080p NF Webrip x265 10bit EAC3 2.0 - WEM)[TAoE]` yields `-WEM`, where before it yielded nothing (the group was hidden behind the trailing `)[TAoE]`)
+- [ ] The closer must touch the group: `… - Title (1080p)` does NOT make `Title` a release group, and `… (Dual Audio - Polish)` does not make `Polish` one
+- [ ] A bracketed vendor takes its `[`/`]` pair with it, and the group in front of it survives — with `TAoE` in the vendors list the name ends `-WEM TAoE`, not `… 2.0 -WEM)]` and not a stray `[WEM]` tag
+- [ ] All of the above round-trip: re-parsing a canonical name yields the identical string, so a second Fix Names pass has nothing to do
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
 - [ ] Fix Names refuses the WHOLE batch when a target directory is not writable, naming the dir and both uids — and a mixed batch never half-applies
 - [ ] A fully failed Fix Names batch says so: journal ends with `0 renamed … N FAILED`, and N identical EACCES rows collapse to one `N× …` headline (even when a name carries an apostrophe) instead of looking like a no-op
