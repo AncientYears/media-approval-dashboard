@@ -169,6 +169,28 @@ const RES_RE = /\b(\d{3,4})[pi]\b/i;
 const AUDIO_RE = /(\btrue-?hd\b|\bdts-?hd(?:\s*ma)?\b|\bdts\b|\be?-?ac3\b|\bdd[P+]?\s?5\.1\b|\bac3(?:[-\s]\d\.\d)?\b|\baac(?:[-\s]\d\.\d)?\b|\bflac\b|\batmos\b|\bdolby\b|\bopus\b|\bmp3\b)/i;
 const VIDEO_RE = /(\b(?:x|h)\.?26[45]\b|\bhevc\b|\bavc\b|\bav1\b|\bvp9\b|\bxvid\b|\bdivx\b|\bmpeg-?4\b|\b10bit\b)/i;
 
+/**
+ * Streaming service a WEB-DL came from. Name-only and a real quality signal —
+ * it is where the encode originated, so a WEB-DL from one service is routinely a
+ * different encode of the same season — but it is not a source or a codec, so it
+ * rides INSIDE the source bracket ("[WEBDL-2160p NF]") the way encode-quality
+ * modifiers ride the resolution, rather than in a bracket of its own.
+ *
+ * Deliberately only the unambiguous multi-character tags. "MAX" and "iP" are
+ * real service tags but are ordinary words that occur in titles and group names,
+ * and a false provider is worse than a missing one — the source is still stated.
+ */
+const PROVIDERS = new Map<string, string>([
+  ["NF", "NF"],
+  ["AMZN", "AMZN"],
+  ["DSNP", "DSNP"],
+  ["ATVP", "ATVP"],
+  ["HMAX", "HMAX"],
+  ["PCOK", "PCOK"],
+  ["STARZ", "STARZ"],
+  ["HULU", "HULU"],
+]);
+
 /** True when a "-(...)" tail is a codec/quality word, not a release group. */
 function looksLikeCodec(word: string): boolean {
   if (/\d{3,4}p$/i.test(word)) return true;
@@ -395,6 +417,10 @@ export interface ReleaseTags {
    *  which case the original track is implied. */
   dubKind: "DUB" | "LEKTOR" | null;
   source: string | null;
+  /** Streaming service the WEB-DL came from ("NF", "AMZN"). Name-only, like the
+   *  group, so inherited from a same-inode twin and never measured. Renders
+   *  inside the source bracket — see PROVIDERS. */
+  provider: string | null;
   resolution: string | null;
   audio: string[];
   hdr: string[];
@@ -487,6 +513,7 @@ function renderTags(f: {
   language: string | null;
   dubKind: "DUB" | "LEKTOR" | null;
   source: string | null;
+  provider?: string | null;
   resolution: string | null;
   audio: string[];
   hdr: string[];
@@ -509,9 +536,16 @@ function renderTags(f: {
     .filter((m) => QUALITY_MOD_RANK.includes(m))
     .sort((a, b) => QUALITY_MOD_RANK.indexOf(a) - QUALITY_MOD_RANK.indexOf(b));
   const res = f.resolution ? [f.resolution, ...mods].join(" ") : null;
-  if (f.source && res) tags += `[${f.source}-${res}]`;
-  else if (f.source) tags += `[${f.source}]`;
-  else if (res) tags += `[${res}]`;
+  // The streaming service rides inside the source bracket, after the resolution:
+  // it qualifies WHERE the WEB-DL was ripped from, so "[WEBDL-2160p NF]" reads as
+  // one fact. A separate "[NF]" would sort and scan as an unrelated tag, and the
+  // bracket is the part both Radarr and Sonarr keep intact, so a name minted here
+  // stays legible in either ecosystem.
+  const prov = f.provider ? ` ${f.provider}` : "";
+  if (f.source && res) tags += `[${f.source}-${res}${prov}]`;
+  else if (f.source) tags += `[${f.source}${prov}]`;
+  else if (res) tags += `[${res}${prov}]`;
+  else if (prov) tags += `[${prov.trim()}]`;
   for (const a of f.audio) tags += `[${a}]`;
   // One bracket, and never a redundant member. HDR10+ implies the HDR10 base
   // layer, and a plain "HDR" is only the umbrella: once a specific flag is
@@ -1015,6 +1049,11 @@ export function inheritReleaseFacts(
   const out: ReleaseTags = { ...target, misc: [...target.misc], qualityMods: [...(target.qualityMods || [])] };
   let changed = false;
   if (!out.source && sibling.source) { out.source = sibling.source; changed = true; }
+  // A provider is a NAME claim about where the source was ripped from, and
+  // nothing measures it — so a twin's name fills the gap exactly like the group.
+  // It qualifies the source rather than standing alone, so a file named by an arr
+  // as a plain "WEB-DL" would otherwise silently lose the service.
+  if (!out.provider && sibling.provider) { out.provider = sibling.provider; changed = true; }
   if (!out.group && sibling.group) { out.group = sibling.group; changed = true; }
   if (!out.vendor && sibling.vendor) { out.vendor = sibling.vendor; changed = true; }
   // Encode-quality modifiers are a NAME claim (nothing measures them), exactly
@@ -1059,7 +1098,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // `?? DEFAULT_VENDORS` rather than a parameter default: a caller passing an
   // explicit null would otherwise skip the default and crash on `.length`.
   const vList = vendors ?? DEFAULT_VENDORS;
-  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubKind: null, source: null, resolution: null, audio: [], hdr: [], video: [], misc: [], qualityMods: [] };
+  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubKind: null, source: null, provider: null, resolution: null, audio: [], hdr: [], video: [], misc: [], qualityMods: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
   // Editions ("International", "Extended", "Director's Cut", …) are preserved
@@ -1158,6 +1197,20 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const at = tok.trim();
     if (!at) return;
     if (EDITION_SINGLE.has(at.toLowerCase())) return;
+    // Streaming service, checked before anything can misread it. Matched EXACTLY,
+    // case included: release groups write these all-caps ("WEB-DL NF", "HMAX
+    // WEBRip"), so a lowercase "nf" is title or group text rather than a provider,
+    // and a false provider is worse than a missing one — the source is still
+    // stated either way. Consuming it here also stops the unknown-word drop from
+    // discarding it. Read from both the bracket pass and the loose tail, so a
+    // re-parsed canonical "[WEBDL-2160p NF]" round-trips.
+    const prov = PROVIDERS.get(at);
+    if (prov) {
+      // First one wins, so a name carrying two keeps the one the source came from
+      // rather than whichever token the tokenizer reached last.
+      if (!out.provider) out.provider = prov;
+      return;
+    }
     // Polish releases are marked "Lektor"/"Polski" rather than by a country
     // code, so those words ARE the language. Resolved before LANG_TAGS so they
     // are not also left behind in the trailing misc tags.
