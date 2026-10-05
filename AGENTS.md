@@ -1016,6 +1016,22 @@ SEERR_API_KEY=
     being renumbered wholesale.
   - **An explicit `S01E01-02` range in the name is authoritative** and never
     re-inferred; the release already declared its own span.
+- **A Fix Names batch renames in two phases, because a season-wide renumber is a
+  permutation.** Every file's canonical name can be the name another file in the same
+  folder is about to vacate, and `uniqueDestPath` answers a collision with a `-2`
+  suffix rather than an error — so an in-place loop silently produces suffixed names
+  instead of failing. `stageFixName` parks every file that must move under
+  `.fixnames-tmp-<dev>-<ino><ext>` in its OWN directory (same filesystem, dot-prefixed
+  so a media scanner ignores it), and only then is each destination computed, which
+  makes the outcome independent of the order the rows arrive in. A failed landing
+  renames the file back rather than leaving a dotfile behind, and the inner listings
+  skip dotfiles so a leftover can never be offered as a renamable row.
+  Honest scope: this only helps when the cycle is **within the batch**, and that is
+  rare — a canonical name rarely equals any release name already on disk. The
+  DuckTales renumber changed the prefix (`DuckTales - ` vs `DuckTales (1987) - `) and
+  the tags (`[PL] [x264]` vs `[h264]`) at once, so every destination was free and the
+  old in-place loop would have been fine there. A name held by a file *outside* the
+  batch still yields `-2`, which is the intended multi-version behaviour.
 - **Native identity (`library_key`)**: `media_requests.library_key` is the arr-free identity (`movie:<imdb|slug>:<year>` / `series:<tvdb|imdb|slug>:<year>`). `/managed` groups series by `sonarr_id` OR `library_key`. Reconcile (`POST /import-library/native`) only creates/adopts dormant rows; rows in DOWNLOADING/SEEDING/SEARCHING/AWAITING_APPROVAL/APPROVED are never touched. Native series cards have no sonarr_id — frontend "Manage" falls back to `/requests/{first_request_id}`, and the Delete button is hidden (needs Sonarr).
 - **A movie repair PREFERS the IMDb id, never the slug.** `movieKeySegment`
   (`requests.ts`) takes the id whenever TMDB returns a real one (`^tt\d{6,}$`),

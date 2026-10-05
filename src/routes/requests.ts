@@ -2170,7 +2170,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     for (const folder of nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key)) {
       if (!fs.existsSync(folder)) continue;
       for (const f of fs.readdirSync(folder)) {
-        if (!VIDEO_FILE_RE.test(f)) continue;
+        if (f.startsWith(".") || !VIDEO_FILE_RE.test(f)) continue;
         scanLibraryFile(path.join(folder, f));
       }
     }
@@ -2209,18 +2209,21 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
         if (type === "movie") {
           // Foldered movie: PROCCESSED_MOVIES/<MovieDir>/<file>.
           for (const f of fs.readdirSync(fullPath)) {
-            if (!VIDEO_FILE_RE.test(f)) continue;
+            if (f.startsWith(".") || !VIDEO_FILE_RE.test(f)) continue;
             const fp = path.join(fullPath, f);
             if (processedFileMatchesRequest(db, request, fp, matchedNames, twinFor(fp))) { accepted.push({ fullPath: fp }); movieDirs.add(fullPath); }
           }
           continue;
         }
         for (const sub of fs.readdirSync(fullPath, { withFileTypes: true })) {
-          if (!sub.isDirectory() || !/^S\d+$/i.test(sub.name)) continue;
+          if (sub.name.startsWith(".") || !sub.isDirectory() || !/^S\d+$/i.test(sub.name)) continue;
           if (targetSeason && sub.name.toUpperCase() !== targetSeason) continue;
           const seasonDir = path.join(fullPath, sub.name);
           for (const f of fs.readdirSync(seasonDir)) {
-            if (!VIDEO_FILE_RE.test(f)) continue;
+            // Dotfiles are skipped: a Fix Names batch parks files under
+            // .fixnames-tmp-<dev>-<ino> while it works, and a half-finished batch
+            // must never offer one of them as a renamable row.
+            if (f.startsWith(".") || !VIDEO_FILE_RE.test(f)) continue;
             const fp = path.join(seasonDir, f);
             if (processedFileMatchesRequest(db, request, fp, matchedNames, twinFor(fp))) {
               accepted.push({ fullPath: fp });
@@ -2447,41 +2450,60 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
 /** Rename a single picked file to its canonical name. Inode-verified: a rename
  * keeps the inode, so hardlinked twins elsewhere stay linked and identity rows
  * survive. Only the submitted path is renamed (twins rename independently). */
-function applyFixNameRename(db: Database, request: any, oldPath: string, newNameArg: string): { ok: boolean; skipped?: boolean; error?: string; old?: string; new?: string } {
-  let st: fs.Stats;
-  try {
-    st = fs.statSync(oldPath);
-  } catch {
-    return { ok: false, error: "File not found" };
-  }
-  if (!st.isFile()) return { ok: false, error: "Not a file" };
-  if (!isFixNameTarget(oldPath)) return { ok: false, error: "Path is outside the managed trees" };
+/** Temporary name a file is parked under while a Fix Names batch runs. It lives in
+ *  the file's OWN directory — a rename has to stay on one filesystem — and starts
+ *  with a dot so a media scanner ignores it. The inode is in the name so a leftover
+ *  from a crash is traceable back to its identity row. */
+function fixNameTempPath(p: string, st: fs.Stats): string {
+  return path.join(path.dirname(p), `.fixnames-tmp-${st.dev}-${st.ino}${path.extname(p)}`);
+}
+const FIXNAME_TEMP_RE = /^\.fixnames-tmp-\d+-\d+/;
 
-  const parent = path.dirname(oldPath);
-  const oldBasename = path.basename(oldPath);
-  // Proposals arrive without an extension (the canonical base name); re-attach
-  // the original one so a rename never strips ".mkv". endsWith — never extname:
-  // channel layouts like "2.0" inside the name would fool it.
+/** Where one rename should land, decided WITHOUT touching disk. Split from the commit
+ *  so a batch can park every file under a temp name first: a season-wide renumber is
+ *  a PERMUTATION inside a single folder — every file's canonical name is still held by
+ *  the file that moves next (DuckTales S01E52 -> S01E53 while "S01E53 - Jungle Duck"
+ *  is still on disk) — so renaming in place collides on every row but the last, and
+ *  uniqueDestPath answers a collision with a "-2" suffix rather than an error.
+ *  Submission order cannot save it either: a cycle of renames has no free name to move
+ *  into, so only parking every file first is order-independent. */
+function planFixNameDest(oldPath: string, newNameArg: string, ino: number): { newName: string; dest: string } {
+  // Proposals arrive without an extension (the canonical base name); re-attach the
+  // original one so a rename never strips ".mkv". endsWith — never extname: channel
+  // layouts like "2.0" inside the name would fool it.
   const ext = path.extname(oldPath);
   const newName = ext && !newNameArg.endsWith(ext) ? `${newNameArg}${ext}` : newNameArg;
-  const dest = uniqueDestPath(path.join(parent, newName), st.ino);
+  return { newName, dest: uniqueDestPath(path.join(path.dirname(oldPath), newName), ino) };
+}
 
-  if (fs.existsSync(dest)) {
-    try {
-      const d = fs.statSync(dest);
-      if (d.ino === st.ino) return { ok: true, skipped: true, old: oldBasename, new: newName };
-    } catch {}
+/** A rename whose destination is already this very file — an idempotent re-apply. */
+function fixNameAlreadyLanded(dest: string, oldPath: string, st: fs.Stats): boolean {
+  if (dest === oldPath) return true;
+  try {
+    return fs.statSync(dest).ino === st.ino;
+  } catch {
+    return false;
   }
-  if (dest === oldPath) return { ok: true, skipped: true, old: oldBasename, new: newName };
+}
 
-  fs.renameSync(oldPath, dest);
-  const after = fs.statSync(dest);
-  if (after.ino !== st.ino) return { ok: false, error: "Rename changed the inode — aborting" };
+/** One inode-verified rename. A rename that somehow lands on a different inode is
+ *  reported as a failure rather than accepted. */
+function landFixNameRename(fromPath: string, toPath: string, st: fs.Stats): { ok: boolean; error?: string } {
+  try {
+    fs.renameSync(fromPath, toPath);
+    if (fs.statSync(toPath).ino !== st.ino) return { ok: false, error: "Rename changed the inode — aborting" };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e.message };
+  }
+}
 
-  // Identity rows are keyed by (dev, inode); refresh the stored release_name.
-  // The column is `inode` (not Node's `st.ino` property) — a bare catch here once
-  // swallowed "no such column: ino", so every rename reported success while the
-  // UPDATE never ran and storedNameMatchesRow's self-heal silently stopped working.
+/** Bookkeeping for a landed rename. Identity rows are keyed by (dev, inode); refresh
+ *  the stored release_name. The column is `inode` (not Node's `st.ino` property) — a
+ *  bare catch here once swallowed "no such column: ino", so every rename reported
+ *  success while the UPDATE never ran and storedNameMatchesRow's self-heal silently
+ *  stopped working. */
+function recordFixNameRename(db: Database, request: any, oldBasename: string, dest: string, st: fs.Stats): void {
   try {
     db.prepare("UPDATE media_files SET release_name = ? WHERE dev = ? AND inode = ?").run(path.basename(dest), st.dev, st.ino);
   } catch (e) {
@@ -2492,22 +2514,63 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
     const rows = db.prepare(
       "SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'"
     ).all(request.id) as any[];
-    const oldBase = path.basename(oldPath);
     const newBase = path.basename(dest);
     for (const r of rows) {
       try {
         const arr = JSON.parse(r.processed_files) as string[];
         let changed = false;
         const next = arr.map((f: string) => {
-          if (f === oldBase || f.endsWith(`/${oldBase}`)) { changed = true; return f.replace(/[^/]+$/, newBase); }
+          if (f === oldBasename || f.endsWith(`/${oldBasename}`)) { changed = true; return f.replace(/[^/]+$/, newBase); }
           return f;
         });
         if (changed) db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(next), r.id);
       } catch {}
     }
   } catch {}
+}
+
+type FixNameResult = { ok: boolean; skipped?: boolean; error?: string; old?: string; new?: string };
+
+function applyFixNameRename(db: Database, request: any, oldPath: string, newNameArg: string): FixNameResult {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(oldPath);
+  } catch {
+    return { ok: false, error: "File not found" };
+  }
+  if (!st.isFile()) return { ok: false, error: "Not a file" };
+  if (!isFixNameTarget(oldPath)) return { ok: false, error: "Path is outside the managed trees" };
+
+  const oldBasename = path.basename(oldPath);
+  const { newName, dest } = planFixNameDest(oldPath, newNameArg, st.ino);
+  if (fixNameAlreadyLanded(dest, oldPath, st)) return { ok: true, skipped: true, old: oldBasename, new: newName };
+
+  const landed = landFixNameRename(oldPath, dest, st);
+  if (!landed.ok) return { ok: false, error: landed.error, old: oldBasename, new: newName };
+  recordFixNameRename(db, request, oldBasename, dest, st);
   console.log(`[FixNames] renamed ${oldPath} -> ${dest}`);
-  return { ok: true, old: path.basename(oldPath), new: path.basename(dest) };
+  return { ok: true, old: oldBasename, new: path.basename(dest) };
+}
+
+type StagedFixName = { origPath: string; origBase: string; stagedPath: string; newName: string; st: fs.Stats };
+
+/** Park one file under its temp name so the rest of the batch cannot be blocked by
+ *  the name it currently holds. Returns null when the file needs no move (already
+ *  canonical) or could not be parked; either way `results` has the outcome. */
+function stageFixName(p: string, st: fs.Stats, newName: string, results: any[]): StagedFixName | null {
+  const origBase = path.basename(p);
+  const { dest } = planFixNameDest(p, newName, st.ino);
+  if (fixNameAlreadyLanded(dest, p, st)) {
+    results.push({ path: p, ok: true, skipped: true, old: origBase, new: path.basename(dest) });
+    return null;
+  }
+  const stagedPath = fixNameTempPath(p, st);
+  const parked = landFixNameRename(p, stagedPath, st);
+  if (!parked.ok) {
+    results.push({ path: p, ok: false, error: parked.error, old: origBase, new: path.basename(newName) });
+    return null;
+  }
+  return { origPath: p, origBase, stagedPath, newName, st };
 }
 
 /** True when `p` sits directly under managed root `root` (top-level role dir). */
@@ -8842,6 +8905,7 @@ const type = request.type === "series" ? "series" : "movie";
     await warmSeasonCache(db, request);
     const results: any[] = [];
     const filePaths: string[] = [];
+    const staged: (StagedFixName | null)[] = [];
     const dirEntries: { path: string; kind: "show" | "season" | "movie" }[] = [];
     for (const p of paths) {
       try {
@@ -8891,9 +8955,32 @@ const type = request.type === "series" ? "series" : "movie";
           newName = pb.name ? `${pb.name}${path.extname(p)}` : null;
         }
         if (!newName) { results.push({ path: p, ok: false, error: "Nothing to rename" }); continue; }
-        results.push({ path: p, ...applyFixNameRename(db, request, p, newName) });
+        staged.push(stageFixName(p, st, newName, results));
       } catch (err: any) {
         results.push({ path: p, ok: false, error: err.message });
+      }
+    }
+    // Parked files first, then landed. Every name a rename wants is currently held
+    // by another file in the same folder whenever the batch renumbers a season, so
+    // the tree holds nothing but parked files (and anything the user left alone) by
+    // the time the destinations are computed — which is what makes the outcome
+    // independent of the order rows arrived in.
+    for (const s of staged) {
+      if (!s) continue;
+      try {
+        const { dest } = planFixNameDest(s.stagedPath, s.newName, s.st.ino);
+        const landed = landFixNameRename(s.stagedPath, dest, s.st);
+        if (!landed.ok) {
+          // Put it back under its real name rather than leaving a dotfile behind.
+          const back = landFixNameRename(s.stagedPath, s.origPath, s.st);
+          results.push({ path: s.origPath, ok: false, error: back.ok ? landed.error : `${landed.error} (rollback failed: ${back.error})` });
+          continue;
+        }
+        recordFixNameRename(db, request, s.origBase, dest, s.st);
+        console.log(`[FixNames] renamed ${s.origPath} -> ${dest}`);
+        results.push({ path: s.origPath, ok: true, old: s.origBase, new: path.basename(dest) });
+      } catch (err: any) {
+        results.push({ path: s.origPath, ok: false, error: err.message });
       }
     }
     dirEntries.sort((a, b) => b.path.split(path.sep).length - a.path.split(path.sep).length);
