@@ -665,8 +665,7 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     // DTS-HD, TrueHD + Atmos). Probe stays authoritative for the family and
     // channels; the most specific same-family title label wins so detail
     // survives instead of flattening "DTS-HD MA" to "DTS".
-    const sameFam = audio.filter((a) => audioFamilyOf(a) === fam);
-    // Atmos is the one thing ffprobe cannot see (it is a mixing flag in the
+    const sameFam = audio.filter((a) => audioFamilyOf(a) === fam);    // Atmos is the one thing ffprobe cannot see (it is a mixing flag in the
     // stream metadata, not a codec), so the TITLE is the only evidence for it —
     // which is why it must be preserved for E-AC3 too. Streaming Atmos ships as
     // E-AC3, so restricting this to TrueHD dropped "[EAC3 Atmos 5.1]" to
@@ -677,7 +676,22 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     // Atmos to a probed AAC dub of the same film: the Polish Soul dub measured
     // AAC 2.0 and rendered "[AAC Atmos 2.0]". With no same-family title entry
     // there is nothing to carry the claim, so it is simply not made.
-    const atmos = sameFam.some((a) => /atmos/i.test(a)) ? " Atmos" : "";
+    // A DETACHED "Atmos" token is the dotted tail's normal shape
+    // ("...2160p.NF.WEB-DL.DDP5.1.Atmos.H.265"): every loose token is its own
+    // group, so Atmos never rides a carrier inside its own bracket and sameFam
+    // cannot see it. When the probe names a real carrier family and nothing else
+    // in the title claims an Atmos, the flag belongs to this track - E-AC3 is the
+    // streaming carrier, so a measured E-AC3 track must render
+    // "[EAC3 Atmos 5.1]" rather than the two-bracket "[EAC3 5.1][Atmos]" that
+    // split the one fact a reader cares about. Gated twice over: only on a real
+    // carrier (so the Polish Soul dub measured as AAC still refuses a TrueHD
+    // Atmos track's flag), and only on an UNCLAIMED one (so a title that names
+    // its Atmos beside a different codec is left alone).
+    const carrierFam = fam === "truehd" || fam === "eac3";
+    const atmosClaims = audio.filter((a) => /atmos/i.test(a));
+    const looseAtmos = atmosClaims.some((a) => /^atmos$/i.test(a.trim())) && atmosClaims.every((a) => /^atmos$/i.test(a.trim()));
+    const claimAtmos = sameFam.some((a) => /atmos/i.test(a)) || (carrierFam && looseAtmos);
+    const atmos = claimAtmos ? " Atmos" : "";
     let base = probedAudioLabel;
     if (sameFam.length) {
       if (fam === "dts") {
@@ -696,7 +710,11 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
       }
     }
     const entry = `${base}${atmos}${ch ? ` ${ch}` : ""}`;
-    const kept = audio.filter((a) => audioFamilyOf(a) !== fam);
+    // A loose Atmos folded into the carrier above must not survive as its own
+    // entry, or the tag run reads "[EAC3 Atmos 5.1][Atmos]".
+    const kept = audio.filter(
+      (a) => audioFamilyOf(a) !== fam && !(carrierFam && looseAtmos && /^atmos$/i.test(a.trim())),
+    );
     audio.length = 0;
     audio.push(entry, ...kept);
   }
