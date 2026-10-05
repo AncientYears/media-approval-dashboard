@@ -2557,24 +2557,62 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   }
 
   // Two DIFFERENT files can legitimately claim one SxxExx — that's just two
-  // versions of an episode. So never block the rename; uniqueDestPath already
-  // stops a clobber by suffixing "-2". Just surface it, because a jumbled source
-  // (two overlapping numbering runs of one dub) looks identical and is not.
-  const destCounts = new Map<string, number>();
-  for (const g of groups) {
-    for (const row of [g.processed, g.library]) {
-      if (!row?.proposedName) continue;
-      const key = `${path.dirname(row.path)}\u0000${row.proposedName.toLowerCase()}`;
-      destCounts.set(key, (destCounts.get(key) || 0) + 1);
+  // versions of an episode, so the rename is never blocked. But the modal has to
+  // show the name a row will ACTUALLY land on: uniqueDestPath only runs at apply
+  // (planFixNameDest), so preview used to advertise the bare canonical base and
+  // then change it — hiding which file becomes primary, and making a manually
+  // disambiguated "-2" look like it was being stripped.
+  //
+  // Apply parks every file in the batch before computing destinations, so the only
+  // thing separating two rows is their submission order: the first to claim a name
+  // in a folder keeps it, the next takes -2. Simulate that per folder in the same
+  // order, so preview and apply are the same computation.
+  //
+  // Deliberately blind to what is on disk right now. A season-wide renumber means
+  // every canonical name is still held by the file that moves next, so consulting
+  // the filesystem here would suffix rows that apply is about to vacate. The one
+  // case this cannot see is a canonical-named file outside this batch, which apply
+  // would still suffix.
+  const claimedByDir = new Map<string, Set<string>>();
+  const claimKey = (row: FixNameRow, name: string) => {
+    const dir = path.dirname(row.path);
+    let claimed = claimedByDir.get(dir);
+    if (!claimed) {
+      claimed = new Set<string>();
+      claimedByDir.set(dir, claimed);
+    }
+    claimed.add(name.toLowerCase());
+  };
+  const isClaimed = (row: FixNameRow, name: string) => claimedByDir.get(path.dirname(row.path))?.has(name.toLowerCase()) ?? false;
+
+  const allRows: (FixNameRow | null)[][] = groups.map((g) => [g.processed, g.library]);
+
+  // Rows with no proposal are NOT renamed — already canonical, identity unresolved,
+  // or naming disabled — so they keep sitting on their current name and every mover
+  // has to route around them. They are seeded first because they block regardless
+  // of order: apply only stages the movers, so a name held by a stationary file is
+  // occupied for the whole batch. This is the state you land in the moment after a
+  // rename, where the primary is canonical and only its "-2" twin still has work.
+  for (const rows of allRows) {
+    for (const row of rows) {
+      if (row && !row.proposedName) claimKey(row, row.currentName);
     }
   }
-  for (const g of groups) {
-    for (const row of [g.processed, g.library]) {
+  for (const rows of allRows) {
+    for (const row of rows) {
       if (!row?.proposedName) continue;
-      const key = `${path.dirname(row.path)}\u0000${row.proposedName.toLowerCase()}`;
-      if ((destCounts.get(key) || 0) < 2) continue;
-      const warn = "Another file in this folder wants the same name (second version, or a duplicate episode number)";
-      row.note = row.note ? `${row.note}; ${warn}` : warn;
+      const ext = path.extname(row.path);
+      const stem = row.proposedName.endsWith(ext) ? row.proposedName.slice(0, -ext.length) : row.proposedName;
+      let name = row.proposedName;
+      if (isClaimed(row, name)) {
+        let i = 2;
+        while (i < 100 && isClaimed(row, `${stem}-${i}${ext}`)) i++;
+        name = i < 100 ? `${stem}-${i}${ext}` : `${stem}-${Date.now()}${ext}`;
+        const warn = `Another file in this folder claims this episode — this one becomes version ${name.slice(stem.length + 1)}`;
+        row.note = row.note ? `${row.note}; ${warn}` : warn;
+      }
+      claimKey(row, name);
+      row.proposedName = name;
     }
   }
 
