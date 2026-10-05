@@ -2552,6 +2552,31 @@ function applyFixNameRename(db: Database, request: any, oldPath: string, newName
   return { ok: true, old: oldBasename, new: path.basename(dest) };
 }
 
+/** Every directory a Fix Names batch must be able to write in that it cannot, with the
+ *  owning uid when it differs from ours. A rename needs write permission on the DIRECTORY,
+ *  not on the file — so a root-owned season folder full of app-owned files rejects every
+ *  rename with a bare EACCES while `ls -l` says the files are perfectly writable, and the
+ *  batch dies looking like a no-op. */
+function unwritableFixNameDirs(paths: string[]): string[] {
+  const dirs = new Set<string>();
+  for (const p of paths) dirs.add(path.dirname(p));
+  const selfUid = typeof process.getuid === "function" ? process.getuid() : null;
+  const bad: string[] = [];
+  for (const d of [...dirs].sort()) {
+    try {
+      fs.accessSync(d, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
+    } catch {
+      let owner = "";
+      try {
+        const st = fs.statSync(d);
+        if (typeof st.uid === "number" && selfUid != null && st.uid !== selfUid) owner = ` (owned by uid ${st.uid}, app runs as uid ${selfUid})`;
+      } catch {}
+      bad.push(`${d}${owner}`);
+    }
+  }
+  return bad;
+}
+
 type StagedFixName = { origPath: string; origBase: string; stagedPath: string; newName: string; st: fs.Stats };
 
 /** Park one file under its temp name so the rest of the batch cannot be blocked by
@@ -8916,6 +8941,16 @@ const type = request.type === "series" ? "series" : "movie";
         results.push({ path: p, ok: false, error: "Path not found" });
       }
     }
+    // Refuse the WHOLE batch before the first rename when a target directory is not
+    // writable. Permission is a property of the directory, not of one file, so a mixed
+    // batch would land every name the app CAN write and silently skip the rest — the two
+    // trees drift and the user has to re-run to learn which half moved.
+    const unwritable = unwritableFixNameDirs(paths);
+    if (unwritable.length) {
+      const msg = "Directory not writable by the app — nothing was renamed; fix ownership first";
+      console.error(`[FixNames] refused batch (${unwritable.length} unwritable director${unwritable.length === 1 ? "y" : "ies"}): ${unwritable.join(" | ")}`);
+      return paths.map((p) => ({ path: p, ok: false, error: `${msg}: ${path.dirname(p)}` }));
+    }
     // Files rename first (their folders are still at today's paths); directory
     // renames run last, deepest-first, so a season rename never invalidates its
     // show dir's submitted path.
@@ -8986,6 +9021,32 @@ const type = request.type === "series" ? "series" : "movie";
     dirEntries.sort((a, b) => b.path.split(path.sep).length - a.path.split(path.sep).length);
     for (const d of dirEntries) {
       results.push({ path: d.path, ...(await applyDirRename(db, request, d.path, d.kind)) });
+    }
+    // Always end the batch with one journal line stating what happened. Successes log
+    // per rename, so a batch where EVERYTHING failed produced a journal with no output at
+    // all — indistinguishable from "did nothing" — while the per-row errors only ever
+    // existed in an HTTP response body nobody reads. Failures are grouped by reason with
+    // the quoted paths erased, so one EACCES is one line instead of one line per file.
+    const failed = results.filter((r) => !r.ok) as any[];
+    const renamed = results.filter((r) => r.ok && !r.skipped).length;
+    const skipped = results.filter((r) => r.skipped).length;
+    if (failed.length) {
+      const byReason = new Map<string, { count: number; sample: string }>();
+      for (const f of failed) {
+        const raw = String(f.error || "Unknown error");
+        // Cut at the FIRST quote rather than matching `'…' -> '…'`: an apostrophe inside
+        // a release name ("Magica's Magic Mirror") makes that pattern anchor on it and
+        // leave the per-file prefix in the reason, so one shared EACCES would print as
+        // one journal line per affected file — the exact repetition being collapsed.
+        const key = raw.includes("'") ? `${raw.slice(0, raw.indexOf("'"))}<paths>` : raw;
+        const cur = byReason.get(key);
+        if (cur) cur.count++;
+        else byReason.set(key, { count: 1, sample: f.path });
+      }
+      const detail = [...byReason.entries()].map(([reason, v]) => `${v.count}x ${reason} (e.g. ${v.sample})`).join(" | ");
+      console.error(`[FixNames] ${renamed} renamed, ${skipped} already canonical, ${failed.length} FAILED — ${detail}`);
+    } else {
+      console.log(`[FixNames] ${renamed} renamed, ${skipped} already canonical, 0 failed`);
     }
     return results;
   }

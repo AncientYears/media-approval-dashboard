@@ -41,6 +41,35 @@ interface NameRow {
 
 type FixMode = "all" | "top" | "season" | "files";
 
+/** Collapse a batch's failures by REASON. One unreadable directory fails every file in
+ *  it with an identical message, and 65 identical red lines in a scrollbox are how a
+ *  whole batch going wrong read as "nothing happened". The per-file detail is kept
+ *  behind <details> so nothing is actually hidden. */
+function groupFailures(failed: any[]): { headlines: string[]; all: string[] } {
+  const byReason = new Map<string, { count: number; samples: string[] }>();
+  for (const f of failed) {
+    const raw = String(f.error || "Unknown error");
+    // Cut at the FIRST quote, not with a regex: a release name carrying an apostrophe
+    // ("Magica's Magic Mirror") puts a quote inside the quoted path, so a
+    // `'…'\s*->\s*'…'` pattern matches from the APOSTROPHE and leaves the per-file prefix
+    // in the reason — splitting one shared EACCES into one group per affected file.
+    const reason = raw.includes("'") ? `${raw.slice(0, raw.indexOf("'"))}<paths>` : raw;
+    const cur = byReason.get(reason);
+    if (cur) {
+      cur.count++;
+      if (cur.samples.length < 3) cur.samples.push(f.path);
+    } else {
+      byReason.set(reason, { count: 1, samples: [f.path] });
+    }
+  }
+  const headlines = [...byReason.entries()].map(([reason, v]) => {
+    const where = v.samples.map((p: string) => p.split("/").slice(-2).join("/")).join(", ");
+    const more = v.count > v.samples.length ? ` +${v.count - v.samples.length} more` : "";
+    return `${v.count}× ${reason}${where ? ` — ${where}${more}` : ""}`;
+  });
+  return { headlines, all: failed.map((f) => `${f.path}: ${f.error}`) };
+}
+
 export default function FixNamesModal({
   requestId,
   title,
@@ -62,13 +91,23 @@ export default function FixNamesModal({
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [applying, setApplying] = useState(false);
   const [applySummary, setApplySummary] = useState<string>("");
+  const [applyFailed, setApplyFailed] = useState(0);
   const [failures, setFailures] = useState<string[]>([]);
+  const [failureDetail, setFailureDetail] = useState<string[]>([]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (keepOutcome = false) => {
     setLoading(true);
     setError("");
-    setFailures([]);
-    setApplySummary("");
+    // Only a FRESH preview clears the outcome. apply() reloads the rows straight after
+    // renaming so the modal shows what actually landed — and clearing here wiped the
+    // summary and every failure line before either had a chance to render, which is
+    // exactly why a batch that failed 65 times looked identical to one that succeeded.
+    if (!keepOutcome) {
+      setFailures([]);
+      setFailureDetail([]);
+      setApplySummary("");
+      setApplyFailed(0);
+    }
     try {
       const data = season != null ? await fixNamesPreviewNative(requestId, season) : await fixNamesPreview(requestId);
       const gs: FixNameGroup[] = data.groups || [];
@@ -170,19 +209,29 @@ export default function FixNamesModal({
     setApplying(true);
     setApplySummary("");
     setFailures([]);
+    setFailureDetail([]);
     try {
       const data = season != null ? await fixNamesApplyNative(requestId, season, selectedPaths) : await fixNamesApply(requestId, selectedPaths);
       const results: any[] = data.results || [];
       const ok = results.filter((r) => r.ok && !r.skipped).length;
       const skipped = results.filter((r) => r.skipped).length;
       const failed = results.filter((r) => !r.ok);
-      setApplySummary(`Renamed ${ok}, already canonical ${skipped}, failed ${failed.length}.`);
-      setFailures(failed.map((f) => `${f.path}: ${f.error}`));
+      setApplyFailed(failed.length);
+      setApplySummary(
+        failed.length === 0
+          ? `Renamed ${ok}, already canonical ${skipped}, no failures.`
+          : `Renamed ${ok}, already canonical ${skipped}, ${failed.length} FAILED.`
+      );
+      const grouped = groupFailures(failed);
+      setFailures(grouped.headlines);
+      setFailureDetail(grouped.all);
       onApplied();
-      await load();
+      await load(true);
     } catch (e: any) {
+      setApplyFailed(1);
       setApplySummary("Apply failed.");
       setFailures([e.response?.data?.error || e.message || "Unknown error"]);
+      setFailureDetail([]);
     } finally {
       setApplying(false);
     }
@@ -319,10 +368,20 @@ export default function FixNamesModal({
           )}
           {applySummary && (
             <div style={{ marginTop: 8, fontSize: 13 }}>
-              <span style={{ color: "#10b981" }}>{applySummary}</span>
+              <span style={{ color: applyFailed > 0 ? "#f87171" : "#10b981", fontWeight: applyFailed > 0 ? 600 : 400 }}>
+                {applySummary}
+              </span>
               {failures.length > 0 && (
-                <div style={{ marginTop: 4, color: "#f87171", fontSize: 12, maxHeight: 100, overflowY: "auto" }}>
+                <div style={{ marginTop: 4, color: "#f87171", fontSize: 12 }}>
                   {failures.map((f, i) => <div key={i}>{f}</div>)}
+                  {failureDetail.length > failures.length && (
+                    <details style={{ marginTop: 4 }}>
+                      <summary style={{ cursor: "pointer" }}>All {failureDetail.length} failures</summary>
+                      <div style={{ maxHeight: 140, overflowY: "auto", marginTop: 4 }}>
+                        {failureDetail.map((f, i) => <div key={i} style={{ wordBreak: "break-all" }}>{f}</div>)}
+                      </div>
+                    </details>
+                  )}
                 </div>
               )}
             </div>

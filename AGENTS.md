@@ -1032,6 +1032,29 @@ SEERR_API_KEY=
   the tags (`[PL] [x264]` vs `[h264]`) at once, so every destination was free and the
   old in-place loop would have been fine there. A name held by a file *outside* the
   batch still yields `-2`, which is the intended multi-version behaviour.
+- **A rename needs write permission on the DIRECTORY, not on the file, and Fix Names
+  preflights that.** DuckTales S01's `S01/` was root-owned `755` while its files were
+  `ancient`-owned, so all 65 renames died on `EACCES` — yet the app could rename the
+  *show* dir one level up (that only needs write on the parent), which is what made it
+  look like a partial success. `unwritableFixNameDirs` `accessSync(W_OK)`s every target
+  directory **before the first rename** and refuses the WHOLE batch, naming the dir and
+  both uids. Refusing whole is the point: permission is a property of the directory, so
+  a mixed batch would land every name the app *can* write and skip the rest, and the two
+  trees would drift with the user learning which half moved only by re-running. `W_OK`
+  is not sufficient on its own — a sticky directory passes it and still rejects renaming
+  a file the app does not own — so the per-batch summary line still counts failures.
+- **A failed Fix Names batch must be VISIBLE, and identical failures must collapse.**
+  Successes log per rename, so a batch where everything failed produced a journal with
+  no output at all, indistinguishable from "did nothing"; the errors existed only in an
+  HTTP response body. The batch now always ends with one journal line stating
+  `renamed / already canonical / FAILED`, failures grouped by reason. Grouping cuts at
+  the FIRST `'`, never with a `'…' -> '…'` regex: an apostrophe inside a release name
+  (`Magica's Magic Mirror`) anchors that pattern mid-path and leaves the per-file prefix
+  in the reason, splitting one shared EACCES into one line per file. Same reason → one
+  `65× …` headline in the modal, full per-file detail under `<details>`. The modal's own
+  reload after apply passes `keepOutcome` — `load()` used to clear the summary and every
+  failure line immediately after `apply()` set them, so a batch that failed 65 times
+  rendered exactly like a clean success.
 - **Native identity (`library_key`)**: `media_requests.library_key` is the arr-free identity (`movie:<imdb|slug>:<year>` / `series:<tvdb|imdb|slug>:<year>`). `/managed` groups series by `sonarr_id` OR `library_key`. Reconcile (`POST /import-library/native`) only creates/adopts dormant rows; rows in DOWNLOADING/SEEDING/SEARCHING/AWAITING_APPROVAL/APPROVED are never touched. Native series cards have no sonarr_id — frontend "Manage" falls back to `/requests/{first_request_id}`, and the Delete button is hidden (needs Sonarr).
 - **A movie repair PREFERS the IMDb id, never the slug.** `movieKeySegment`
   (`requests.ts`) takes the id whenever TMDB returns a real one (`^tt\d{6,}$`),
@@ -1205,3 +1228,5 @@ SEERR_API_KEY=
 - [ ] A bare `[Atmos]` still merges into a TrueHD track regardless of token order (`...TrueHD.7.1.[Atmos]`)
 - [ ] A probed codec does not inherit Atmos from another family's track (AAC 2.0 Polish dub stays `[AAC 2.0]`)
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
+- [ ] Fix Names refuses the WHOLE batch when a target directory is not writable, naming the dir and both uids — and a mixed batch never half-applies
+- [ ] A fully failed Fix Names batch says so: journal ends with `0 renamed … N FAILED`, and N identical EACCES rows collapse to one `N× …` headline (even when a name carries an apostrophe) instead of looking like a no-op
