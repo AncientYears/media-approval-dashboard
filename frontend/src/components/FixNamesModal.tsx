@@ -278,7 +278,21 @@ export default function FixNamesModal({
             <div style={{ color: "#94a3b8", wordBreak: "break-all" }}>{row.currentName}</div>
           )}
         </span>
-        {note && <span style={{ fontSize: 11, color: "#f59e0b", flexShrink: 0 }}>{note}</span>}
+        {note && (
+          <span
+            style={{
+              fontSize: 11,
+              color: "#f59e0b",
+              flexShrink: 0,
+              maxWidth: 200,
+              overflowWrap: "anywhere",
+              textAlign: "right",
+              lineHeight: 1.35,
+            }}
+          >
+            {note}
+          </span>
+        )}
       </div>
     );
   }

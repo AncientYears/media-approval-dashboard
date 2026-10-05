@@ -1820,6 +1820,16 @@ export function uniqueDestPath(destFilePath: string, srcIno: number | null): str
   for (let i = 2; i < 100; i++) {
     const cand = `${stem}-${i}${ext}`;
     if (!fs.existsSync(cand)) return cand;
+    // A candidate that IS the source file means an earlier pass already landed
+    // here, so returning it is what makes this idempotent. Without the inode
+    // test a second Fix Names run over a multi-version folder finds its own "-2"
+    // occupied and escalates to "-3", then "-4", one pass at a time — and since
+    // the bare name is always held by a DIFFERENT file, nothing else stops it.
+    if (srcIno && srcIno > 0) {
+      try {
+        if (fs.statSync(cand).ino === srcIno) return cand;
+      } catch {}
+    }
   }
   return `${stem}-${Date.now()}${ext}`;
 }
