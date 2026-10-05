@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -1190,6 +1190,28 @@ function namedSpecialCount(payload: string): number {
   } catch {
     return 0;
   }
+}
+
+/** A show's SEASON LIST (how many seasons it has at all), memoised in-process.
+ *
+ *  Distinct from tmdb_season_cache, which holds one season's episodes and is
+ *  only ever populated for seasons we already know about — so it can never
+ *  answer "which seasons does this show have". This is the one call that can,
+ *  and the dashboard hits it once per native franchise per load, hence the TTL
+ *  memo: a page refresh must not spend a TMDB request per card. */
+const seasonListMemo = new Map<string, { at: number; list: Array<{ season_number: number; episode_count: number }> }>();
+const SEASON_LIST_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function seasonListForShow(
+  showId: number,
+  language?: string | null,
+): Promise<Array<{ season_number: number; episode_count: number }>> {
+  const key = `${showId}:${language || ""}`;
+  const hit = seasonListMemo.get(key);
+  if (hit && Date.now() - hit.at < SEASON_LIST_TTL_MS) return hit.list;
+  const list = (await fetchTMDBTVSeasons(showId, language || undefined)) || [];
+  seasonListMemo.set(key, { at: Date.now(), list });
+  return list;
 }
 
 /** Strip parser/release junk from a series title used as the franchise display
@@ -3968,6 +3990,38 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 extras: 0,
               });
               existingSeasons.add(0);
+            }
+          }
+          // A native franchise has no arr to enumerate its seasons, so TMDB is
+          // the only authority on how many seasons the show HAS. Without this a
+          // native card lists only seasons that happen to have a request row or
+          // a folder — "Sofia the First" reads as 1 season when TMDB knows 4,
+          // and S02-S04 stay invisible until something creates them. The Sonarr
+          // block above answers the same question from seriesObj; this is its
+          // arr-free equivalent, and every consumer already handles a
+          // request_id: null row because the S00 pill above is one.
+          if (sonarrId == null && libraryKey) {
+            const showId = cachedShowIdForKey(db, libraryKey);
+            if (showId) {
+              let tmdbSeasonList: Array<{ season_number: number; episode_count: number }> = [];
+              try {
+                tmdbSeasonList = await seasonListForShow(showId, franchiseLanguage(db, libraryKey));
+              } catch {}
+              for (const sn of tmdbSeasonList) {
+                if (existingSeasons.has(sn.season_number)) continue;
+                mappedSeasons.push({
+                  season: sn.season_number,
+                  request_id: null,
+                  status: null,
+                  total_size_mb: 0,
+                  release_count: 0,
+                  title: franchiseTitle,
+                  episode_count: sn.episode_count || 0,
+                  covered_episodes: [],
+                  extras: 0,
+                });
+                existingSeasons.add(sn.season_number);
+              }
             }
           }
         }
@@ -7382,6 +7436,31 @@ let episodes: any[];
             file_count: 0,
           });
           existingSeasons.add(0);
+        }
+      }
+      // Same arr-free season enumeration as the dashboard's native branch, so
+      // the two never disagree about how many seasons a show has.
+      if (seed.library_key) {
+        const showId = cachedShowIdForKey(db, seed.library_key);
+        if (showId) {
+          let tmdbSeasonList: Array<{ season_number: number; episode_count: number }> = [];
+          try {
+            tmdbSeasonList = await seasonListForShow(showId, franchiseLanguage(db, seed.library_key));
+          } catch {}
+          for (const sn of tmdbSeasonList) {
+            if (existingSeasons.has(sn.season_number)) continue;
+            seasons.push({
+              season: sn.season_number,
+              request_id: null,
+              status: null,
+              title,
+              episode_count: sn.episode_count || 0,
+              covered_episodes: [],
+              extras: 0,
+              file_count: 0,
+            });
+            existingSeasons.add(sn.season_number);
+          }
         }
       }
       seasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
