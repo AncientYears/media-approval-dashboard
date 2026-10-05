@@ -2176,6 +2176,25 @@ function specialTitleFromBareName(base: string): string | null {
   return out;
 }
 
+/** A bare leading number on an unnumbered special ("1 Krecik i balonik (special) …")
+ *  is the release's own numbering of the S00 extras.
+ *
+ *  parseEpisodeCode deliberately needs TWO digits for a bare number, and that guard
+ *  is right everywhere else: "7 Samurai" and "3.10 to Yuma" must never become
+ *  S01E07. An unnumbered special has no SxxExx to renumber and is already scoped to
+ *  season 0, so there is nothing for the number to collide with — and here a single
+ *  digit is exactly as meaningful as "12".
+ *
+ *  Requires trailing whitespace, never a dot: that is what keeps a film title
+ *  beginning with a figure ("3.10 to Yuma") out, and a 4-digit year cannot match
+ *  because the lookahead fails mid-number. */
+function bareSpecialNumber(base: string): number | null {
+  const m = base.match(/^\s*(\d{1,3})(?=\s)/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** Resolve an S00 special's own title/year/imdbId, preferring TMDB and falling
  *  back to the on-disk name. Two sources: the name after the episode code, and
  *  that with a leading show-name prefix stripped. */
@@ -2296,17 +2315,29 @@ async function proposeCanonicalName(
     // A special is usually filed on TMDB as its own movie, never under the show,
     // so the show's id must not be reused. Resolve the special itself and keep
     // the S00Exx marker so two specials can never collapse to one name.
-    const sp = await specialPiecesForFile(db, request, base, pieces, parseEpisodeCode(base, { knownSeason: 0 })?.episode ?? null);
+    const codeEp = parseEpisodeCode(base, { knownSeason: 0 })?.episode ?? null;
+    // A bare leading digit counts as a declared number here, so it also reaches
+    // specialPiecesForFile — which then skips air-date inference for the same
+    // reason it skips it for an explicit S00E07: the release stated a number, and
+    // inferring over it could re-point a correctly numbered file.
+    const bareEp = codeEp == null ? bareSpecialNumber(base) : null;
+    const sp = await specialPiecesForFile(db, request, base, pieces, codeEp ?? bareEp);
     if (!sp) return { name: null, role: "special", note: "No title in file name" };
     const epNo = parseEpisodeCode(base, { knownSeason: 0 });
     // A number resolved from the show's own S00 list outranks the release's own
     // marker: the file says "S12E00", which states a SEASON's zeroth episode and
     // names no special at all, whereas TMDB's air date says which one it is. Only
     // a positive number the release itself wrote is left alone.
-    const declared = epNo?.episode ?? null;
+    const declared = epNo?.episode ?? bareEp;
     const episodeNo = sp.episodeNumber ?? (declared && declared > 0 ? declared : null);
+    // Having just consumed that digit as the S00Exx marker, it must not also
+    // survive as title text — "1 Krecik i balonik" would otherwise render as a
+    // numbered title beside its own number.
+    const title = bareEp != null && episodeNo === bareEp
+      ? sp.title.replace(/^\s*\d{1,3}\s+/, "").trim() || sp.title
+      : sp.title;
     const name = canonicalSpecialFile(conf, {
-      title: sp.title,
+      title,
       year: sp.year,
       imdbId: sp.imdbId,
       season: 0,
