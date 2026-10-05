@@ -1135,6 +1135,22 @@ function libraryKeyYear(key?: string | null): number | null {
   return Number.isFinite(y) && y > 0 ? y : null;
 }
 
+/**
+ * Card label for a franchise. A reboot reuses the original title verbatim — TMDB
+ * indexes both DuckTales series as "DuckTales" — so two cards render identically
+ * unless something states the year. The library_key is what actually separates
+ * them (`series:75931:1987` vs `series:330134:2017`), so the card borrows its
+ * year from there. DISPLAY ONLY: folder resolution keeps using the raw title, and
+ * the stored title stays year-less because the canonical folder name renders the
+ * year itself.
+ */
+function franchiseDisplayTitle(title: string, libraryKey?: string | null): string {
+  const t = (title || "").trim();
+  if (!t || /\(\d{4}\)/.test(t)) return t;
+  const y = libraryKeyYear(libraryKey);
+  return y ? `${t} (${y})` : t;
+}
+
 /** Year parsed from a disk folder name (`Foo (2017)`, `Foo 2017`, ...). */
 function folderYear(name: string): number | null {
   const bracketed = name.match(/[\[(]((?:19|20)\d{2})[\])]/);
@@ -3501,7 +3517,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
         const totalCovered = mappedSeasons.reduce((sum: number, s: any) => sum + (s.covered_episodes?.length || 0) + (s.extras || 0), 0);
         managed.push({
-          title: franchiseTitle,
+          title: franchiseDisplayTitle(franchiseTitle, libraryKey),
           type: "series",
           sonarr_id: sonarrId,
           library_key: libraryKey,
@@ -6904,7 +6920,7 @@ let episodes: any[];
         }
       }
       seasons.sort((a: any, b: any) => (a.season ?? 0) - (b.season ?? 0));
-      res.json({ library_key: seed.library_key, title, language: franchiseLanguage(db, seed.library_key), seasons });
+      res.json({ library_key: seed.library_key, title: franchiseDisplayTitle(title, seed.library_key), language: franchiseLanguage(db, seed.library_key), seasons });
     } catch (error) {
       console.error("Error fetching native franchise:", error);
       res.status(500).json({ error: "Failed to fetch native franchise" });
