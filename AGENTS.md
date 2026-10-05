@@ -993,6 +993,29 @@ SEERR_API_KEY=
 - Processed files in /Processed are preserved by destroy either way
 - `--card-bg: #1e293b` CSS variable fixes transparent modals
 - **Import-library processed_files**: Always targets/creates `release_id IS NULL` AH rows (not torrent-linked rows). Skips adding files already in /processed by inode check (`alreadyImported`).
+- **A packed episode file moves the whole tail of the season.** When a release packs
+  TMDB's double episode into one file it keeps only the FIRST number (DuckTales
+  S01E51 "Magicas Magic Mirror Take Me Out of the Ballgame" is E51 AND E52), so
+  every later file is numbered one behind. `resolveEpisodeSpan` fixes both halves
+  from one piece of evidence — the file's own title — and they only work TOGETHER:
+  the packed file becomes `S01E51-52` while the next file moves to E53. Crediting the
+  range alone claims E52 twice; moving the tail alone leaves the packed file hiding
+  an episode. Number+title previously came from different sources (code from the
+  filename, title from the cache at that number) with no cross-check, which labelled
+  E52–E65 with the PREVIOUS episode's title.
+  Three guards keep the inference honest, each answering a real false positive:
+  - **A packed file's extra title must TRAIL** (`titleStartsWith` + `titleEndsWith`,
+    not word overlap). The DuckTales pilot's E01 filename carries both halves'
+    wording while the release ships a separate E02 file — overlap alone turned that
+    into a bogus `S01E01-02`.
+  - **A shift needs EXACTLY ONE matching neighbour.** E01's own title overlaps both
+    "Don't Give Up the Ship (1)" and "(2)"; a shift that merely found a match moved
+    that file onto a number a sibling already held. Zero matches (a translated or
+    reworded title) likewise leaves the number alone — which is what keeps a Polish
+    release on an `en-US` cache (`episodeTitleFromCache` defaults to `en-US`) from
+    being renumbered wholesale.
+  - **An explicit `S01E01-02` range in the name is authoritative** and never
+    re-inferred; the release already declared its own span.
 - **Native identity (`library_key`)**: `media_requests.library_key` is the arr-free identity (`movie:<imdb|slug>:<year>` / `series:<tvdb|imdb|slug>:<year>`). `/managed` groups series by `sonarr_id` OR `library_key`. Reconcile (`POST /import-library/native`) only creates/adopts dormant rows; rows in DOWNLOADING/SEEDING/SEARCHING/AWAITING_APPROVAL/APPROVED are never touched. Native series cards have no sonarr_id — frontend "Manage" falls back to `/requests/{first_request_id}`, and the Delete button is hidden (needs Sonarr).
 - **A movie repair PREFERS the IMDb id, never the slug.** `movieKeySegment`
   (`requests.ts`) takes the id whenever TMDB returns a real one (`^tt\d{6,}$`),

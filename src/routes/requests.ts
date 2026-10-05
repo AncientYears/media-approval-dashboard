@@ -1300,8 +1300,9 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
     if (!pieces) return null;
     return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
   }
-  const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
-  if (!ep) return null;
+  const parsed = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
+  if (!parsed) return null;
+  const ep = resolveEpisodeSpan(db, request, sourceBase, parsed);
   if (ep.season === 0) {
     const sp = await specialPiecesForFile(db, request, sourceBase, pieces, ep.episode);
     if (!sp) return null;
@@ -1823,60 +1824,124 @@ async function probeInodesConcurrently(paths: string[]): Promise<Map<string, Pro
   return map;
 }
 
+/** How many extra episodes one packed file may name. Two halves of a story in one
+ *  file is the norm; the cap stops a loose segment match running up the season. */
+const PACKED_EPISODE_CAP = 3;
+
+/** The episode a file REALLY is, and the span it really covers.
+ *
+ *  parseEpisodeCode reads what the NAME claims, which is not always what the file
+ *  is. When a release packs a TMDB double episode into one file it keeps only the
+ *  first number — DuckTales S01E51 "Magicas Magic Mirror Take Me Out of the
+ *  Ballgame" is TMDB's E51 AND E52, which TMDB itself flags as "First part of double
+ *  episode" / "Second part of double episode" — so every later file in that release
+ *  is numbered one behind and its own title sits at the NEXT index.
+ *
+ *  Both corrections come from the same evidence and only make sense together: the
+ *  packed file becomes "S01E51-52" while the file after it moves to 53. Crediting
+ *  the range alone would claim episode 52 twice, and moving the tail alone would
+ *  leave the packed file hiding one of the two episodes it holds.
+ *
+ *  An explicit "S01E01-02" range in the name is left exactly as it is: the release
+ *  already declares its own span, so there is nothing left to infer. */
+function resolveEpisodeSpan(
+  db: Database,
+  request: any,
+  base: string,
+  parsed: { season: number; episode: number; episodeEnd?: number },
+): { season: number; episode: number; episodeEnd?: number } {
+  const out = { season: parsed.season, episode: parsed.episode, episodeEnd: parsed.episodeEnd };
+  const key = request.library_key;
+  if (!key || parsed.episodeEnd || parsed.season === 0) return out;
+  const own = episodeTitleFromSourceName(base);
+  if (!own) return out;
+  const lang = franchiseLanguage(db, key);
+  const at = (n: number) => episodeTitleFromCache(db, key, parsed.season, n, lang);
+  const ownNorm = normalizeTitleForCompare(own);
+
+  // A packed file is written as this episode's title FOLLOWED BY the next one's, so
+  // both ends must line up. Requiring the extra title to TRAIL the on-disk title is
+  // what keeps a file that merely mentions another episode's words from claiming it:
+  // the DuckTales pilot's E01 filename carries the wording of both halves while the
+  // release ships a separate E02 file, which plain word overlap turned into a bogus
+  // "S01E01-02".
+  const here = at(parsed.episode);
+  if (here && titleStartsWith(ownNorm, normalizeTitleForCompare(here))) {
+    let last = parsed.episode;
+    while (last - parsed.episode < PACKED_EPISODE_CAP) {
+      const next = at(last + 1);
+      if (!next || !titleEndsWith(ownNorm, normalizeTitleForCompare(next))) break;
+      last++;
+    }
+    if (last > parsed.episode) out.episodeEnd = last;
+    return out;
+  }
+  // Its own title agrees with the number it claims: nothing is wrong with it. This
+  // also covers a release naming its episodes in another language than the cache
+  // (the cache defaults to en-US with no language pref set), where no window entry
+  // would match and the claimed number is the correct one anyway.
+  if (here && episodeTitleAgrees(own, here)) return out;
+
+  // Shifted by a pack earlier in the season: the file's own title says where it
+  // belongs. EXACTLY ONE candidate may claim it — DuckTales E01 overlaps both
+  // "Don't Give Up the Ship (1)" and "(2)", and a shift that merely found a match
+  // would move that file onto a number a sibling already holds. Zero matches (a
+  // reworded or translated title) and several matches alike leave the number alone.
+  const hits: number[] = [];
+  for (const n of [parsed.episode + 1, parsed.episode + 2, parsed.episode - 1, parsed.episode - 2]) {
+    if (n < 1 || n === parsed.episode) continue;
+    const other = at(n);
+    if (other && episodeTitleAgrees(own, other)) hits.push(n);
+  }
+  if (hits.length === 1) out.episode = hits[0];
+  return out;
+}
+
 /** Episode title for a file, honouring TMDB first and the on-disk name as the
- *  fallback. A multi-episode file has no single TMDB entry, so its two cached
- *  titles are joined the way scene releases already write them
- *  ("S01E01-02 Kolejka - Fretka traci głowę"). */
+ *  fallback. A multi-episode file has no single TMDB entry, so its cached titles
+ *  are joined the way scene releases already write them ("S01E01-02 Kolejka - Fretka
+ *  traci głowę"). `ep` must already be resolved by resolveEpisodeSpan, which owns
+ *  every correction to the numbering. */
 function episodeTitleFor(db: Database, request: any, base: string, ep: { season: number; episode: number; episodeEnd?: number }): string | null {
   const key = request.library_key;
   const lang = key ? franchiseLanguage(db, key) : null;
   const own = episodeTitleFromSourceName(base);
   if (!key) return own;
   if (ep.episodeEnd && ep.episodeEnd > ep.episode) {
-    const first = episodeTitleFromCache(db, key, ep.season, ep.episode, lang);
-    const last = episodeTitleFromCache(db, key, ep.season, ep.episodeEnd, lang);
-    if (first && last) return `${first} - ${last}`;
+    const parts: string[] = [];
+    for (let n = ep.episode; n <= ep.episodeEnd; n++) {
+      const t = episodeTitleFromCache(db, key, ep.season, n, lang);
+      if (!t) return own;
+      parts.push(t);
+    }
+    return parts.join(" - ");
   }
-  const cached = episodeTitleFromCache(db, key, ep.season, ep.episode, lang);
-  if (!cached) return own;
-  if (!own || episodeTitleAgrees(own, cached)) return cached;
-  // A merge-induced offset, NOT a plain disagreement. A release that packs two TMDB
-  // episodes into one file ("S01E51 Magicas Magic Mirror Take Me Out of the
-  // Ballgame") keeps the number of the first and swallows the second, so every
-  // LATER file is numbered one behind TMDB. The number comes from the file but the
-  // title was read at that number, so E52 got TMDB's E51/E52 title ("Take Me Out of
-  // the Ballgame") on a file that is actually "Duck to the Future" — and the same
-  // shift ran to the end of the season.
-  //
-  // The proof is POSITIVE: the file's own title names a DIFFERENT episode of the
-  // same cached season. A mere failure to match proves nothing, because a release
-  // naming its episodes in another language than the cache (the cache defaults to
-  // en-US whenever no language pref is set) disagrees on every single episode while
-  // every number is perfectly correct. Requiring a neighbour match keeps that case
-  // on TMDB exactly as before and fires only on a real offset.
-  for (const n of [ep.episode - 1, ep.episode + 1, ep.episode + 2]) {
-    if (n < 1 || n === ep.episode) continue;
-    const other = episodeTitleFromCache(db, key, ep.season, n, lang);
-    if (other && episodeTitleAgrees(own, other)) return own;
-  }
-  // Nothing to prove it either way: the cached title is the canonical spelling and
-  // the release's own wording is a translation or a reword of the same episode.
-  return cached;
+  return (key ? episodeTitleFromCache(db, key, ep.season, ep.episode, lang) : null) || own;
+}
+
+/** Lowercased, apostrophes deleted, everything else collapsed to single spaces.
+ *  Apostrophes are DELETED rather than swept to a space: they are the only
+ *  difference between a release's "Scrooges Pet" and TMDB's "Scrooge's Pet", and a
+ *  space would split the word into "scrooge s" so the two would stop comparing as
+ *  the same episode. */
+function normalizeTitleForCompare(s: string): string {
+  return s.toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function titleStartsWith(whole: string, part: string): boolean {
+  return !!part && (whole === part || whole.startsWith(part + " "));
+}
+
+function titleEndsWith(whole: string, part: string): boolean {
+  return !!part && (whole === part || whole.endsWith(" " + part));
 }
 
 /** Whether an on-disk episode title and TMDB's title for that episode number are
  *  the same episode, judged by the house matcher (prefix, then tolerant word
  *  overlap). Reuses titlesMatch rather than a bespoke overlap count so this agrees
- *  with every other title comparison in the file.
- *
- *  Apostrophes are DELETED rather than swept to a space: they are the difference
- *  between a release's "Scrooges Pet" and TMDB's "Scrooge's Pet", which are the
- *  same episode and must not read as a disagreement — a space would split the word
- *  into "scrooge s" and fail the overlap test, so the guard would then keep the
- *  release's spelling and lose TMDB's punctuation for every such episode. */
+ *  with every other title comparison in the file. */
 function episodeTitleAgrees(onDisk: string, cached: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
-  return titlesMatch(norm(onDisk), norm(cached));
+  return titlesMatch(normalizeTitleForCompare(onDisk), normalizeTitleForCompare(cached));
 }
 
 /** Episode title already present in an on-disk name ("... - S03E15 - The
@@ -2028,9 +2093,10 @@ async function proposeCanonicalName(
     if (!name) return { name: null, role: "special", note: "Missing title pieces" };
     return { name: name === base ? null : name, role: "special", note: sp.onTmdb ? null : "Not on TMDB - kept the on-disk title" };
   }
-  const ep = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
-  if (!ep) return { name: null, role: "episode", note: "No episode number in name" };
-  if (ep.season !== (request.season ?? ep.season)) return { name: null, role: "episode", note: `S${ep.season} does not match request season` };
+  const parsed = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
+  if (!parsed) return { name: null, role: "episode", note: "No episode number in name" };
+  if (parsed.season !== (request.season ?? parsed.season)) return { name: null, role: "episode", note: `S${parsed.season} does not match request season` };
+  const ep = resolveEpisodeSpan(db, request, base, parsed);
   const episodeTitle = episodeTitleFor(db, request, base, ep);
   const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
   const name = canonicalEpisodeFile(conf, {
