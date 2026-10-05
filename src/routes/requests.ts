@@ -2649,7 +2649,9 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     return `${stem}-${Date.now()}${ext}`;
   };
   const suffixed = (row: FixNameRow, name: string) => {
-    const warn = `Another file in this folder claims this episode — this one becomes version ${name.slice(stemOf(row).length + 1)}`;
+    // Slice between the stem and the extension: name is "<stem>-N<ext>", so the
+    // naive stem.length + 1 ran on through to the extension ("version 2.mp4").
+    const warn = `Another file in this folder claims this episode — this one becomes version ${name.slice(stemOf(row).length + 1, name.length - extOf(row).length)}`;
     row.note = row.note ? `${row.note}; ${warn}` : warn;
   };
 
