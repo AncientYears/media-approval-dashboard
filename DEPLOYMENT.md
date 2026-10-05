@@ -142,6 +142,63 @@ chown 1000:1000 \
 Until this is done, the app runs but every move/import operation fails with
 `EACCES`. Search, approve, the UI and the database all work fine.
 
+### Jellyfin (separate VM)
+
+Jellyfin runs on its own VM but saves `.nfo` sidecars **into** the library
+folders, so it needs write access to `/media/{Filmy,Serialy}` — not just read.
+
+**Access must come from the service's primary `Group=`, not supplementary
+groups.** This export does not honour supplementary group membership: uid 103
+with GID 1000 in its supplementary list still gets `EACCES`, while the same uid
+with GID 1000 as its *primary* group writes fine. Verified directly:
+
+```bash
+# on the Jellyfin VM — the first fails, the second succeeds
+sudo setpriv --reuid=103 --regid=103 --groups=103,1000 -- touch /media/.grouptest/a
+sudo setpriv --reuid=103 --regid=1000 --groups=1000        -- touch /media/.grouptest/b
+```
+
+So `usermod -aG 1000 jellyfin` achieves nothing here, and the fix is a systemd
+drop-in instead:
+
+```ini
+# /etc/systemd/system/jellyfin.service.d/override.conf
+[Service]
+User=jellyfin
+Group=ancient
+```
+
+This keeps Jellyfin on its own uid (`User=jellyfin`, uid 103) and grants access
+through its primary group — per-service identity is preserved, which matters
+because a service sharing the app's uid could delete or rename library media.
+
+Two things that look like failures but aren't:
+
+- `ls /var/lib/jellyfin/data` → `Permission denied` as any other user. It's
+  `0750 jellyfin:jellyfin`; `other` has no bits. Use `sudo`.
+- `SQLite Error 14: 'unable to open database file'` at startup means SQLite
+  couldn't write *in the directory*. It usually means a `chown` was applied
+  while a **previous instance was still running** and recreated files as the
+  old uid. Stop first, then chown, then start:
+
+  ```bash
+  sudo systemctl stop jellyfin
+  sudo chown -R jellyfin:jellyfin /var/lib/jellyfin /var/cache/jellyfin /var/log/jellyfin /etc/jellyfin
+  sudo systemctl start jellyfin
+  ```
+
+  These four trees are local disk, not the NFS export, so ownership is fully
+  under local control — `chown -R` is authoritative there.
+
+Because gid 1000 spans the whole media tree, Jellyfin can write anywhere under
+`/media`, including `/media/Torrents/download`, which is immutable and seeds
+forever. Harmless while its libraries are only `Filmy`/`Serialy`, and shrinkable
+with a more specific read-only export (NFS matches the longest path prefix) if
+that ever stops being true.
+
+Inotify does not cross NFS, so Jellyfin will not notice a Fix Names rename on
+its own — refresh the library manually after renaming.
+
 ## Configuration
 
 `.env` — see `.env.example`. The app loads it itself via `dotenv`; do not use
@@ -176,6 +233,10 @@ path, so `link()` returns `EXDEV` and `processor.ts` falls back to
 
 **`EACCES` on move/import** — the write directories above aren't writable. See
 Permissions.
+
+**Jellyfin can't save `.nfo`** — it has no write access to the library folders,
+and adding it to a group won't help because supplementary groups aren't honoured
+on this export. See Permissions → Jellyfin.
 
 **qBittorrent marks torrents as errored on start** — it started before the NFS
 mount was ready. `RequiresMountsFor=/media` should prevent this; check with
