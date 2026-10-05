@@ -1877,13 +1877,35 @@ function specialTitleFromSourceName(base: string, request: any, showTitle?: stri
   return out.length >= 3 ? out : raw;
 }
 
+/** Candidate title for a special carrying NO S00Exx marker — a movie filed
+ *  straight into S00 ("Kacze opowieści Poszukiwacze zaginionej lampy 1990.mkv").
+ *  A trailing year is deliberately KEPT: it belongs to the title as often as not
+ *  ("Blade Runner 2049", "1917"), and the resolver tolerates it as one unmatched
+ *  word. Only the release tail (first bracket group) is cut. */
+function specialTitleFromBareName(base: string): string | null {
+  let out = base.replace(/\.(mkv|mp4|avi|mov|ts|wmv|m4v)$/i, "");
+  const bracket = out.search(/[[({]/);
+  if (bracket > 0) out = out.slice(0, bracket);
+  out = out.replace(/\s*[\])}]\s*$/, "").replace(/[\s._-]+$/, "").trim();
+  if (out.length < 3 || out.length > 120) return null;
+  if (!/[a-z]{3}/i.test(out)) return null;
+  return out;
+}
+
 /** Resolve an S00 special's own title/year/imdbId, preferring TMDB and falling
  *  back to the on-disk name. Two sources: the name after the episode code, and
  *  that with a leading show-name prefix stripped. */
 async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null, episode?: number | null): Promise<{ title: string; year: number | null; imdbId: string | null; onTmdb: boolean } | null> {
   const rest = episodeTitleFromSourceName(sourceBase);
-  if (!rest) return null;
   const stripped = specialTitleFromSourceName(sourceBase, request, showPieces?.title);
+  // A movie special is often filed with NO S00Exx marker at all, and both
+  // code-derived helpers above return null for those. Bailing out here left such
+  // a file permanently un-nameable ("No title in file name") even though it
+  // states its own film title and TMDB can resolve it — so fall back to the
+  // release name itself rather than giving up.
+  const bare = rest ? null : specialTitleFromBareName(sourceBase);
+  const diskTitle = stripped || rest || bare;
+  if (!diskTitle) return null;
   const lang = request.library_key ? franchiseLanguage(db, request.library_key) : null;
   // A special is usually filed on TMDB as its own movie. Try that first — it is
   // the most specific match. The scene title is in the release's own language
@@ -1891,7 +1913,7 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
   // title, so a non-English search runs too even when no franchise language is
   // configured, since these are the titles the files actually carry.
   const searchLang = lang || "pl-PL";
-  for (const candidate of [stripped, rest]) {
+  for (const candidate of [stripped, rest, bare]) {
     if (!candidate) continue;
     try {
       const id = await resolveSpecialIdentity(candidate, searchLang);
@@ -1907,7 +1929,7 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
       if (tmdbTitle) return { title: tmdbTitle, year: null, imdbId: null, onTmdb: true };
     } catch {}
   }
-  return { title: stripped || rest, year: null, imdbId: null, onTmdb: false };
+  return { title: diskTitle, year: null, imdbId: null, onTmdb: false };
 }
 
 /**
