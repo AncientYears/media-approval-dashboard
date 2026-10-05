@@ -414,15 +414,70 @@ function includesTitleNorm(a: string, b: string): boolean {
   return true;
 }
 
+/** The identity segment of a series library_key (`series:163281:1997` → "163281").
+ *  Only a numeric segment counts: `seriesKeySegment` prefers TVDB then IMDb then a
+ *  title slug, and canonical series dirs embed `[tvdbid-####]` and nothing else. */
+function seriesKeyIdSegment(libraryKey?: string | null): string | null {
+  const seg = (libraryKey ?? "").split(":")[1]?.trim() ?? "";
+  return /^\d+$/.test(seg) ? seg : null;
+}
+
+/** The title half of a slug-anchored key ("tajemnica-sagali" → "Tajemnica Sagali"),
+ *  which is the name Fix Names itself mints — so a folder already renamed to
+ *  canonical is reachable by its own name even when the stored title differs. */
+function seriesKeySlugTitle(libraryKey?: string | null): string | null {
+  const seg = (libraryKey ?? "").split(":")[1]?.trim() ?? "";
+  if (!seg || /^\d+$/.test(seg)) return null;
+  return seg.replace(/-/g, " ").trim() || null;
+}
+
+/** Library show folders stating our own tvdb id. A canonical dir names identity
+ *  outright, so this outranks every title signal — and it is the ONLY signal left
+ *  once Fix Names has renamed the folder to its canonical name, at which point the
+ *  stored title (often a different language: "The Secret of Sagala" vs "Tajemnica
+ *  Sagali") can no longer match it. */
+function matchLibraryShowFoldersById(id: string): string[] {
+  const out: string[] = [];
+  try {
+    for (const d of fs.readdirSync(MEDIA_TV)) {
+      const m = d.match(/\btvdbid[\s-]?(\d+)\b/i);
+      if (m && m[1] === id) out.push(path.join(MEDIA_TV, d));
+    }
+  } catch {}
+  return out;
+}
+
 /** Every library show folder under MEDIA_TV that fuzzy-matches a title, in
  *  readdir order (an exact-name dir, when present, is returned first). Year is
  *  ignored here — callers disambiguate same-named franchises. */
-function matchLibraryShowFolders(baseTitle: string): string[] {
+function matchLibraryShowFolders(baseTitle: string, libraryKey?: string | null): string[] {
+  const idSeg = seriesKeyIdSegment(libraryKey);
+  if (idSeg) {
+    const byId = matchLibraryShowFoldersById(idSeg);
+    if (byId.length) return byId;
+  }
+
   const out: string[] = [];
   const direct = baseTitle ? path.join(MEDIA_TV, baseTitle) : "";
   if (direct && fs.existsSync(direct)) out.push(direct);
   const want = normalizeFolder(baseTitle);
-  if (!want) return out;
+  const slugWant = normalizeFolder(seriesKeySlugTitle(libraryKey) ?? "");
+  if (!want) {
+    // No usable stored title: an exact name match on the key's slug is still a
+    // name-stated signal. Deliberately NOT substring-matched — "hobbit" would
+    // otherwise sweep in both Hobbit folders and leave year disambiguation to
+    // arbitrate a franchise split this matcher has no business deciding.
+    if (!slugWant) return out;
+    try {
+      for (const d of fs.readdirSync(MEDIA_TV)) {
+        if (normalizeFolder(d) === slugWant) {
+          const full = path.join(MEDIA_TV, d);
+          if (!out.includes(full)) out.push(full);
+        }
+      }
+    } catch {}
+    return out;
+  }
   try {
     for (const d of fs.readdirSync(MEDIA_TV)) {
       const norm = normalizeFolder(d);
@@ -442,7 +497,7 @@ function matchLibraryShowFolders(baseTitle: string): string[] {
 function resolveLibraryShowFolder(request: { library_key?: string | null; type?: string; title?: string }): string | null {
   if (!request.library_key || request.type !== "series") return null;
   const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-  const candidates = matchLibraryShowFolders(baseTitle);
+  const candidates = matchLibraryShowFolders(baseTitle, request.library_key);
   if (candidates.length === 0) return null;
   const keyYear = libraryKeyYear(request.library_key);
   if (keyYear != null) {
@@ -964,9 +1019,10 @@ function processedMovieDirFromFiles(db: Database, requestIds: number[]): string 
  * matching one of the franchise's own season numbers. Bridges titles that are
  * nothing alike on disk (e.g. key slug "ninjago-dragon-rising" vs folder
  * "LEGO Ninjago: Dragons Rising") when no processed file paths exist. */
-function showDirByStructure(requestSeasons: number[]): string | null {
+function showDirByStructure(requestSeasons: number[], baseTitle?: string | null): string | null {
   const want = new Set(requestSeasons.filter((s) => s > 0));
   if (want.size === 0) return null;
+  const hits: string[] = [];
   try {
     for (const d of fs.readdirSync(PROCESSED_TV)) {
       let st: fs.Stats;
@@ -980,12 +1036,31 @@ function showDirByStructure(requestSeasons: number[]): string | null {
         for (const sub of fs.readdirSync(path.join(PROCESSED_TV, d), { withFileTypes: true })) {
           if (!sub.isDirectory()) continue;
           const sn = parseSeasonNumber(sub.name);
-          if (sn != null && want.has(sn)) return d;
+          if (sn != null && want.has(sn)) {
+            hits.push(d);
+            break;
+          }
         }
       } catch {}
     }
   } catch {}
-  return null;
+  if (hits.length === 0) return null;
+  // A season NUMBER identifies no franchise — nearly every show has an S01 — so
+  // returning the first structural hit hands a request somebody else's folder.
+  // That is how a show owning no processed files at all grows phantom season pills
+  // copied from an unrelated series. Narrow by name first...
+  const wantNorm = normalizeFolder(baseTitle ?? "");
+  if (wantNorm) {
+    const titled = hits.filter((d) => {
+      const norm = normalizeFolder(d);
+      return norm === wantNorm || (wantNorm.length >= 6 && includesTitleNorm(wantNorm, norm)) || (norm.length >= 6 && includesTitleNorm(norm, wantNorm));
+    });
+    if (titled.length) return titled[0];
+  }
+  // ...and when names cannot decide, structure has to be UNIQUE to count at all.
+  // It usually is not, and "no disk seasons" is the honest answer — the real
+  // folder is found by processedShowDirFromFiles whenever the request owns files.
+  return hits.length === 1 ? hits[0] : null;
 }
 
 /** The season folder backing a native library_key + season: title-matched
@@ -2308,7 +2383,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     // 2017, or a year-range folder) can never be mistaken for this show's file:
     // each processed inode only ever finds its true library hardlink.
     const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-    for (const showFolder of matchLibraryShowFolders(baseTitle)) {
+    for (const showFolder of matchLibraryShowFolders(baseTitle, request.library_key)) {
       scanVideoTreeFiles(showFolder, scanLibraryFile);
     }
   }
@@ -3833,7 +3908,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // above simply wins for seasons both sources agree on.
         {
           const franchiseYear = libraryKeyYear(libraryKey);
-          const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id)) ?? showDirByStructure(seasons.map((s: any) => s.season ?? 0));
+          const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id)) ?? showDirByStructure(seasons.map((s: any) => s.season ?? 0), franchiseTitle);
           const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear, fallbackShowDir);
           for (const [sn, files] of diskSeasons) {
             if (existingSeasons.has(sn)) continue;
@@ -7249,7 +7324,7 @@ let episodes: any[];
       // root got imported as Specials, or a season exists disk-first).
       const franchiseYear = libraryKeyYear(seed.library_key);
       const existingSeasons = new Set(seasons.map((s: any) => s.season));
-      const fallbackShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id)) ?? showDirByStructure(rows.map((r: any) => r.season ?? 0));
+      const fallbackShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id)) ?? showDirByStructure(rows.map((r: any) => r.season ?? 0), title);
       const diskSeasons = diskSeasonFolders(title, franchiseYear, fallbackShowDir);
       for (const [sn, files] of diskSeasons) {
         if (existingSeasons.has(sn)) continue;
@@ -7440,7 +7515,7 @@ let episodes: any[];
       const baseTitle = cleanFranchiseTitle(seed.title || "");
       const seedRows = db.prepare("SELECT id, season FROM media_requests WHERE type = 'series' AND library_key = ?").all(seed.library_key) as any[];
       const seedYear = libraryKeyYear(seed.library_key);
-      const seedShowDir = processedShowDirFromFiles(db, seedRows.map((r: any) => r.id)) ?? showDirByStructure(seedRows.map((r: any) => r.season ?? 0));
+      const seedShowDir = processedShowDirFromFiles(db, seedRows.map((r: any) => r.id)) ?? showDirByStructure(seedRows.map((r: any) => r.season ?? 0), baseTitle);
       let seedSeasonFolder: string | null = null;
       try {
         seedSeasonFolder = findSeasonFolder(baseTitle, sNum, seedYear) ?? (seedShowDir && fs.existsSync(path.join(PROCESSED_TV, seedShowDir, `S${String(sNum).padStart(2, "0")}`)) ? path.join(PROCESSED_TV, seedShowDir, `S${String(sNum).padStart(2, "0")}`) : null);
