@@ -1977,7 +1977,17 @@ function episodeTitleAgrees(onDisk: string, cached: string): boolean {
 /** Episode title already present in an on-disk name ("... - S03E15 - The
  * Screaming Earth [1080p]...") — used only when TMDB has nothing cached, so a
  * rename can never silently strip a title that is already on disk. */
-function episodeTitleFromSourceName(base: string): string | null {
+/** A release can go straight from the episode code into its tags, naming no
+ *  episode at all ("S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR"). Anchored at
+ *  the START of what follows the code, because a real episode title never BEGINS
+ *  with a resolution, source, provider or codec token — unlike the resolution
+ *  search below, which is a substring match and so may fire mid-title. */
+const TAG_RUN_HEAD = /^(?:web-?dl|web-?rip|bluray|blu-?ray|remux|hdtv|brrip|bdrip|dvdrip|amzn|dsnp|atvp|hmax|pcook|starz|hulu|\dK\b|x26[45]|h\.?26[45]|hevc|avc|aac\d|ac3|e-?ac3|ddp?\d?|truehd|dts-?hd|atmos)/i;
+
+/** On-disk episode title, or null when the release names none. Exported for
+ *  tests: this decides whether the canonical name carries an episode title at
+ *  all, and getting it wrong prints the whole tag run as the title. */
+export function episodeTitleFromSourceName(base: string): string | null {
   // "S0XE03" is a season-0 special marker, not a typo — accept it alongside the
   // normal S00E03 so the title after it is still found.
   const m = base.match(/(?<![A-Za-z0-9])[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
@@ -1992,7 +2002,14 @@ function episodeTitleFromSourceName(base: string): string | null {
   // the EARLIER of the two also keeps a bracketed title ahead of a later
   // resolution from truncating it.
   const bracket = rest.search(/[[({]/);
-  const res = rest.search(/[\s._-][\w]*\d{3,4}[pi]\b/i);
+  // The separator in front of the resolution is OPTIONAL, which is what catches
+  // a name that goes straight from the code into the tags: in
+  // "S14E01.1080p.iP.WEB-DL..." nothing precedes "1080p", so a required
+  // separator never matched, res stayed -1, and the entire tag run was returned
+  // as the episode title — printing the release tail TWICE, once as text and
+  // once as tags.
+  const res = rest.search(/[\s._-]?\w*\d{3,4}[pi]\b/i);
+  if (TAG_RUN_HEAD.test(rest)) return null;
   if (bracket >= 0 && (res < 0 || bracket <= res)) {
     // A leading bracket means the name went straight from the code to tags
     // ("- S03E01 [Dual Audio]") — there is no title to keep.

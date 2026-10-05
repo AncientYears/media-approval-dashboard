@@ -1278,6 +1278,19 @@ SEERR_API_KEY=
   dropped entirely while the vendor still rendered fine — which made it look like
   a group bug rather than a bracket one. The peel now removes the surrounding
   `[`/`]` pair, and `GROUP_TAIL` excises `- WORD` while keeping whatever followed.
+- **A release that names NO episode leaves the title token empty, never filled with tags.**
+  `episodeTitleFromSourceName` cuts what follows the episode code at the first bracket or
+  resolution, but its resolution pattern required a separator **in front of** the resolution.
+  A name that goes straight from the code into its tags
+  (`Death.in.Paradise.S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR`) has nothing in front of
+  `1080p`, so nothing matched and the whole tag run came back as the "title" — printing the
+  release tail **twice**, once as prose and once as `[WEBDL-1080p][AAC 2.0][x264]`. The
+  separator is now optional. `TAG_RUN_HEAD` additionally covers the same shape when the
+  release states no resolution (`S14E01.WEB-DL.AAC2.0.H.264-GRP`) by matching a
+  source/provider/codec token at the **start** of the remainder — anchored there because a
+  real episode title never *begins* with one, whereas the resolution search is a substring
+  match and so must keep its separator in front. `tidyTemplate` then drops the template's
+  now-dangling ` - `, yielding `Death in Paradise - S14E01 [WEBDL-1080p][AAC 2.0][x264]-RAWR`.
 - [ ] An S00 special whose title is a generic slot marker (`Episode 1`, `Christmas Special 2022`, `Pilot`) is NOT looked up in TMDB's film catalogue — that matched Death in Paradise's S11E00 to an unrelated 2003 film and printed its year. A real film in S00 is still resolved (`isGenericSpecialSlot`)
 - [ ] An UNNUMBERED special is numbered from TMDB's S00 **air dates** (`findSpecialByAirDate`), because no provider files these in season 0: they number them `E0` of the season they lead into, so `S12E00` = "Christmas Special 2022" (aired 25 Dec 2022, S12 began 3 Feb 2023)
 - [ ] The air-date window for `SxxE00` is bounded by seasons **xx-1 and xx**, never xx and xx+1 — these specials air in the Christmas gap at the END of the previous season's run. Getting the direction wrong made `S11E00` and `S12E00` resolve to the SAME special, which would have collapsed two files onto one name
@@ -1287,6 +1300,8 @@ SEERR_API_KEY=
 - [ ] The closer must touch the group: `… - Title (1080p)` does NOT make `Title` a release group, and `… (Dual Audio - Polish)` does not make `Polish` one
 - [ ] A bracketed vendor takes its `[`/`]` pair with it, and the group in front of it survives — with `TAoE` in the vendors list the name ends `-WEM TAoE`, not `… 2.0 -WEM)]` and not a stray `[WEM]` tag
 - [ ] All of the above round-trip: re-parsing a canonical name yields the identical string, so a second Fix Names pass has nothing to do
+- [ ] A release that names NO episode (`S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR`) gets no episode title — the tag run is not printed twice, as prose and as tags
+- [ ] The same shape with no resolution (`S14E01.WEB-DL.AAC2.0.H.264-GRP`) is also titleless, while a real title that merely CONTAINS a resolution is still cut at it (`Episode.1.1080p.AMZN...` → `Episode 1`)
 - [ ] version count excludes DOWNLOADING torrents from release_count and total_size_mb
 - [ ] Fix Names refuses the WHOLE batch when a target directory is not writable, naming the dir and both uids — and a mixed batch never half-applies
 - [ ] A fully failed Fix Names batch says so: journal ends with `0 renamed … N FAILED`, and N identical EACCES rows collapse to one `N× …` headline (even when a name carries an apostrophe) instead of looking like a no-op
