@@ -2562,19 +2562,40 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   // (planFixNameDest), so preview used to advertise the bare canonical base and
   // then change it — hiding which file becomes primary, and making a manually
   // disambiguated "-2" look like it was being stripped.
-  //
-  // Apply parks every file in the batch before computing destinations, so the only
-  // thing separating two rows is their submission order: the first to claim a name
-  // in a folder keeps it, the next takes -2. Simulate that per folder in the same
-  // order, so preview and apply are the same computation.
-  //
-  // Deliberately blind to what is on disk right now. A season-wide renumber means
-  // every canonical name is still held by the file that moves next, so consulting
-  // the filesystem here would suffix rows that apply is about to vacate. The one
-  // case this cannot see is a canonical-named file outside this batch, which apply
-  // would still suffix.
   const claimedByDir = new Map<string, Set<string>>();
-  const claimKey = (row: FixNameRow, name: string) => {
+  const allRows: (FixNameRow | null)[][] = groups.map((g) => [g.processed, g.library]);
+
+  const moving = new Set<FixNameRow>();
+  const occupant = new Map<string, FixNameRow>();
+  for (const rows of allRows) {
+    for (const row of rows) {
+      if (!row) continue;
+      occupant.set(path.join(path.dirname(row.path), path.basename(row.path)), row);
+      if (row.proposedName) moving.add(row);
+    }
+  }
+
+  const extOf = (row: FixNameRow) => path.extname(row.path);
+  const stemOf = (row: FixNameRow) => {
+    const ext = extOf(row);
+    const name = row.proposedName as string;
+    return ext && name.endsWith(ext) ? name.slice(0, -ext.length) : name;
+  };
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Sticky version suffix: a file already named "<canonical base>-N" keeps that N
+  // and never competes for the bare name. Deciding primary by submission order
+  // alone meant a manual disambiguation silently swapped whenever the list order
+  // changed; excluding the suffixed file from the bare-name race makes the outcome
+  // order-independent. A lone "-2" therefore stays "-2" rather than collapsing to
+  // the bare name — that is the point, since renaming it would be pure churn.
+  const stickyOf = (row: FixNameRow) => {
+    const ext = extOf(row);
+    if (!ext) return null;
+    return new RegExp(`^${esc(stemOf(row))}-\\d{1,3}${esc(ext)}$`, "i").test(row.currentName) ? row.currentName : null;
+  };
+
+  const claim = (row: FixNameRow, name: string) => {
     const dir = path.dirname(row.path);
     let claimed = claimedByDir.get(dir);
     if (!claimed) {
@@ -2585,34 +2606,85 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   };
   const isClaimed = (row: FixNameRow, name: string) => claimedByDir.get(path.dirname(row.path))?.has(name.toLowerCase()) ?? false;
 
-  const allRows: (FixNameRow | null)[][] = groups.map((g) => [g.processed, g.library]);
+  // Unavailable means: claimed by an earlier row, OR present on disk and NOT about
+  // to be vacated. Apply stages exactly the movers, so a mover's current name is
+  // free for the whole batch — which is what stops a season-wide renumber (every
+  // canonical name still held by the file that moves next) from cascading into
+  // suffixes. A file outside the batch is never staged, so it still blocks, exactly
+  // as it does for the real uniqueDestPath.
+  const isTaken = (row: FixNameRow, name: string) => {
+    if (isClaimed(row, name)) return true;
+    const dest = path.join(path.dirname(row.path), name);
+    let exists: boolean;
+    try {
+      exists = fs.existsSync(dest);
+    } catch {
+      return false;
+    }
+    if (!exists) return false;
+    const sitting = occupant.get(dest);
+    if (!sitting) return true;
+    return sitting === row ? false : !moving.has(sitting);
+  };
 
   // Rows with no proposal are NOT renamed — already canonical, identity unresolved,
   // or naming disabled — so they keep sitting on their current name and every mover
-  // has to route around them. They are seeded first because they block regardless
-  // of order: apply only stages the movers, so a name held by a stationary file is
-  // occupied for the whole batch. This is the state you land in the moment after a
-  // rename, where the primary is canonical and only its "-2" twin still has work.
+  // has to route around them. Seeded first because they block regardless of order.
+  // This is the state you land in right after a rename: the primary is canonical and
+  // only its "-2" twin still has work.
   for (const rows of allRows) {
     for (const row of rows) {
-      if (row && !row.proposedName) claimKey(row, row.currentName);
+      if (row && !row.proposedName) claim(row, row.currentName);
     }
   }
+
+  const resolve = (row: FixNameRow, firstChoice: string) => {
+    const ext = extOf(row);
+    const stem = stemOf(row);
+    if (!isTaken(row, firstChoice)) return firstChoice;
+    for (let i = 2; i < 100; i++) {
+      const cand = `${stem}-${i}${ext}`;
+      if (!isTaken(row, cand)) return cand;
+    }
+    return `${stem}-${Date.now()}${ext}`;
+  };
+  const suffixed = (row: FixNameRow, name: string) => {
+    const warn = `Another file in this folder claims this episode — this one becomes version ${name.slice(stemOf(row).length + 1)}`;
+    row.note = row.note ? `${row.note}; ${warn}` : warn;
+  };
+
+  // Bare-name race first, sticky rows last: the unsuffixed file claims the bare
+  // name before any "-N" row is considered, so the suffix is honoured no matter
+  // which order the rows arrive in.
+  const sticky: FixNameRow[] = [];
   for (const rows of allRows) {
     for (const row of rows) {
       if (!row?.proposedName) continue;
-      const ext = path.extname(row.path);
-      const stem = row.proposedName.endsWith(ext) ? row.proposedName.slice(0, -ext.length) : row.proposedName;
-      let name = row.proposedName;
-      if (isClaimed(row, name)) {
-        let i = 2;
-        while (i < 100 && isClaimed(row, `${stem}-${i}${ext}`)) i++;
-        name = i < 100 ? `${stem}-${i}${ext}` : `${stem}-${Date.now()}${ext}`;
-        const warn = `Another file in this folder claims this episode — this one becomes version ${name.slice(stem.length + 1)}`;
-        row.note = row.note ? `${row.note}; ${warn}` : warn;
+      const keep = stickyOf(row);
+      if (keep) {
+        sticky.push(row);
+        continue;
       }
-      claimKey(row, name);
+      const name = resolve(row, row.proposedName);
+      if (name !== row.proposedName) suffixed(row, name);
+      claim(row, name);
       row.proposedName = name;
+    }
+  }
+  for (const row of sticky) {
+    const keep = stickyOf(row) as string;
+    const name = isTaken(row, keep) ? resolve(row, keep) : keep;
+    if (name !== row.proposedName) suffixed(row, name);
+    claim(row, name);
+    row.proposedName = name;
+  }
+
+  // A resolution that lands back on the current name means there is genuinely
+  // nothing to do — report it as already canonical rather than offering a rename
+  // to itself.
+  for (const rows of allRows) {
+    for (const row of rows) {
+      if (row?.proposedName && row.proposedName === row.currentName) row.proposedName = null;
     }
   }
 
