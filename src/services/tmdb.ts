@@ -307,6 +307,70 @@ export async function fetchTMDBSeason(
   return meta;
 }
 
+/**
+ * Resolve an UNNUMBERED special to a number in the show's own S00 list.
+ *
+ * Most providers do NOT file a Christmas special in season 0 — they number it
+ * `E0` of the season it leads into. IMDb's `S12.E0` is "Christmas Special 2022"
+ * (aired 25 Dec 2022), and scene releases follow that convention exactly:
+ * `...S12E00.Christmas.Special.2022...`. TMDB excludes it from the season's own
+ * episode count too — which is why a season that imported 9 files reads 8/8
+ * once the special moves to S00 — but it does list these under season 0, with
+ * an air date. That air date is the only evidence that says WHICH special a
+ * file is, so an unnumbered file is matched against it instead of being left as
+ * a slot marker with no number at all.
+ *
+ * Two independent ways in, tried in order of how directly the release states
+ * them:
+ *  - a year the release spells out ("Christmas Special 2022" -> the 2022 entry);
+ *  - the season the file leads into ("S11E00" -> the one entry airing after S10
+ *    finished and before S11 began). The direction matters: these specials air in
+ *    the Christmas gap at the END of the previous season's run, so a file marked
+ *    `S12E00` is bounded by seasons 11 and 12, NOT 12 and 13.
+ * Either must yield exactly ONE entry. Zero or several returns null, so the
+ * caller keeps the on-disk title rather than committing to a guess — a wrong
+ * number is worse than no number, since it would then claim an identity the file
+ * does not have.
+ */
+export async function findSpecialByAirDate(
+  db: Database,
+  libraryKey: string,
+  showTitle: string,
+  opts: { year?: number | null; beforeSeason?: number | null; lang?: string | null } = {},
+): Promise<EpisodeMeta | null> {
+  const language = opts.lang ?? null;
+  const dated = (eps: EpisodeMeta[]) => eps.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e.air_date || ""));
+  const specials = dated((await fetchTMDBSeason(db, libraryKey, 0, showTitle, { language }))?.episodes ?? []);
+  if (!specials.length) return null;
+
+  const year = opts.year;
+  if (year && Number.isFinite(year)) {
+    const hits = specials.filter((e) => (e.air_date as string).slice(0, 4) === String(year));
+    if (hits.length === 1) return hits[0];
+  }
+
+  const before = opts.beforeSeason;
+  if (before != null && Number.isFinite(before)) {
+    const [prior, own] = await Promise.all([
+      fetchTMDBSeason(db, libraryKey, before - 1, showTitle, { language }),
+      fetchTMDBSeason(db, libraryKey, before, showTitle, { language }),
+    ]);
+    const priorEnd = dated(prior?.episodes ?? []).map((e) => e.air_date as string).sort().pop();
+    const ownStart = dated(own?.episodes ?? []).map((e) => e.air_date as string).sort()[0];
+    // Both bounds are required. Without them the window is half-open, and every
+    // special on the far side of the missing season would qualify — several hits,
+    // which is a refusal anyway, but only by accident of the data.
+    if (priorEnd && ownStart && priorEnd < ownStart) {
+      const inWindow = specials.filter((e) => {
+        const d = e.air_date as string;
+        return d > priorEnd && d < ownStart;
+      });
+      if (inWindow.length === 1) return inWindow[0];
+    }
+  }
+  return null;
+}
+
 /** Movie mirror of `resolveShowIdentity` — same ID/year-less-retry behaviour,
  * but against /search/movie (movies carry no seasons, so the series resolver
  * does not apply). Uses the library_key's embedded imdb id when present. */

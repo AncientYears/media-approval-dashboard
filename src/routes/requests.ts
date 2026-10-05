@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -2068,7 +2068,7 @@ function isGenericSpecialSlot(title: string): boolean {
   return false;
 }
 
-async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null, episode?: number | null): Promise<{ title: string; year: number | null; imdbId: string | null; onTmdb: boolean } | null> {
+async function specialPiecesForFile(db: Database, request: any, sourceBase: string, showPieces: NamingPieces | null, episode?: number | null): Promise<{ title: string; year: number | null; imdbId: string | null; onTmdb: boolean; episodeNumber: number | null } | null> {
   const rest = episodeTitleFromSourceName(sourceBase);
   const stripped = specialTitleFromSourceName(sourceBase, request, showPieces?.title);
   // A movie special is often filed with NO S00Exx marker at all, and both
@@ -2080,19 +2080,41 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
   const diskTitle = stripped || rest || bare;
   if (!diskTitle) return null;
   const lang = request.library_key ? franchiseLanguage(db, request.library_key) : null;
+  const candidates = [stripped, rest, bare].filter((c): c is string => !!c);
+  const isSlot = isGenericSpecialSlot(diskTitle);
+
+  // A slot marker names a position in the show, not a film — so before reaching
+  // for the film catalogue, see whether the show's OWN S00 list can say which
+  // special this is. Providers number these as `E0` of the season they lead
+  // into (`S12E00` = the Christmas Special 2022), and only the air date TMDB
+  // records identifies which one an unnumbered file is.
+  //
+  // An explicit `S00E07` is never second-guessed: the release already stated a
+  // real number, and inferring over it could re-point a correctly numbered file.
+  if (request.library_key && isSlot && !(episode && episode > 0)) {
+    const statedYear = Number((diskTitle.match(/\b(19|20)\d{2}\b/) || [])[0]);
+    const afterSeason = parseEpisodeCode(sourceBase)?.season ?? null;
+    try {
+      const hit = await findSpecialByAirDate(db, request.library_key, cleanFranchiseTitle(request.title || ""), {
+        year: Number.isFinite(statedYear) ? statedYear : null,
+        beforeSeason: afterSeason != null && afterSeason > 0 ? afterSeason : null,
+        lang,
+      });
+      if (hit) return { title: hit.name || diskTitle, year: null, imdbId: null, onTmdb: true, episodeNumber: hit.episode_number };
+    } catch {}
+  }
+
   // A special is usually filed on TMDB as its own movie. Try that first — it is
   // the most specific match. The scene title is in the release's own language
   // ("Fretka kontra Wszechświat") whose words share nothing with the English
   // title, so a non-English search runs too even when no franchise language is
   // configured, since these are the titles the files actually carry.
   const searchLang = lang || "pl-PL";
-  for (const candidate of [stripped, rest, bare]) {
-    if (!candidate) continue;
-    // A slot marker is not a film title, so it must not reach the film catalogue.
-    if (isGenericSpecialSlot(candidate)) continue;
+  for (const candidate of candidates) {
+    if (isSlot) continue;
     try {
       const id = await resolveSpecialIdentity(candidate, searchLang);
-      if (id) return { title: id.title, year: id.year, imdbId: id.imdbId, onTmdb: true };
+      if (id) return { title: id.title, year: id.year, imdbId: id.imdbId, onTmdb: true, episodeNumber: null };
     } catch {}
   }
   // Not a film — but it may be a named special in the series' own S00 list
@@ -2101,10 +2123,10 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
   if (request.library_key && episode) {
     try {
       const tmdbTitle = episodeTitleFromCache(db, request.library_key, 0, episode, lang);
-      if (tmdbTitle) return { title: tmdbTitle, year: null, imdbId: null, onTmdb: true };
+      if (tmdbTitle) return { title: tmdbTitle, year: null, imdbId: null, onTmdb: true, episodeNumber: episode };
     } catch {}
   }
-  return { title: diskTitle, year: null, imdbId: null, onTmdb: false };
+  return { title: diskTitle, year: null, imdbId: null, onTmdb: false, episodeNumber: null };
 }
 
 /**
@@ -2149,12 +2171,18 @@ async function proposeCanonicalName(
     const sp = await specialPiecesForFile(db, request, base, pieces, parseEpisodeCode(base, { knownSeason: 0 })?.episode ?? null);
     if (!sp) return { name: null, role: "special", note: "No title in file name" };
     const epNo = parseEpisodeCode(base, { knownSeason: 0 });
+    // A number resolved from the show's own S00 list outranks the release's own
+    // marker: the file says "S12E00", which states a SEASON's zeroth episode and
+    // names no special at all, whereas TMDB's air date says which one it is. Only
+    // a positive number the release itself wrote is left alone.
+    const declared = epNo?.episode ?? null;
+    const episodeNo = sp.episodeNumber ?? (declared && declared > 0 ? declared : null);
     const name = canonicalSpecialFile(conf, {
       title: sp.title,
       year: sp.year,
       imdbId: sp.imdbId,
       season: 0,
-      episode: epNo?.episode ?? null,
+      episode: episodeNo,
       tags: tags.tags,
       group: tags.group,
       vendor: tags.vendor,
