@@ -1830,12 +1830,53 @@ async function probeInodesConcurrently(paths: string[]): Promise<Map<string, Pro
 function episodeTitleFor(db: Database, request: any, base: string, ep: { season: number; episode: number; episodeEnd?: number }): string | null {
   const key = request.library_key;
   const lang = key ? franchiseLanguage(db, key) : null;
-  if (key && ep.episodeEnd && ep.episodeEnd > ep.episode) {
+  const own = episodeTitleFromSourceName(base);
+  if (!key) return own;
+  if (ep.episodeEnd && ep.episodeEnd > ep.episode) {
     const first = episodeTitleFromCache(db, key, ep.season, ep.episode, lang);
     const last = episodeTitleFromCache(db, key, ep.season, ep.episodeEnd, lang);
     if (first && last) return `${first} - ${last}`;
   }
-  return (key ? episodeTitleFromCache(db, key, ep.season, ep.episode, lang) : null) || episodeTitleFromSourceName(base);
+  const cached = episodeTitleFromCache(db, key, ep.season, ep.episode, lang);
+  if (!cached) return own;
+  if (!own || episodeTitleAgrees(own, cached)) return cached;
+  // A merge-induced offset, NOT a plain disagreement. A release that packs two TMDB
+  // episodes into one file ("S01E51 Magicas Magic Mirror Take Me Out of the
+  // Ballgame") keeps the number of the first and swallows the second, so every
+  // LATER file is numbered one behind TMDB. The number comes from the file but the
+  // title was read at that number, so E52 got TMDB's E51/E52 title ("Take Me Out of
+  // the Ballgame") on a file that is actually "Duck to the Future" — and the same
+  // shift ran to the end of the season.
+  //
+  // The proof is POSITIVE: the file's own title names a DIFFERENT episode of the
+  // same cached season. A mere failure to match proves nothing, because a release
+  // naming its episodes in another language than the cache (the cache defaults to
+  // en-US whenever no language pref is set) disagrees on every single episode while
+  // every number is perfectly correct. Requiring a neighbour match keeps that case
+  // on TMDB exactly as before and fires only on a real offset.
+  for (const n of [ep.episode - 1, ep.episode + 1, ep.episode + 2]) {
+    if (n < 1 || n === ep.episode) continue;
+    const other = episodeTitleFromCache(db, key, ep.season, n, lang);
+    if (other && episodeTitleAgrees(own, other)) return own;
+  }
+  // Nothing to prove it either way: the cached title is the canonical spelling and
+  // the release's own wording is a translation or a reword of the same episode.
+  return cached;
+}
+
+/** Whether an on-disk episode title and TMDB's title for that episode number are
+ *  the same episode, judged by the house matcher (prefix, then tolerant word
+ *  overlap). Reuses titlesMatch rather than a bespoke overlap count so this agrees
+ *  with every other title comparison in the file.
+ *
+ *  Apostrophes are DELETED rather than swept to a space: they are the difference
+ *  between a release's "Scrooges Pet" and TMDB's "Scrooge's Pet", which are the
+ *  same episode and must not read as a disagreement — a space would split the word
+ *  into "scrooge s" and fail the overlap test, so the guard would then keep the
+ *  release's spelling and lose TMDB's punctuation for every such episode. */
+function episodeTitleAgrees(onDisk: string, cached: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  return titlesMatch(norm(onDisk), norm(cached));
 }
 
 /** Episode title already present in an on-disk name ("... - S03E15 - The
