@@ -661,16 +661,31 @@ function probeResolution(width: number | null | undefined, height: number | null
 }
 
 function audioFamilyOf(l: string): string {
-  const n = l.toLowerCase();
+  // Strip the channel layout FIRST. A title entry carries it ("MP3 2.0", "DDP5.1")
+  // while a probed label is the bare codec ("MP3"), so an unmapped codec fell
+  // through to its raw text and the two stopped matching as one family - the
+  // probed entry was then added alongside the title's instead of replacing it,
+  // printing "[MP3 2.0][MP3 2.0]". That only surfaced once a release was renamed
+  // to its own canonical form, because a raw release name says AVC and never
+  // mentions MP3, so there was nothing to collide with.
+  const n = l.toLowerCase().replace(/\s*\d\.\d(?:\s*ch)?\s*$/i, "").trim();
   if (/truehd|mlp/.test(n)) return "truehd";
-  if (/eac3/.test(n)) return "eac3";
+  // DDP is the streaming spelling of E-AC3, so it must land on the same family or
+  // a "[EAC3 Atmos 5.1]" name keeps its "DDP" twin bracket beside it.
+  if (/eac3|ddp/.test(n)) return "eac3";
   if (/ac3/.test(n)) return "ac3";
   if (/dts/.test(n)) return "dts";
   if (/aac/.test(n)) return "aac";
   if (/flac/.test(n)) return "flac";
   if (/opus/.test(n)) return "opus";
   if (/pcm/.test(n)) return "pcm";
-  return n;
+  if (/mp3/.test(n)) return "mp3";
+  // The rest of NON_DISC_AUDIO, which had the same fall-through.
+  if (/vorbis/.test(n)) return "vorbis";
+  if (/alac/.test(n)) return "alac";
+  if (/amr/.test(n)) return "amr";
+  if (/wmav/.test(n)) return "wmav";
+  return n || l.toLowerCase();
 }
 
 function videoFamilyOf(l: string): string {
@@ -758,8 +773,15 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     const kept = audio.filter(
       (a) => audioFamilyOf(a) !== fam && !(carrierFam && looseAtmos && /^atmos$/i.test(a.trim())),
     );
+    // Mirror the video dedup below: whatever survives must not reprint a label the
+    // probed entry already carries. Family matching is the primary defence, but a
+    // codec missing from audioFamilyOf used to slip a same-label duplicate through,
+    // and that printed "[MP3 2.0][MP3 2.0]" which then re-parsed as two more and
+    // grew by one bracket on every Fix Names pass.
+    const lower = (s: string) => s.toLowerCase().replace(/\s+/g, "");
     audio.length = 0;
-    audio.push(entry, ...kept);
+    audio.push(entry);
+    for (const x of kept) if (!audio.some((y) => lower(y) === lower(x))) audio.push(x);
   }
 
   const video = t.video.slice();
