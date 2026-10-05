@@ -176,9 +176,12 @@ const VIDEO_RE = /(\b(?:x|h)\.?26[45]\b|\bhevc\b|\bavc\b|\bav1\b|\bvp9\b|\bxvid\
  * rides INSIDE the source bracket ("[WEBDL-2160p NF]") the way encode-quality
  * modifiers ride the resolution, rather than in a bracket of its own.
  *
- * Deliberately only the unambiguous multi-character tags. "MAX" and "iP" are
- * real service tags but are ordinary words that occur in titles and group names,
- * and a false provider is worse than a missing one — the source is still stated.
+ * Deliberately only the unambiguous tags. "iP" is the one mixed-case service
+ * tag kept despite being two ordinary letters: groups write it in exactly that
+ * case for ITV Player (and it is how the UK TV releases name it), while matching
+ * is case-SENSITIVE and full-token, so a title's "ip" cannot reach it. "MAX" is
+ * still excluded — all-caps "MAX" is a real word and a real given name, and a
+ * false provider inside the source bracket is worse than a missing one.
  */
 const PROVIDERS = new Map<string, string>([
   ["NF", "NF"],
@@ -189,6 +192,7 @@ const PROVIDERS = new Map<string, string>([
   ["PCOK", "PCOK"],
   ["STARZ", "STARZ"],
   ["HULU", "HULU"],
+  ["iP", "iP"],
 ]);
 
 /** True when a "-(...)" tail is a codec/quality word, not a release group. */
@@ -455,6 +459,11 @@ export interface ProbeVideoInfo {
   height: number | null;
   bitDepth: number | null;
   hdr: string[];
+  /** Average frame rate in frames per second. ffprobe reports it as a fraction
+   *  ("50/1"), and `avg_frame_rate` is preferred over `r_frame_rate` because the
+   *  latter is the container's base rate and reports 24 for a 50fps broadcast
+   *  stream. Null when the file states neither. */
+  frameRate?: number | null;
   /** How many video streams the file holds. Only the first is measured, so a
    *  title naming a SECOND codec is only credible when there is more than one —
    *  see the codec-conflict rule in `assembleCanonicalTags`. */
@@ -828,6 +837,18 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
       : probed.lang
     : (t.language ?? null);
 
+  // Frame rate is measurable, so the PROBE decides it, on the same rule the
+  // resolution and codec merges follow: a name claiming HFR on a 25fps stream
+  // loses, and a 50fps stream measured as high frame rate gains the flag even
+  // when the name is silent. "HFR" is the conventional spelling and is what the
+  // release round-trips against, so the measured value is reduced to it rather
+  // than printed as "50fps" - which would read as a resolution-class claim.
+  // > 30 matches the industry definition (50/60 vs 24/25/30); 30fps itself is not.
+  const fps = v?.frameRate ?? null;
+  const namedHfr = t.misc.some((m) => /^hfr$/i.test(m.trim()));
+  const misc = t.misc.filter((m) => !/^hfr$/i.test(m.trim()));
+  if (fps === null ? namedHfr : fps > 30) misc.push("HFR");
+
   return {
     ...t,
     language,
@@ -836,7 +857,8 @@ export function assembleCanonicalTags(t: ReleaseTags, probe: ProbeInfo | null): 
     audio,
     hdr,
     video,
-    tags: renderTags({ ...t, language, resolution, source, audio, hdr, video }),
+    misc,
+    tags: renderTags({ ...t, language, resolution, source, audio, hdr, video, misc }),
   };
 }
 
@@ -1370,6 +1392,17 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       }
     }
     if (!srcM && !resM && !resWord && !audio && !video) {
+      // "HFR" (High Frame Rate) claims 50/60fps rather than the usual 24/25/30.
+      // It rides as its own bracket beside "[10bit]" — both are properties of the
+      // picture rather than of where it came from. Read from the loose dotted tail
+      // as well as from brackets, because ".AAC2.0.HFR.H.264-RAWR" is the shape the
+      // UK TV releases use and an unrecognised LOOSE word is dropped outright (only
+      // a bracketed unknown is preserved verbatim), so without this the flag simply
+      // vanished from the name.
+      if (/^hfr$/i.test(at)) {
+        if (!misc.includes("HFR")) misc.push("HFR");
+        return;
+      }
       // HDR flags (DV, HDR10Plus, HDR10, HLG, ...) are recognized from loose
       // dotted words AND brackets. Unknown short bracket tags are preserved
       // verbatim (except "[Unknown]"/"[Group]"/"[NoGrp]", which are dropped).

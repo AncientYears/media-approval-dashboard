@@ -52,12 +52,24 @@ const videoStream = streams.find((s) => s.codec_type === "video");
       if (/smpte2084/i.test(transfer)) addHdr(hdr, "HDR10");
       else if (/arib-std-b67/i.test(transfer)) addHdr(hdr, "HLG");
 
+      // "avg_frame_rate" first: "r_frame_rate" is the container's base rate and
+      // reads 24/1 for a 50fps broadcast stream, which would hide exactly the
+      // "HFR" a release names. A fraction ("50/1") is divided, not truncated.
+      const rate = (raw: unknown) => {
+        const [num, den] = String(raw || "").split("/").map((x) => Number(x));
+        if (!Number.isFinite(num) || !Number.isFinite(den) || num <= 0 || den <= 0) return null;
+        const fps = num / den;
+        return fps > 0 && fps < 1000 ? Math.round(fps * 1000) / 1000 : null;
+      };
+      const frameRate = rate(videoStream.avg_frame_rate) ?? rate(videoStream.r_frame_rate);
+
       video = {
         codecName: videoStream.codec_name || null,
         width: videoStream.width ? Number(videoStream.width) : null,
         height: videoStream.height ? Number(videoStream.height) : null,
         bitDepth: bits,
         hdr,
+        frameRate,
         streamCount: videoStreams.length,
       };
     }
