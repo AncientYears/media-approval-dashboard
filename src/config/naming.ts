@@ -241,6 +241,16 @@ function parseAudioToken(tok: string): string | null {
   if (/dolby/i.test(tok)) return "Dolby";
   if (/opus/i.test(tok)) return "Opus";
   if (/mp3/i.test(tok)) return "MP3";
+  // PCM is an uncompressed codec that ffprobe names directly ("pcm_s16le"), so
+  // the probe has always supplied it. A name saying "[PCM 2.0]" did not: it fell
+  // through to the keep-unknown-bracket-verbatim rule and became a MISC tag while
+  // the probe added its own audio entry, printing "[PCM 2.0][PCM]" — one fact,
+  // two tags, and a rename that never converges because the misc copy survives
+  // every re-parse. Same shape as the Xvid fix below, so it is fixed the same way:
+  // recognised HERE, not just mapped by the probe. The channel rides separately
+  // ("[PCM 2.0]" splits into "PCM" then "2.0", which appends), and withChannel
+  // catches the undivided "PCM2.0" form.
+  if (/\bpcm\b/i.test(tok)) return withChannel("PCM", tok);
   return null;
 }
 
