@@ -25,6 +25,8 @@ import {
   inheritReleaseFacts,
   parseEpisodeCode,
   episodeTitleFromSourceName,
+  partMarkerFromSourceName,
+  stripPartMarker,
   canonicalMovieFile,
   canonicalSpecialFile,
   canonicalEpisodeFile,
@@ -2310,7 +2312,21 @@ async function proposeCanonicalName(
   if (!parsed) return { name: null, role: "episode", note: "No episode number in name" };
   if (parsed.season !== (request.season ?? parsed.season)) return { name: null, role: "episode", note: `S${parsed.season} does not match request season` };
   const ep = resolveEpisodeSpan(db, request, base, parsed);
-  const episodeTitle = episodeTitleFor(db, request, base, ep);
+  // A release that split ONE episode in two states the difference as a part
+  // marker ("S02E05 Part 2"), and that marker is a SUBDIVISION of the title, not
+  // a competing title. TMDB files the episode as a single entity, so both halves
+  // resolve to "The Rise of Scar", receive the same canonical name, and the
+  // loser only differs by a `-2` collision suffix — a version number that says
+  // nothing when the release had already said exactly what sets them apart. So
+  // the marker rides along after whichever title won.
+  const part = partMarkerFromSourceName(base);
+  let episodeTitle = episodeTitleFor(db, request, base, ep);
+  if (part) {
+    // Strip before appending: when TMDB had nothing cached the release's own
+    // title IS "Part 2", and appending to it would render "Part 2 - Part 2".
+    const stripped = stripPartMarker(episodeTitle ?? "");
+    episodeTitle = stripped ? `${stripped} - ${part}` : part;
+  }
   const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
   const name = canonicalEpisodeFile(conf, {
     title: (pieces?.title || cleanFranchiseTitle(request.title || "")).replace(/ \(\d{4}\)$/, ""),

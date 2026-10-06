@@ -487,6 +487,29 @@ export function episodeTitleFromSourceName(base: string): string | null {
   return episodeTitleSpan(base)?.title ?? null;
 }
 
+/** A release that splits ONE episode in two on disk ("Part 1" / "Part 2") is
+ *  stating a SUBDIVISION, not an episode title. TMDB has exactly one
+ *  "The Rise of Scar", so both halves resolve to the same title, receive the same
+ *  canonical name, and the loser differs only by a `-2` collision suffix — the
+ *  one fact that told the two apart was written out of the disk name. This pulls
+ *  the marker back out of the source name so it can ride along AFTER whichever
+ *  title won (TMDB's, when the cache had one). */
+export function partMarkerFromSourceName(base: string): string | null {
+  const own = episodeTitleFromSourceName(base);
+  if (!own) return null;
+  const m = own.match(/(?:^|[\s._()/-]+)(?:part|pt)\.?\s*(\d{1,2})\s*$/i);
+  return m ? `Part ${m[1]}` : null;
+}
+
+/** The title with a trailing part marker removed, so a name that already ends in
+ *  one does not render "... Part 2 - Part 2". The marker on its own collapses to
+ *  an empty string: the leading separator is what the ordinary replace keys on,
+ *  so "Part 2" alone is left standing and would otherwise be appended to itself. */
+export function stripPartMarker(title: string): string {
+  const t = title.replace(/[\s._()/-]+(?:part|pt)\.?\s*\d{1,2}\s*$/i, "").trim();
+  return /^(?:part|pt)\.?\s*\d{1,2}$/i.test(t) ? "" : t;
+}
+
 function collectEditions(base: string): string[] {
   const span = episodeTitleSpan(base);
   const out: string[] = [];
