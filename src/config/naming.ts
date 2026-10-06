@@ -1358,7 +1358,20 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       out.language = codes.filter((c) => !DUB_MARKERS.has(c)).join("+") || "MULTI";
       return;
     }
-    if (LANG_TAGS.has(up) && at.length <= 12) {
+    // A bare language CODE is evidence only where evidence is written: inside
+    // brackets, or as its own uppercase release token. The loose tail has no
+    // brackets to scope it, so EVERY word in the name reaches here — including
+    // the episode title, which the tokenizer cannot tell from a tag run. A
+    // two-letter code collides with ordinary English constantly: "They Call It
+    // Doom" rendered [IT] (Italian) on a release that states no language at all,
+    // and any episode titled "No Way Out" would be [NO] (Norwegian). A false
+    // language is worse than a missing one, and a title says it as `It`, never as
+    // the all-caps `IT` a group writes — the same case test PROVIDERS uses to
+    // keep a lowercase "nf" out of the source. So a loose token must be exactly
+    // its uppercase form, while a bracket keeps accepting any case: "[pl]" is
+    // still a bracketed claim, and the canonical form is always written
+    // uppercase, so a re-parse round-trips either way.
+    if (LANG_TAGS.has(up) && at.length <= 12 && (fromBracket || at === up)) {
       out.language = up;
       return;
     }
