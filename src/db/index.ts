@@ -273,7 +273,9 @@ export function initializeDatabase(dbPath: string): DBInstance {
 
     CREATE TABLE IF NOT EXISTS tmdb_franchise_prefs (
       library_key TEXT PRIMARY KEY,
-      language TEXT NOT NULL
+      language TEXT NOT NULL,
+      episode_group_id TEXT,
+      episode_group_show_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS tmdb_external_ids (
@@ -463,6 +465,19 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       }
       db.exec("DROP TABLE tmdb_season_cache");
       db.exec("ALTER TABLE tmdb_season_cache_new RENAME TO tmdb_season_cache");
+    }
+
+    // Migration: episode ORDER beside the language pref. A TMDB episode group
+    // (production order, Disney+, Netflix …) renumbers the same episodes, so
+    // the pref remembers WHICH group was picked and the show it was picked
+    // from — a key re-attached to a different show must not keep reading
+    // another show's "Season 1".
+    const tfpCols = db.prepare("PRAGMA table_info(tmdb_franchise_prefs)").all() as any[];
+    if (tfpCols.length && !tfpCols.some((c: any) => c.name === "episode_group_id")) {
+      db.exec(`ALTER TABLE tmdb_franchise_prefs ADD COLUMN episode_group_id TEXT`);
+    }
+    if (tfpCols.length && !tfpCols.some((c: any) => c.name === "episode_group_show_id")) {
+      db.exec(`ALTER TABLE tmdb_franchise_prefs ADD COLUMN episode_group_show_id INTEGER`);
     }
 
     // Migration: make release_id nullable in approval_history (for system/library-imported entries)

@@ -131,6 +131,21 @@ export async function setFranchiseLanguage(requestId: number, language: string |
   return response.data;
 }
 
+/** The episode ORDERS (TMDB episode groups) this show has — production order,
+ *  Disney+, Netflix … — plus the one in force (`current`). */
+export async function getEpisodeOrders(requestId: number) {
+  const response = await api.get(`/requests/${requestId}/episode-orders`);
+  return response.data;
+}
+
+/** Set (`groupId`) or clear (`null`) the franchise's episode ORDER: which
+ *  numbering TMDB uses for its episodes. The backend re-validates the group
+ *  against this show and drops the cached seasons. */
+export async function setFranchiseEpisodeOrder(requestId: number, groupId: string | null) {
+  const response = await api.post(`/requests/${requestId}/episode-order`, { groupId });
+  return response.data;
+}
+
 export async function approveRelease(requestId: number, releaseId: number, reason?: string) {
   const response = await api.post(`/requests/${requestId}/approve`, {
     releaseId,

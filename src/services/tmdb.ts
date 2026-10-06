@@ -14,7 +14,29 @@ export interface SeasonMeta {
   show_name: string;
   resolvedVia: string;
   language: string;
+  /** The episode ORDER this row was fetched under — a TMDB episode-group id,
+   *  or null for the default aired order. A payload carrying another order
+   *  answers a different question (its numbers belong to that order), so it
+   *  is never served as a cache hit for the pref in force now. */
+  episode_group_id?: string | null;
   episodes: EpisodeMeta[];
+}
+
+/** A franchise's selected episode ORDER (a TMDB episode group) and the show it
+ *  was picked from. Both must be present to be usable — a group id without its
+ *  show can't be checked against the show the key resolves to now. */
+export interface EpisodeOrderPref {
+  id: string;
+  show_id: number | null;
+}
+
+export interface EpisodeGroupInfo {
+  id: string;
+  name: string;
+  type: number;
+  description: string;
+  group_count: number;
+  episode_count: number;
 }
 
 function apiKey(): string {
@@ -228,6 +250,129 @@ export async function fetchTMDBTVSeasons(
 }
 
 /**
+ * A franchise's episode ORDER preference — a TMDB episode-group id (production
+ * order, Disney+, Netflix …) plus the show it was picked from, or null when
+ * the default aired order is in force. The show id travels with the group id
+ * because a group belongs to exactly one show: if the key is later re-attached
+ * to a different one, the pair no longer describes anything real and must not
+ * be applied (the caller validates it against the resolved show).
+ */
+export function franchiseEpisodeOrder(db: Database, libraryKey: string): EpisodeOrderPref | null {
+  try {
+    const row = db
+      .prepare("SELECT episode_group_id, episode_group_show_id FROM tmdb_franchise_prefs WHERE library_key = ?")
+      .get(libraryKey) as any;
+    if (!row?.episode_group_id) return null;
+    return { id: String(row.episode_group_id), show_id: row.episode_group_show_id ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/** The episode GROUPS (alternative episode orders) a show has on TMDB.
+ *  Returns `{ show_id: null, groups: [] }` when TMDB is unconfigured or the
+ *  show can't be resolved — both are answers, not failures. */
+export async function fetchEpisodeGroups(
+  db: Database,
+  libraryKey: string,
+  title: string,
+  language?: string | null,
+): Promise<{ show_id: number | null; groups: EpisodeGroupInfo[] }> {
+  const lang = language || process.env.TMDB_LANGUAGE || "en-US";
+  if (!apiKey()) return { show_id: null, groups: [] };
+  // The season cache already knows which show this key resolved to — reuse it
+  // instead of searching, so a mangled title can't mint a second identity here.
+  let showId = cachedShowIdForKey(db, libraryKey);
+  if (!showId) {
+    const show = await resolveShowIdentity(libraryKey, title, lang);
+    showId = show?.id ?? null;
+  }
+  if (!showId) return { show_id: null, groups: [] };
+  const data = await tmdbGet<any>(`/tv/${showId}/episode_groups?language=${lang}`);
+  const groups: EpisodeGroupInfo[] = (data?.results || []).map((g: any) => ({
+    id: String(g.id),
+    name: String(g.name || ""),
+    type: Number(g.type) || 0,
+    description: String(g.description || ""),
+    group_count: Number(g.group_count) || 0,
+    episode_count: Number(g.episode_count) || 0,
+  }));
+  return { show_id: showId, groups };
+}
+
+/** Which sub-group of an episode group holds season `season`? Groups are one
+ *  season each, named "Season 1"/"Specials" with `order` matching the season
+ *  number — the name is read first (a group's `order` can skip), then `order`
+ *  as the fallback, and null means this order has no such season: S00 is the
+ *  usual case, and the caller falls back to the aired endpoint for it rather
+ *  than failing, since a show's specials live outside any alternative order. */
+function groupSeasonSub(groups: any, season: number): any | null {
+  if (!Array.isArray(groups) || !groups.length) return null;
+  const seasonOf = (name: string): number | null => {
+    const m = String(name || "").match(/season[^\d]*(\d{1,2})/i);
+    if (m) return parseInt(m[1], 10);
+    if (/special/i.test(name)) return 0;
+    return null;
+  };
+  const byName = groups.find((g: any) => seasonOf(g?.name) === season);
+  if (byName) return byName;
+  return groups.find((g: any) => Number(g?.order) === season) || null;
+}
+
+/** Build one season's episode list from a TMDB episode GROUP — the alternative
+ *  order (production, Disney+, Netflix …) — instead of the aired-order season
+ *  endpoint. The group keeps each episode's AIRED number in `episode_number`
+ *  and its position in the group in `order`, so the selected order is the
+ *  position: episodes are renumbered `order + 1`. Language is honoured by the
+ *  endpoint itself, with the en-US names overlaid by episode id where a
+ *  translation bottoms out as a slot placeholder ("Episode 1"). Returns null
+ *  when the order has no such season (or the group id is dead). */
+async function seasonFromEpisodeGroup(
+  groupId: string,
+  season: number,
+  language: string,
+  show: ResolvedShow,
+  showName: string,
+): Promise<SeasonMeta | null> {
+  const path = `/tv/episode_group/${encodeURIComponent(groupId)}?language=${language}`;
+  const data = await tmdbGet<any>(path);
+  const sub = groupSeasonSub(data?.groups, season);
+  if (!sub || !Array.isArray(sub.episodes) || !sub.episodes.length) return null;
+  let fallback: Map<string, string> | null = null;
+  if (language !== "en-US") {
+    const en = await tmdbGet<any>(`/tv/episode_group/${encodeURIComponent(groupId)}?language=en-US`);
+    const enSub = en ? groupSeasonSub(en.groups, season) : null;
+    if (enSub && Array.isArray(enSub.episodes)) {
+      fallback = new Map(
+        enSub.episodes
+          .filter((e: any) => typeof e.name === "string" && e.name.trim())
+          .map((e: any) => [String(e.id), (e.name as string).trim()]),
+      );
+    }
+  }
+  const episodes: EpisodeMeta[] = sub.episodes.map((e: any, i: number) => {
+    let name = typeof e.name === "string" ? e.name.trim() : "";
+    if ((!name || SLOT_TITLE.test(name)) && fallback) {
+      const fb = fallback.get(String(e.id));
+      if (fb && fb !== name) name = fb;
+    }
+    return {
+      episode_number: typeof e.order === "number" && e.order >= 0 ? e.order + 1 : i + 1,
+      name,
+      air_date: e.air_date ? String(e.air_date) : null,
+    };
+  });
+  return {
+    tmdb_show_id: show.id,
+    show_name: showName,
+    resolvedVia: show.via,
+    language,
+    episode_group_id: groupId,
+    episodes,
+  };
+}
+
+/**
  * Fetch a season's episode list from TMDB, cached in tmdb_season_cache so the
  * app works offline after the first successful lookup. Returns null when no
  * API key, nothing cached, and the network can't be reached.
@@ -241,6 +386,12 @@ export async function fetchTMDBSeason(
 ): Promise<SeasonMeta | null> {
   const language = opts.language || process.env.TMDB_LANGUAGE || "en-US";
   const force = !!opts.force;
+  // A selected episode ORDER renumbers the same episodes, so a payload written
+  // under one order answers a different question than the pref asks for now:
+  // only a payload carrying the SAME order (or none, when none is selected)
+  // may be served from cache.
+  const order = franchiseEpisodeOrder(db, libraryKey);
+  let rowGroup: string | null = order?.id ?? null;
   // The cache is keyed by language too, so a Polish fetch never clobbers the
   // English one (they used to share a row and flip-flop on every refresh).
   const cacheRow = db
@@ -249,23 +400,49 @@ export async function fetchTMDBSeason(
   let cached: SeasonMeta | null = null;
   if (cacheRow) {
     try {
-      cached = JSON.parse(cacheRow.payload) as SeasonMeta;
+      const payload = JSON.parse(cacheRow.payload) as SeasonMeta;
+      if ((payload.episode_group_id ?? null) === rowGroup) cached = payload;
     } catch {}
   }
   if (cached && !force) return cached;
 
   const key = apiKey();
   if (!key) return cached;
-  let show = await resolveShowId(libraryKey, title, language);
+  let show = await resolveShowIdentity(libraryKey, title, language);
   // Locally-mangled row titles ("Ninjago: Dragon Rising") fail TMDB search
   // while the on-disk processed folder holds the real name ("LEGO Ninjago:
   // Dragons Rising") — retry with that alt title before giving up.
   if (!show && opts.altTitle && opts.altTitle.trim() && opts.altTitle !== title) {
-    show = await resolveShowId(libraryKey, opts.altTitle.trim(), language);
+    show = await resolveShowIdentity(libraryKey, opts.altTitle.trim(), language);
   }
   if (!show) {
     if (!cacheRow) console.warn(`[TMDB] no show match for ${libraryKey} "${title}"${opts.altTitle ? ` (alt: "${opts.altTitle}")` : ""}`);
     return cached;
+  }
+  // An episode ORDER belongs to the show it was picked from. A key can be
+  // re-attached to a DIFFERENT show underneath it, and taking that show's
+  // "Season 1" at face value would print the other show's titles under this
+  // one's numbers — so a mismatched pref is dropped, together with its cache
+  // rows: they were fetched under the order that just died, and
+  // episodeTitleFromCache reads them without ever consulting the pref.
+  if (order && (order.show_id == null || order.show_id !== show.id)) {
+    rowGroup = null;
+    try {
+      db.prepare("UPDATE tmdb_franchise_prefs SET episode_group_id = NULL, episode_group_show_id = NULL WHERE library_key = ?").run(libraryKey);
+      db.prepare("DELETE FROM tmdb_season_cache WHERE library_key = ?").run(libraryKey);
+    } catch (err: any) {
+      console.error(`[TMDB] could not drop the stale episode order for ${libraryKey}: ${err.message}`);
+    }
+  }
+  // The selected order's own season list, when it has this season — S00
+  // usually isn't part of any alternative order, and the aired endpoint below
+  // is the honest answer for it, not a failure.
+  if (rowGroup) {
+    const gmeta = await seasonFromEpisodeGroup(rowGroup, season, language, show, show.name || title);
+    if (gmeta) {
+      saveSeasonCache(db, libraryKey, season, language, gmeta);
+      return gmeta;
+    }
   }
   const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`);
   if (!data?.episodes) return cached;
@@ -292,6 +469,10 @@ export async function fetchTMDBSeason(
     show_name: typeof data.name === "string" ? data.name : title,
     resolvedVia: show.via,
     language,
+    // Recorded under the pref in force, even when this season fell back to the
+    // aired endpoint (an S00 in a production-order franchise): the row was
+    // computed under that pref, so it must compare equal to it later.
+    episode_group_id: rowGroup,
     episodes: data.episodes.map((e: any) => {
       const preferred = typeof e.name === "string" ? e.name.trim() : "";
       let name = preferred;
@@ -306,16 +487,24 @@ export async function fetchTMDBSeason(
       };
     }),
   };
+  saveSeasonCache(db, libraryKey, season, language, meta);
+  return meta;
+}
+
+/** Persist a fetched season under (library_key, season, language). The payload
+ *  carries the episode order it was fetched under, so a later read can tell it
+ *  apart from a row written under another one. Not wrapped in a catch: a
+ *  failed cache write must surface, not be swallowed. */
+function saveSeasonCache(db: Database, libraryKey: string, season: number, language: string, meta: SeasonMeta): void {
   db.prepare("INSERT OR REPLACE INTO tmdb_season_cache (library_key, season, language, tmdb_show_id, show_name, payload, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     libraryKey,
     season,
     language,
-    show.id,
+    meta.tmdb_show_id,
     meta.show_name,
     JSON.stringify(meta),
     new Date().toISOString(),
   );
-  return meta;
 }
 
 /**

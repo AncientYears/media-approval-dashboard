@@ -881,7 +881,48 @@ sibling (a lone one-word franchise still falls through to the `>= 2` rule).
 `tmdb_franchise_prefs` is keyed by `library_key` (post-fix-identity key, i.e.
 the message handles both row data and cache/prefs migration). `set-language`
 uses `request.library_key` and returns 400 for sonarr-linked rows. `altTitle`/
-resolution inherits the pref through every call site.
+resolution inherits the pref through every call site. An empty `language` means
+"default" — the row is kept alive by a set episode ORDER (below), so
+`set-language` is read-modify-write and must never `INSERT OR REPLACE` the row
+anew (that would wipe the order columns beside the language).
+
+### Episode order (TMDB episode groups)
+A franchise can pick a different EPISODE ORDER than TMDB's default aired one —
+production order, Disney+, Netflix … — via `GET /api/requests/:id/episode-orders`
+and `POST /api/requests/:id/episode-order {groupId|null}` (series-only, 400 for
+movies; frontend: the second select beside the language pick on
+`NativeFranchise`, shown only when the show actually has groups). Phineas and
+Ferb (show 1877) is the case this exists for: releases and Wikipedia follow
+Production Order while TMDB's aired order numbers the same episodes
+differently.
+
+- **Storage**: `tmdb_franchise_prefs.episode_group_id` + `episode_group_show_id`
+  beside the language. The SHOW id rides with the group id because a group
+  belongs to exactly one show — a key re-attached to a different show must not
+  keep reading that show's "Season 1". `applySeriesIdentity` clears the pair
+  (and `tmdb_season_cache` for the new key) only when the resolved show
+  actually changed; `franchiseEpisodeOrder()` is the read.
+- **Fetch**: `fetchTMDBSeason` consults the pref, gets the season from
+  `/tv/episode_group/{id}?language=…` (`seasonFromEpisodeGroup`), and renumbers
+  by each episode's `order + 1` — the group keeps the AIRED `episode_number`
+  untouched, so only position is authoritative. en-US names overlay by episode
+  `id` when a translation bottoms out as a slot placeholder. The pref is
+  validated against the resolved show id on every network fetch: a mismatch
+  self-heals (clear the pref, delete the key's cache rows, fall back to aired),
+  because `episodeTitleFromCache` reads payloads without ever consulting the
+  pref. A season the group lacks (usually S00) falls back to the aired
+  endpoint, still recorded under the pref so the cache round-trips.
+- **Cache**: the ORDER lives INSIDE the payload (`SeasonMeta.episode_group_id`);
+  only a payload carrying the same order (or none, when none is selected) is a
+  cache hit. Any order change deletes `tmdb_season_cache` for the key and then
+  WARM-fetches every season of the franchise, so the next Fix Names preview
+  (cache-only reads) already sees the new numbering instead of on-disk names.
+- **Validation**: the POST re-checks the group against THIS show's own
+  `/tv/{id}/episode_groups` list (a hand-crafted id could point at another
+  show), rejects non-hex ids, and stores the show id it verified against.
+- The endpoint list/handlers sit right after `set-language` in
+  `src/routes/requests.ts`; `fetchEpisodeGroups`/`franchiseEpisodeOrder` live in
+  `src/services/tmdb.ts`.
 
 ## Key Files
 

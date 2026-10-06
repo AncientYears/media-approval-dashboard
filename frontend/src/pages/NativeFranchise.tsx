@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, fixNativeIdentity, getNativeIdentityCandidates, retitleSeries, ensureNativeSeason, LANGUAGES } from "../api";
+import { fetchNativeFranchise, fetchNativeSeasonEpisodes, fetchRequestEpisodes, refreshRequestMetadata, refreshNativeSeasonMetadata, setFranchiseLanguage, getEpisodeOrders, setFranchiseEpisodeOrder, fixNativeIdentity, getNativeIdentityCandidates, retitleSeries, ensureNativeSeason, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import FixNamesModal from "../components/FixNamesModal";
 
@@ -15,6 +15,11 @@ export default function NativeFranchise() {
   const [episodes, setEpisodes] = useState<Record<number, any>>({});
   const [refreshing, setRefreshing] = useState<number | null>(null);
   const [language, setLanguage] = useState<string>("");
+  // Episode ORDER: the show's TMDB episode groups (production order, Disney+,
+  // Netflix …) and the one in force. Empty groups = the show has no
+  // alternatives (or TMDB can't say), so no second select is offered.
+  const [orderGroups, setOrderGroups] = useState<any[]>([]);
+  const [order, setOrder] = useState<string | null>(null);
   const [fixTarget, setFixTarget] = useState<{ id: number; season?: number } | null>(null);
   const [ensuring, setEnsuring] = useState<number | null>(null);
   const [fixingIdentity, setFixingIdentity] = useState(false);
@@ -29,8 +34,31 @@ export default function NativeFranchise() {
       .then((data) => {
         setFranchise(data);
         setLanguage(data.language || "");
+        loadOrders(data);
       })
       .catch((e: any) => setError(e.message));
+  };
+
+  /** Load this show's episode ORDER options. The pick is per franchise, but the
+   *  endpoints take any season's request id, so the first row that has one is
+   *  the seed (injected S00 rows have `request_id: null` and sort first). */
+  const loadOrders = async (fr: any) => {
+    const seedId = fr?.seasons?.find((s: any) => s.request_id != null)?.request_id;
+    if (seedId == null) {
+      setOrderGroups([]);
+      setOrder(null);
+      return;
+    }
+    try {
+      const data = await getEpisodeOrders(seedId);
+      setOrderGroups(data?.groups || []);
+      setOrder(data?.current || null);
+    } catch {
+      // A failed listing just hides the selector — the order in force (if any)
+      // keeps applying server-side.
+      setOrderGroups([]);
+      setOrder(null);
+    }
   };
 
   const handleFixIdentity = async () => {
@@ -104,6 +132,7 @@ export default function NativeFranchise() {
       .then((data) => {
         setFranchise(data);
         setLanguage(data.language || "");
+        loadOrders(data);
         const open = searchParams.get("open");
         if (open != null) {
           const season = data.seasons?.find((s: any) => String(s.season) === open);
@@ -193,6 +222,37 @@ export default function NativeFranchise() {
     toast(value ? `Language: ${value}` : "Using default language", "success");
   };
 
+  const handleOrder = async (value: string) => {
+    const seedId = franchise?.seasons?.find((s: any) => s.request_id != null)?.request_id;
+    if (!seedId) return;
+    const prev = order;
+    setOrder(value || null);
+    try {
+      await setFranchiseEpisodeOrder(seedId, value || null);
+    } catch (e: any) {
+      setOrder(prev);
+      toast(e?.response?.data?.error || "Could not set episode order", "error");
+      return;
+    }
+    // Same shape as handleLanguage: the pref is saved above (and the backend
+    // dropped every cached season for this key), so re-fetching the expanded
+    // grids below is cosmetic on top of it and must not undo the save.
+    for (const s of franchise.seasons) {
+      if (!expanded.has(s.season) || !episodes[s.season]) continue;
+      try {
+        if (s.request_id != null) await refreshRequestMetadata(s.request_id).catch(() => null);
+        const data =
+          s.request_id != null
+            ? await fetchRequestEpisodes(s.request_id)
+            : await fetchNativeSeasonEpisodes(Number(id), s.season);
+        setEpisodes((ep) => ({ ...ep, [s.season]: data }));
+      } catch {
+        // keep the old titles rather than failing the whole order change
+      }
+    }
+    toast(value ? "Episode order changed — grids renumber under it" : "Using default aired order", "success");
+  };
+
   if (error) {
     return (
       <div className="detail-topbar">
@@ -234,6 +294,18 @@ export default function NativeFranchise() {
           <option value="">Default language</option>
           {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
+        {orderGroups.length > 0 && (
+          <select
+            className="lang-select"
+            value={order || ""}
+            onChange={(e) => handleOrder(e.target.value)}
+            title="Episode order — which numbering TMDB reports for this show's episodes (production order, Disney+, Netflix …). Releases follow production order; changing it renumbers the grids and everything Fix Names derives from them."
+            style={{ marginLeft: 8, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+          >
+            <option value="">Aired order (default)</option>
+            {orderGroups.map((g: any) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        )}
         <button
           className="btn btn-secondary btn-tiny"
           style={{ marginLeft: 8 }}
@@ -437,6 +509,7 @@ export default function NativeFranchise() {
             const data = await fetchNativeFranchise(Number(id));
             setFranchise(data);
             setLanguage(data.language || "");
+            loadOrders(data);
           }}
         />
       )}

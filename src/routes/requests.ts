@@ -16,7 +16,10 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, isTmdbConfigured, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, 
+resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, 
+episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, isTmdbConfigured, franchiseEpisodeOrder, 
+fetchEpisodeGroups, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -836,10 +839,12 @@ function nativeMovieLibraryFolders(requestTitle: string, ownImdbId?: string | nu
   return [MEDIA_MOVIES];
 }
 
-/** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset. */
+/** Per-franchise TMDB language preference from tmdb_franchise_prefs, or null when unset.
+ *  An empty string means "no language preference" — the row is kept alive by a
+ *  set episode ORDER, which needs a row of its own to live on. */
 function franchiseLanguage(db: Database, libraryKey: string): string | null {
   const row = db.prepare("SELECT language FROM tmdb_franchise_prefs WHERE library_key = ?").get(libraryKey) as any;
-  return row?.language ?? null;
+  return row?.language || null;
 }
 
 /** Infer a season number from a folder name (S01 / Season 1 / Sezon 1 / Sezon I). */
@@ -8144,6 +8149,22 @@ async function applySeriesIdentity(
       db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
     }
     db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // An episode ORDER was picked from the show this key named at the time. A
+    // re-attach can point the key at a DIFFERENT show, and keeping the group
+    // would read that show's "Season 1" under our episode numbers from then
+    // on — so the pref is dropped only when the show actually changed, and the
+    // season cache goes with it: every payload in it was fetched under the
+    // order that just died, and episodeTitleFromCache never re-checks the pref.
+    const pref = db
+      .prepare("SELECT episode_group_show_id FROM tmdb_franchise_prefs WHERE library_key = ?")
+      .get(oldKey) as any;
+    // resolved.tmdbId can be missing (a title-only resolution) — then nothing
+    // can prove a mismatch, and fetchTMDBSeason's own guard clears it on the
+    // next fetch instead of dropping a possibly-valid order here.
+    if (pref?.episode_group_show_id && resolved.tmdbId && pref.episode_group_show_id !== resolved.tmdbId) {
+      db.prepare("DELETE FROM tmdb_season_cache WHERE library_key = ?").run(newKey);
+      db.prepare("UPDATE tmdb_franchise_prefs SET episode_group_id = NULL, episode_group_show_id = NULL WHERE library_key = ?").run(newKey);
+    }
     db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
     // The identity layer must move WITH the key, or a registered inode keeps
     // claiming a franchise no request owns any more (startup then clears it).
@@ -8322,10 +8343,16 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       if (!request) return res.status(404).json({ error: "Request not found" });
       if (!request.library_key) return res.status(400).json({ error: "No library_key (sonarr-linked request)" });
       const language = typeof req.body?.language === "string" && req.body.language.trim() ? req.body.language.trim() : null;
+      // Read-modify-write: INSERT OR REPLACE used to rebuild the row from the
+      // two columns it knew about, wiping an episode ORDER stored beside the
+      // language, and clearing the language deleted the row it lived on.
+      const row = db.prepare("SELECT language, episode_group_id FROM tmdb_franchise_prefs WHERE library_key = ?").get(request.library_key) as any;
       if (language) {
-        db.prepare("INSERT OR REPLACE INTO tmdb_franchise_prefs (library_key, language) VALUES (?, ?)").run(request.library_key, language);
-      } else {
-        db.prepare("DELETE FROM tmdb_franchise_prefs WHERE library_key = ?").run(request.library_key);
+        if (row) db.prepare("UPDATE tmdb_franchise_prefs SET language = ? WHERE library_key = ?").run(language, request.library_key);
+        else db.prepare("INSERT INTO tmdb_franchise_prefs (library_key, language, episode_group_id, episode_group_show_id) VALUES (?, ?, NULL, NULL)").run(request.library_key, language);
+      } else if (row) {
+        if (row.episode_group_id) db.prepare("UPDATE tmdb_franchise_prefs SET language = '' WHERE library_key = ?").run(request.library_key);
+        else db.prepare("DELETE FROM tmdb_franchise_prefs WHERE library_key = ?").run(request.library_key);
       }
       // tmdb_external_ids caches the RESOLVED TITLE per key, so switching the
       // language would keep naming everything in the old one (movies have no
@@ -8339,6 +8366,101 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
     } catch (error) {
       console.error("Error setting franchise language:", error);
       res.status(500).json({ error: "Failed to set language" });
+    }
+  });
+
+  // GET /api/requests/:id/episode-orders - the episode ORDERS (TMDB episode
+  // groups) a show has, plus the one in force. Series-only: a movie has no
+  // seasons to renumber. `current` is only reported when it belongs to the
+  // show the key resolves to NOW — a pref picked before a re-attach is shown
+  // as the default rather than as a stale selection a fetch would drop anyway.
+  router.get("/:id/episode-orders", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const request = db.prepare("SELECT id, library_key, title, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (request.type !== "series" || !request.library_key) return res.status(400).json({ error: "Episode orders are a series setting" });
+      if (!isTmdbConfigured()) return res.json({ current: null, groups: [], show_id: null });
+      const { show_id, groups } = await fetchEpisodeGroups(
+        db,
+        request.library_key,
+        cleanFranchiseTitle(request.title || ""),
+        franchiseLanguage(db, request.library_key),
+      );
+      const pref = franchiseEpisodeOrder(db, request.library_key);
+      const current = pref && show_id && pref.show_id === show_id ? pref.id : null;
+      res.json({ current, groups, show_id });
+    } catch (error) {
+      console.error("Error listing episode orders:", error);
+      res.status(500).json({ error: "Failed to list episode orders" });
+    }
+  });
+
+  // POST /api/requests/:id/episode-order - set (groupId) or clear (null) the
+  // franchise's episode order. The group id is re-checked against THIS show's
+  // own group list — a hand-crafted id could point at another show, whose
+  // "Season 1" would then be read under our episode numbers — and every
+  // cached season row is dropped on a change, because those numbers belong to
+  // the order that just left.
+  router.post("/:id/episode-order", async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const request = db.prepare("SELECT id, library_key, title, type FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+      if (request.type !== "series" || !request.library_key) return res.status(400).json({ error: "Episode orders are a series setting" });
+      const raw = req.body?.groupId;
+      const groupId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+      if (groupId && !/^[0-9a-f]{24}$/.test(groupId)) return res.status(400).json({ error: "Malformed episode group id" });
+      let showId: number | null = null;
+      if (groupId) {
+        if (!isTmdbConfigured()) return res.status(400).json({ error: "TMDB is not configured" });
+        const found = await fetchEpisodeGroups(
+          db,
+          request.library_key,
+          cleanFranchiseTitle(request.title || ""),
+          franchiseLanguage(db, request.library_key),
+        );
+        if (!found.show_id) return res.status(400).json({ error: "Could not resolve this show on TMDB" });
+        if (!found.groups.some((g) => g.id === groupId)) return res.status(400).json({ error: "Not an episode group of this show" });
+        showId = found.show_id;
+      }
+      const row = db.prepare("SELECT language, episode_group_id FROM tmdb_franchise_prefs WHERE library_key = ?").get(request.library_key) as any;
+      const prev: string | null = row?.episode_group_id || null;
+      if (groupId) {
+        if (row) {
+          db.prepare("UPDATE tmdb_franchise_prefs SET episode_group_id = ?, episode_group_show_id = ? WHERE library_key = ?").run(groupId, showId, request.library_key);
+        } else {
+          db.prepare("INSERT INTO tmdb_franchise_prefs (library_key, language, episode_group_id, episode_group_show_id) VALUES (?, '', ?, ?)").run(request.library_key, groupId, showId);
+        }
+      } else if (row) {
+        // Clearing the order: keep the row when a language lives on it.
+        if (row.language) db.prepare("UPDATE tmdb_franchise_prefs SET episode_group_id = NULL, episode_group_show_id = NULL WHERE library_key = ?").run(request.library_key);
+        else db.prepare("DELETE FROM tmdb_franchise_prefs WHERE library_key = ?").run(request.library_key);
+      }
+      let dropped = 0;
+      if (groupId !== prev) {
+        dropped = db.prepare("DELETE FROM tmdb_season_cache WHERE library_key = ?").run(request.library_key).changes;
+        // Warm the cache under the new order, so the very next Fix Names
+        // preview — which reads episodeTitleFromCache and never the network —
+        // already sees THIS order's titles instead of falling back to whatever
+        // the on-disk name says. Best-effort: a miss is retried by the grids.
+        const seasons = db
+          .prepare("SELECT DISTINCT season FROM media_requests WHERE library_key = ? AND type = 'series'")
+          .all(request.library_key) as any[];
+        const wanted = [...new Set([0, ...seasons.map((s) => Number(s.season) || 0)])];
+        const lang = franchiseLanguage(db, request.library_key);
+        for (const s of wanted) {
+          try {
+            await fetchTMDBSeason(db, request.library_key, s, cleanFranchiseTitle(request.title || ""), { language: lang });
+          } catch (err: any) {
+            console.warn(`[episode-order] could not warm season ${s} of ${request.library_key}: ${err?.message}`);
+          }
+        }
+      }
+      res.json({ ok: true, episode_order: groupId, cache_rows_dropped: dropped });
+    } catch (error) {
+      console.error("Error setting episode order:", error);
+      res.status(500).json({ error: "Failed to set episode order" });
     }
   });
 
