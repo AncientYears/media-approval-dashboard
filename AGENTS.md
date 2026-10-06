@@ -888,7 +888,7 @@ anew (that would wipe the order columns beside the language).
 
 ### Episode order (TMDB episode groups)
 A franchise can pick a different EPISODE ORDER than TMDB's default aired one —
-production order, Disney+, Netflix … — via `GET /api/requests/:id/episode-orders`
+production order, DVD order, broadcast pairings … — via `GET /api/requests/:id/episode-orders`
 and `POST /api/requests/:id/episode-order {groupId|null}` (series-only, 400 for
 movies; frontend: the second select beside the language pick on
 `NativeFranchise`, shown only when the show actually has groups). Phineas and
@@ -920,6 +920,16 @@ differently.
 - **Validation**: the POST re-checks the group against THIS show's own
   `/tv/{id}/episode_groups` list (a hand-crafted id could point at another
   show), rejects non-hex ids, and stores the show id it verified against.
+- **The dropdown lists only COMPLETE, non-platform orders.** TMDB carries
+  streaming-derived snapshots beside the real ones — regional Disney+ listings
+  (Brazil-only 47 eps), Netflix missing an episode, broadcast double-features —
+  and none of them is a numbering a release follows. The GET filters those out:
+  `type === 4` is TMDB's own **Digital** type (labelled exactly that on the
+  site), and any group whose `episode_count` differs from the **aired group's**
+  renumbers a different set of episodes than the default holds. The order
+  currently in force is always included, or the select would render the default
+  while another order stays applied. The POST still validates against the FULL
+  list, so a pre-filter selection can be kept or cleared.
 - The endpoint list/handlers sit right after `set-language` in
   `src/routes/requests.ts`; `fetchEpisodeGroups`/`franchiseEpisodeOrder` live in
   `src/services/tmdb.ts`.

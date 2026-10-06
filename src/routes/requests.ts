@@ -8389,7 +8389,24 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       );
       const pref = franchiseEpisodeOrder(db, request.library_key);
       const current = pref && show_id && pref.show_id === show_id ? pref.id : null;
-      res.json({ current, groups, show_id });
+      // Offer only COMPLETE orders. TMDB also carries platform snapshots —
+      // regional listings (Brazil-only Disney+, Netflix missing an episode)
+      // and broadcast double-feature rearrangements — all streaming-derived,
+      // none of which a release's numbering follows. A usable order renumbers
+      // the SAME episodes the aired order holds, so its episode_count must
+      // match the aired group's; type 4 is TMDB's own "Digital" type (labelled
+      // exactly that on the site). The order already in force is always kept,
+      // or the select would render the default while another order stays
+      // applied. POST still validates against the FULL list, so a selection
+      // made before this filter can still be kept or cleared.
+      const aired = groups.find((g) => /^aired\b/i.test(g.name) || /original air/i.test(g.name)) || null;
+      const shown = groups.filter((g) => {
+        if (g.id === current) return true;
+        if (g.type === 4) return false;
+        if (aired && g.episode_count !== aired.episode_count) return false;
+        return true;
+      });
+      res.json({ current, groups: shown, show_id });
     } catch (error) {
       console.error("Error listing episode orders:", error);
       res.status(500).json({ error: "Failed to list episode orders" });
