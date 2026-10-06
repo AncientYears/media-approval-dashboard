@@ -140,8 +140,8 @@ export default function NativeFranchise() {
       }
       setEpisodes((prev) => ({ ...prev, [season.season]: data }));
       toast("Metadata refreshed", "success");
-    } catch {
-      toast("Metadata unavailable (no TMDB key or server offline?)", "error");
+    } catch (e: any) {
+      toast(e?.response?.data?.error || "Metadata unavailable (no TMDB key or server offline?)", "error");
     }
     setRefreshing(null);
   };
@@ -168,24 +168,29 @@ export default function NativeFranchise() {
     setLanguage(value);
     try {
       await setFranchiseLanguage(seedId, value || null);
-      for (const s of franchise.seasons) {
-        if (expanded.has(s.season) && episodes[s.season]) {
-          if (s.request_id != null) {
-            await refreshRequestMetadata(s.request_id);
-          }
-          const data =
-            s.request_id != null
-              ? await fetchRequestEpisodes(s.request_id)
-              : await fetchNativeSeasonEpisodes(Number(id), s.season);
-          setEpisodes((ep) => ({ ...ep, [s.season]: data }));
-        }
-      }
-      setFranchise({ ...franchise, language: value || null });
-      toast(value ? `Language: ${value}` : "Using default language", "success");
-    } catch {
+    } catch (e: any) {
       setLanguage(prev);
-      toast("Could not set language", "error");
+      toast(e?.response?.data?.error || "Could not set language", "error");
+      return;
     }
+    // The pref is saved; everything below is cosmetic on top of it, so it must
+    // not sit in the same try — a season failing to re-fetch used to undo a
+    // save that had already succeeded and leave the UI disagreeing with the DB.
+    for (const s of franchise.seasons) {
+      if (!expanded.has(s.season) || !episodes[s.season]) continue;
+      try {
+        if (s.request_id != null) await refreshRequestMetadata(s.request_id).catch(() => null);
+        const data =
+          s.request_id != null
+            ? await fetchRequestEpisodes(s.request_id)
+            : await fetchNativeSeasonEpisodes(Number(id), s.season);
+        setEpisodes((ep) => ({ ...ep, [s.season]: data }));
+      } catch {
+        // keep the old titles rather than failing the whole language change
+      }
+    }
+    setFranchise({ ...franchise, language: value || null });
+    toast(value ? `Language: ${value}` : "Using default language", "success");
   };
 
   if (error) {

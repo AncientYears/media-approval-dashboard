@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, isTmdbConfigured, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -7807,10 +7807,18 @@ let episodes: any[];
         force: true,
         altTitle: seasonFolder ? path.basename(path.dirname(seasonFolder)) : null,
       });
-      if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
+      // TMDB having no entry for this season is a normal answer (most shows
+      // have no S00), not an outage — and this route runs on every language
+      // change for whichever season is expanded, so a 5xx here rolled the whole
+      // language switch back in the UI while the pref itself had already saved.
+      // Only an unconfigured key is worth reporting as unavailable.
+      if (!meta && !isTmdbConfigured()) {
+        return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
+      }
       res.json({
         refreshed: true,
-        metadata: { tmdb_show_id: meta.tmdb_show_id, show_name: meta.show_name, resolvedVia: meta.resolvedVia, source: "tmdb" },
+        available: !!meta,
+        metadata: meta ? { tmdb_show_id: meta.tmdb_show_id, show_name: meta.show_name, resolvedVia: meta.resolvedVia, source: "tmdb" } : null,
       });
     } catch (error) {
       console.error("Error refreshing metadata:", error);
@@ -7842,8 +7850,10 @@ let episodes: any[];
         force: true,
         altTitle: seedShowDir ? path.basename(seedShowDir) : seedSeasonFolder ? path.basename(path.dirname(seedSeasonFolder)) : null,
       });
-      if (!meta) return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
-      res.json({ refreshed: true, season: sNum });
+      if (!meta && !isTmdbConfigured()) {
+        return res.status(502).json({ error: "TMDB metadata unavailable (no API key or network)" });
+      }
+      res.json({ refreshed: true, season: sNum, available: !!meta });
     } catch (error: any) {
       console.error("Error refreshing native season metadata:", error.message || error);
       res.status(500).json({ error: "Failed to refresh metadata" });

@@ -322,9 +322,9 @@ export default function RequestDetail() {
       await setFranchiseLanguage(Number(id), value || null);
       setRequest((prevReq: any) => (prevReq ? { ...prevReq, language: value || null } : prevReq));
       toast(value ? `TMDB language: ${value}` : "Using default TMDB language", "success");
-    } catch {
+    } catch (e: any) {
       setLanguage(prev);
-      toast("Could not set language", "error");
+      toast(e?.response?.data?.error || "Could not set language", "error");
     }
   };
 

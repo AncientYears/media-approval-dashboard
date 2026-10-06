@@ -21,6 +21,13 @@ function apiKey(): string {
   return process.env.TMDB_API_KEY || "";
 }
 
+/** True when a TMDB lookup can actually run. Lets a caller tell "this show has
+ *  no such season" (a normal answer — plenty of shows have no S00) apart from
+ *  "TMDB was never configured", which is the only real failure. */
+export function isTmdbConfigured(): boolean {
+  return !!apiKey();
+}
+
 function extractExternalId(libraryKey: string): { source: "tvdb_id" | "imdb_id"; id: string } | null {
   const parts = libraryKey.split(":");
   const ident = parts[1] ?? "";
@@ -41,7 +48,11 @@ async function tmdbGet<T>(path: string): Promise<T | null> {
     const res = await axios.get<T>(`${BASE}${path}${path.includes("?") ? "&" : "?"}api_key=${key}`);
     return res.data;
   } catch (err: any) {
-    console.error(`[TMDB] request failed ${path}: ${err.stack || err.message}`);
+    // 404 is an ANSWER, not a fault: a season the show does not have (S00 for
+    // most series) comes back as one, and dumping the stack for it read like a
+    // crash in the logs when the caller simply proceeds with no metadata.
+    if (err?.response?.status === 404) console.warn(`[TMDB] no such resource ${path}`);
+    else console.error(`[TMDB] request failed ${path}: ${err.stack || err.message}`);
     return null;
   }
 }
