@@ -1487,7 +1487,28 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const srcM = at.match(SOURCE_RE);
     const resM = at.match(RES_RE);
     const resWord = RES_WORDS[up.replace(/[-_.]/g, "")] || null;
-    if (srcM) out.source = normalizeSource(srcM[1]);
+    if (srcM) {
+      const next = normalizeSource(srcM[1]);
+      // A bare "web" is the UMBRELLA for WEBDL/WEBRip, and it is the only source
+      // token that is also ordinary English prose. An episode title reading
+      // "Tangled Web" matched it and overwrote the name's OWN [WEBDL-720p] with
+      // [WEB-720p] — and where the name stated no source at all it invented one
+      // ("Like a Rock!" parsed WEBDL, "Tangled Nets" parsed WEBDL, "Tangled Web"
+      // parsed WEB). So the generic form has to LOOK like a release tag before it
+      // counts: bracketed, or release-cased. That is the rule the language codes
+      // already follow below ("It"/"No" in a title are words; "IT"/"NO" are tags)
+      // and the one PROVIDERS matches case-sensitively above — the discriminator
+      // this codebase already uses for title text versus release facts.
+      //
+      // The specific forms never need the guard: SOURCE_RE lists `web-?dl` and
+      // `web-?rip` ahead of `web`, so they win the alternation and are matched
+      // instead — a lowercase "web-dl" is still a source, only the bare word is
+      // ambiguous. Not upgrading is the correct outcome: once WEBDL is stated the
+      // umbrella adds nothing, which is the same shape as a bare "HDR" being
+      // dropped once a specific HDR10/DV flag is present.
+      const bareWeb = next === "WEB";
+      if (!bareWeb || fromBracket || at === up) out.source = next;
+    }
     if (resM) {
       // An explicit pixel count is the most specific claim there is, so it wins
       // over any word form ("4K" must not overwrite a stated "1080p").

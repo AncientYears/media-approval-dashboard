@@ -1136,7 +1136,27 @@ SEERR_API_KEY=
 - **Arr deletes are best-effort + loud**: cleanup-duplicates, remove-titles, `DELETE /managed/:sonarrId`, and destroy now check `res.ok` on their raw-`fetch` deletes, log `HTTP <status>` on failure, and report `arrDeleteFailures`/`sonarrDeleteFailed` in the response — DB rows are still removed regardless so a down arr never blocks local deletion.
 - **Dismiss never deletes library files**: a season-less series dismiss uses `sonarr.unmonitorSeries()` (unmonitor all seasons, keep files) matching movie dismiss's `unmonitorMovie` — it no longer calls `deleteSeries(..., deleteFiles=true)`.
 
-## Testing Checklist
+- **Edition words in a movie TITLE still become tags — known, deferred.** The
+  episode-title span (`episodeTitleSpan`) keeps prose out of `collectEditions`,
+  but a movie has no episode code, so its span is null and `EDITION_MULTI_RE` still
+  scans the whole filename: a film titled *The Uncut Truth (2019)* or *Ultimate
+  Force* would render `[Uncut]`/`[Ultimate]`. Not seen in practice — series
+  episodes are the names that actually carry those words — and the fix needs the
+  movie-title region to be identifiable the way the episode one is. Do not
+  "fix" it by requiring a bracket or `./-/` delimiter: editions legitimately
+  arrive space-separated (`Movie Extended 1080p`), so that would drop real tags.
+- **A bare `web` needs release casing to count as a source; the specific forms
+  do not.** `SOURCE_RE` has a bare `web` alternative and it is the only source
+  token that is ordinary English prose, so `S01E03 - Tangled Web` matched it and
+  overwrote the name's own `[WEBDL-720p]` with `[WEB-720p]` — and invented a
+  source outright when the name stated none. So bare `next === "WEB"` is only
+  accepted `fromBracket || at === up`, the same discriminator language codes and
+  `PROVIDERS` already use. `web-?dl` / `web-?rip` are listed ahead of `web`, so
+  they win the alternation and are never subject to the guard — a lowercase
+  `web-dl` still parses, only the bare umbrella word is ambiguous. Trade
+  accepted: a release writing a *lowercase* bare `web` as a real source tag now
+  needs brackets or caps.
+
 
 - [ ] Prowlarr search returns results with custom terms
 - [ ] Quality parsing checks source (WEBDL/WEBRip/Bluray) before resolution
