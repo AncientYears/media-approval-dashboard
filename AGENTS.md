@@ -1006,6 +1006,7 @@ SEERR_API_KEY=
 - Import endpoint FK fix: uses SELECT-then-INSERT (not INSERT OR IGNORE) to avoid `lastInsertRowid=0` causing FOREIGN KEY constraint failure on approval_history
 - `form-data` npm package used for qBittorrent multipart file upload (already a direct dependency)
 - Import endpoint uses `toQBittorrentPath()` for save path, `fromQBittorrentPath()` for content_path/save_path from qBittorrent
+- **The JSON body limit is 10mb, and it must stay that way.** `.torrent` uploads travel as base64 JSON (`torrentFileBase64`), which is 4/3 of the file on the wire, so body-parser's default `100kb` cap rejected a normal 98kb torrent with `PayloadTooLargeError` → a bare 500 "Internal server error". `server.ts` sets `bodyParser.json({ limit: "10mb" })`, and the error handler maps `entity.too.large` → **413** and `entity.parse.failed` → **400** so the modal can show the real numbers instead of "internal server error" (both `ImportModal` and `DownloadDirsModal` already read `err.response.data.error`).
 - Destroy modal is a proper modal (not 3-click confirm), shows options for delete files vs keep files
 - Destroy moves Download content to /Processed via renameSync (NOT hardlink — since torrent is removed anyway)
 - Processed files in /Processed are preserved by destroy either way

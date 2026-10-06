@@ -27,8 +27,12 @@ const DB_PATH = process.env.DATABASE_PATH || "./data/app.db";
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// .torrent uploads ride as base64 JSON (`torrentFileBase64`), which is 4/3 of
+// the file on the wire — body-parser's default 100kb cap rejected a perfectly
+// ordinary 98kb torrent with a 500. Nothing here posts anything bigger than a
+// few megabytes, so give it room rather than failing on a real input.
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ extended: true, limit: "10mb" }));
 
 // Initialize database
 const { db, close: closeDb } = initializeDatabase(DB_PATH);
@@ -361,6 +365,14 @@ app.get("/{*path}", (req, res) => {
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // A body-parser rejection is a client mistake, not a crash — and the generic
+  // 500 hid the only useful part (how big the payload was vs the cap).
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: `Request body too large (${err.length} bytes, limit ${err.limit})` });
+  }
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Malformed JSON body" });
+  }
   console.error("Error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
