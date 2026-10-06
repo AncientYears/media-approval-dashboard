@@ -495,13 +495,20 @@ export function episodeTitleFromSourceName(base: string): string | null {
  *  function's exactly: the first bracket group, or the resolution run, whichever
  *  comes first, since both are the release tail rather than anything a viewer
  *  reads as the title. */
-function leadingTitleRegion(base: string): string {
+function splitLeadingRegion(base: string): { head: string; tail: string } {
   const bracket = base.search(/[[({]/);
   const res = base.search(/[\s._-]?\w*\d{3,4}[pi]\b/i);
-  let out = base;
-  if (bracket >= 0 && (res < 0 || bracket <= res)) out = base.slice(0, bracket);
-  else if (res >= 0) out = base.slice(0, res);
-  return out.replace(/[[({]\s*$/, "").replace(/\s*[\])}]\s*$/, "").replace(/[\s._-]+$/, "").trim();
+  if (bracket >= 0 && (res < 0 || bracket <= res)) return { head: base.slice(0, bracket), tail: base.slice(bracket) };
+  if (res >= 0) return { head: base.slice(0, res), tail: base.slice(res) };
+  return { head: base, tail: "" };
+}
+
+function leadingTitleRegion(base: string): string {
+  return splitLeadingRegion(base).head
+    .replace(/[[({]\s*$/, "")
+    .replace(/\s*[\])}]\s*$/, "")
+    .replace(/[\s._-]+$/, "")
+    .trim();
 }
 
 /** A release that splits ONE episode in two on disk ("Part 1" / "Part 2") is
@@ -527,6 +534,26 @@ export function partMarkerFromSourceName(base: string): string | null {
 export function stripPartMarker(title: string): string {
   const t = title.replace(/[\s._()/-]+(?:part|pt)\.?\s*\d{1,2}\s*$/i, "").trim();
   return /^(?:part|pt)\.?\s*\d{1,2}$/i.test(t) ? "" : t;
+}
+
+/** The SOURCE name with its part marker removed — used before a TMDB lookup, so
+ *  a search is never asked to match "… part 2". It does not match, and the file
+ *  then keeps its on-disk title while its unmarked sibling resolves to the real
+ *  one: two different identities, two group keys, so the halves never meet and
+ *  the first half is never labelled. Stripping makes both resolve to the SAME
+ *  film, which is also where the second half gets its year and imdb id back.
+ *  Unchanged when the name states no marker, or when the marker is all the
+ *  leading text there is. */
+export function stripPartFromSourceName(base: string): string {
+  if (!partMarkerFromSourceName(base)) return base;
+  const { head, tail } = splitLeadingRegion(base);
+  const stripped = stripPartMarker(head);
+  if (!stripped) return base;
+  // stripPartMarker trims, and the cut at a bracket dropped the space that used
+  // to separate the title from what follows — so put one back unless the tail
+  // carries its own delimiter (the dots/dashes a resolution run starts with).
+  const sep = tail && !/^[\s._/-]/.test(tail) ? " " : "";
+  return `${stripped}${sep}${tail}`;
 }
 
 /** ` - Part N` where a marker can sit: after the title, before any tag bracket,

@@ -27,6 +27,7 @@ import {
   episodeTitleFromSourceName,
   partMarkerFromSourceName,
   stripPartMarker,
+  stripPartFromSourceName,
   partGroupKey,
   partNumberIn,
   needsPartOne,
@@ -1427,9 +1428,22 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   await warmSeasonCache(db, request, idHintFolder ? [idHintFolder] : []);
   const pieces = await namingPiecesForRequest(db, request, idHintFolder);
   const tags = assembleCanonicalTags(parseReleaseTags(sourceBase, vendorList(conf)), probe || null);
+  // A release that split in two says so in its OWN name ("… part 2"), and this
+  // is the only place that ever sees the two halves apart — Fix Names meets them
+  // later, already named. Carrying the marker through is what stops the halves
+  // landing as one name plus a `-2` collision suffix, and it is the same rule
+  // `proposeCanonicalName` applies when it re-reads them afterwards.
+  const ext = path.extname(sourceBase);
+  const stem = ext && sourceBase.endsWith(ext) ? sourceBase.slice(0, -ext.length) : sourceBase;
+  const ownPart = partMarkerFromSourceName(stem);
+  // Not appended when the title already ends in one: the canonical form puts the
+  // year after it, so the marker stops matching on the next pass and the file
+  // would flip between two spellings forever.
+  const withPart = (title: string) =>
+    ownPart && title && stripPartMarker(title) === title ? `${title} - ${ownPart}` : title;
   if (request.type === "movie") {
     if (!pieces) return null;
-    return canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
+    return canonicalMovieFile(conf, { title: withPart(pieces.title), year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
   }
   const parsed = parseEpisodeCode(sourceBase, { knownSeason: request.season ?? null });
   if (!parsed) return null;
@@ -1437,9 +1451,13 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   if (ep.season === 0) {
     const sp = await specialPiecesForFile(db, request, sourceBase, pieces, ep.episode);
     if (!sp) return null;
-    return canonicalSpecialFile(conf, { title: sp.title, year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group, vendor: tags.vendor });
+    return canonicalSpecialFile(conf, { title: withPart(sp.title), year: sp.year, imdbId: sp.imdbId, season: 0, episode: ep.episode, tags: tags.tags, group: tags.group, vendor: tags.vendor });
   }
-  const episodeTitle = episodeTitleFor(db, request, sourceBase, ep);
+  let episodeTitle = episodeTitleFor(db, request, sourceBase, ep);
+  if (ownPart) {
+    const stripped = stripPartMarker(episodeTitle ?? "");
+    episodeTitle = stripped ? `${stripped} - ${ownPart}` : ownPart;
+  }
   // Per-episode air date, so a template can date a season that aired years after
   // the show's first season. Optional: default templates never reference it.
   const airDate = request.library_key ? episodeAirDateFromCache(db, request.library_key, ep.season, ep.episode, franchiseLanguage(db, request.library_key)) : null;
@@ -2186,10 +2204,26 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
   // states its own film title and TMDB can resolve it — so fall back to the
   // release name itself rather than giving up.
   const bare = rest ? null : specialTitleFromBareName(sourceBase);
-  const diskTitle = stripped || rest || bare;
+  // A release that split ONE special in two names only its second half ("… part
+  // 2"), and TMDB matches no film with that tail — so that half used to keep its
+  // on-disk title while the plain half was given the real one (year, imdb id and
+  // all), and two identities that never meet under one key can never be read as
+  // halves of one release. The unmarked spelling is looked up too, but only
+  // AFTER the release's own: a film genuinely titled "… Part 2" must resolve to
+  // itself, and only a genuinely unmatched tail falls through to it. The title
+  // kept for a lookup that failed entirely is the unmarked one, so a name the
+  // release itself wrote as "part 2" is not printed as part of the title and
+  // then appended as a marker a moment later.
+  const clean = stripPartFromSourceName(sourceBase);
+  const restC = episodeTitleFromSourceName(clean);
+  const strippedC = specialTitleFromSourceName(clean, request, showPieces?.title);
+  const bareC = restC ? null : specialTitleFromBareName(clean);
+  const diskTitle = strippedC || restC || bareC || stripped || rest || bare;
   if (!diskTitle) return null;
   const lang = request.library_key ? franchiseLanguage(db, request.library_key) : null;
-  const candidates = [stripped, rest, bare].filter((c): c is string => !!c);
+  const candidates = [...new Set(
+    [stripped, rest, bare, strippedC, restC, bareC].filter((c): c is string => !!c),
+  )];
   const isSlot = isGenericSpecialSlot(diskTitle);
 
   // A slot marker names a position in the show, not a film — so before reaching
@@ -2275,7 +2309,19 @@ async function proposeCanonicalName(
   const tags = inheritReleaseFacts(assembleCanonicalTags(parseReleaseTags(base, vendorList(conf)), probe || null), siblingBase, vendorList(conf), probe || null);
   if (request.type === "movie") {
     if (!pieces) return { name: null, role: "movie", note: "Could not resolve TMDB identity" };
-    const name = canonicalMovieFile(conf, { title: pieces.title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
+    // Same subdivision rule as the branches below: a movie release split on
+    // disk ("… part 2") has TWO files, and the request's own identity supplies
+    // them the same title — so without a marker the second one is just a `-2`
+    // collision, which says nothing when the release had already said what sets
+    // them apart. Unlike a special, no lookup can fail here: identity comes from
+    // the request, never from the file name.
+    let title = pieces.title;
+    const part = forcedPart ?? partMarkerFromSourceName(base);
+    // Not appended when the film's OWN title ends in one: the canonical form
+    // puts the year after the title, so the marker stops matching on the next
+    // pass and the file would flip between two spellings forever.
+    if (part && title && stripPartMarker(title) === title) title = `${title} - ${part}`;
+    const name = canonicalMovieFile(conf, { title, year: pieces.year, imdbId: pieces.imdbId, tags: tags.tags, group: tags.group, vendor: tags.vendor });
     if (!name) return { name: null, role: "movie", note: "Missing title/year/imdbId" };
     return { name: name === base ? null : name, role: "movie", note: null };
   }
@@ -2313,11 +2359,12 @@ async function proposeCanonicalName(
     // no episode code to read it from, which is why partMarkerFromSourceName
     // falls back to the name's untagged leading text.
     const part = forcedPart ?? partMarkerFromSourceName(base);
-    if (part) {
-      // Strip before appending: without TMDB the on-disk title IS
-      // "… part 2", and appending to it would render "… part 2 - Part 2".
-      const stripped = stripPartMarker(title);
-      title = stripped ? `${stripped} - ${part}` : part;
+    if (part && stripPartMarker(title) === title) {
+      // Not appended when the film's OWN title ends in one: the canonical form
+      // puts the year after the title, so the marker stops matching on the next
+      // pass and the file would flip between two spellings forever. An empty
+      // title takes the marker alone, as it did before this guard existed.
+      title = title ? `${title} - ${part}` : part;
     }
     const name = canonicalSpecialFile(conf, {
       title,
@@ -2592,9 +2639,8 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   // correctly, and it is safe precisely because a marked sibling exists: the key
   // is the canonical name with the marker stripped, so two files only ever meet
   // here when they are otherwise IDENTICAL — a second version at another quality
-  // strips to a different key and is never filled. The marked half can only be
-  // an episode or a special, since those are the branches that read a marker at
-  // all, so a movie row is left alone.
+  // strips to a different key and is never filled. Every branch reads a marker
+  // now — episode, special and movie alike — so no row is singled out here.
   //
   // Both halves reach the marker through the SAME code path: this re-proposes
   // rather than stitching " - Part 1" onto a finished name, so the two can never
@@ -2619,7 +2665,7 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
   for (const b of partBuckets.values()) {
     if (!b.plain.length || !needsPartOne([...b.nums])) continue;
     for (const g of b.plain) {
-      if (!g.processed || g.processed.role === "movie") continue;
+      if (!g.processed) continue;
       const redrive = async (row: FixNameRow, sibling: string | null, srcPath: string) => {
         let rowProbe: ProbeInfo | null = null;
         try {
