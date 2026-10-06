@@ -487,15 +487,34 @@ export function episodeTitleFromSourceName(base: string): string | null {
   return episodeTitleSpan(base)?.title ?? null;
 }
 
+/** The untagged leading text of a name carrying NO episode code. A movie or a
+ *  special filed straight into S00
+ *  ("The Lion Guard Return of the Roar part 2 [1080p.WEB-DL.H264-FT]") has no
+ *  SxxExx to anchor on, so episodeTitleSpan — which starts by looking for one —
+ *  returns null and takes the part marker with it. The cut mirrors that
+ *  function's exactly: the first bracket group, or the resolution run, whichever
+ *  comes first, since both are the release tail rather than anything a viewer
+ *  reads as the title. */
+function leadingTitleRegion(base: string): string {
+  const bracket = base.search(/[[({]/);
+  const res = base.search(/[\s._-]?\w*\d{3,4}[pi]\b/i);
+  let out = base;
+  if (bracket >= 0 && (res < 0 || bracket <= res)) out = base.slice(0, bracket);
+  else if (res >= 0) out = base.slice(0, res);
+  return out.replace(/[[({]\s*$/, "").replace(/\s*[\])}]\s*$/, "").replace(/[\s._-]+$/, "").trim();
+}
+
 /** A release that splits ONE episode in two on disk ("Part 1" / "Part 2") is
  *  stating a SUBDIVISION, not an episode title. TMDB has exactly one
  *  "The Rise of Scar", so both halves resolve to the same title, receive the same
  *  canonical name, and the loser differs only by a `-2` collision suffix — the
  *  one fact that told the two apart was written out of the disk name. This pulls
  *  the marker back out of the source name so it can ride along AFTER whichever
- *  title won (TMDB's, when the cache had one). */
+ *  title won (TMDB's, when the cache had one). An episode reads it from the
+ *  region after its SxxExx; a special or a movie has no code, so that path falls
+ *  back to the leading region above. */
 export function partMarkerFromSourceName(base: string): string | null {
-  const own = episodeTitleFromSourceName(base);
+  const own = episodeTitleFromSourceName(base) ?? leadingTitleRegion(base);
   if (!own) return null;
   const m = own.match(/(?:^|[\s._()/-]+)(?:part|pt)\.?\s*(\d{1,2})\s*$/i);
   return m ? `Part ${m[1]}` : null;

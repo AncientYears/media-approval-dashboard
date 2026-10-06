@@ -2292,9 +2292,24 @@ async function proposeCanonicalName(
     // Having just consumed that digit as the S00Exx marker, it must not also
     // survive as title text — "1 Krecik i balonik" would otherwise render as a
     // numbered title beside its own number.
-    const title = bareEp != null && episodeNo === bareEp
+    let title = bareEp != null && episodeNo === bareEp
       ? sp.title.replace(/^\s*\d{1,3}\s+/, "").trim() || sp.title
       : sp.title;
+    // The same subdivision rule episodes follow: a special split on disk
+    // ("Return of the Roar" / "Return of the Roar part 2") resolves on TMDB to
+    // ONE film, so both halves take the same canonical name and the loser
+    // differs only by a `-2` collision suffix — the release had already written
+    // down what sets them apart. The marker is a subdivision of the title, not a
+    // competing title, so it rides after whichever title won. A bare special has
+    // no episode code to read it from, which is why partMarkerFromSourceName
+    // falls back to the name's untagged leading text.
+    const part = partMarkerFromSourceName(base);
+    if (part) {
+      // Strip before appending: without TMDB the on-disk title IS
+      // "… part 2", and appending to it would render "… part 2 - Part 2".
+      const stripped = stripPartMarker(title);
+      title = stripped ? `${stripped} - ${part}` : part;
+    }
     const name = canonicalSpecialFile(conf, {
       title,
       year: sp.year,
