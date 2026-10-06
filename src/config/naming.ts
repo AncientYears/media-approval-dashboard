@@ -529,6 +529,33 @@ export function stripPartMarker(title: string): string {
   return /^(?:part|pt)\.?\s*\d{1,2}$/i.test(t) ? "" : t;
 }
 
+/** ` - Part N` where a marker can sit: after the title, before any tag bracket,
+ *  and never inside one — a bracket ending in "]" fails the lookahead, so a tag
+ *  reading "[Something - Part 2]" is left alone. */
+const PART_IN_NAME = /(\s+-\s*Part\s+)(\d{1,2})(?=\s|$)/;
+
+/** The name with its part marker removed. Both halves of a split release strip
+ *  to the SAME key, which is what makes "these two are halves of one release" a
+ *  conclusion rather than a guess: a second VERSION at another quality carries
+ *  different tags and so strips to a different key and never matches. */
+export function partGroupKey(name: string): string {
+  return name.replace(PART_IN_NAME, "");
+}
+
+/** The part number a name states, or null when it states none. */
+export function partNumberIn(name: string): number | null {
+  const m = PART_IN_NAME.exec(name);
+  return m ? Number(m[2]) : null;
+}
+
+/** Whether an UNMARKED sibling sharing a group key should be labelled "Part 1".
+ *  It needs a half numbered 2 or higher to complement: a lone "Part 1" already
+ *  on disk means the unmarked file is something else entirely (part 3? a
+ *  duplicate?), and naming it would be guessing instead of completing a pair. */
+export function needsPartOne(stated: number[]): boolean {
+  return stated.some((n) => n >= 2) && !stated.includes(1);
+}
+
 function collectEditions(base: string): string[] {
   const span = episodeTitleSpan(base);
   const out: string[] = [];

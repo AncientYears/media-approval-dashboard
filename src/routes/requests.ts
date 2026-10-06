@@ -27,6 +27,9 @@ import {
   episodeTitleFromSourceName,
   partMarkerFromSourceName,
   stripPartMarker,
+  partGroupKey,
+  partNumberIn,
+  needsPartOne,
   canonicalMovieFile,
   canonicalSpecialFile,
   canonicalEpisodeFile,
@@ -2241,7 +2244,12 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
  * change (already canonical / missing pivots / naming disabled). Mirrors
  * canonicalFileBase but for on-disk files whose current name is the starting
  * point, and optionally enriched by an ffprobe probe.
- */
+ *
+ * `forcedPart` supplies the part marker for a file whose OWN name carries none:
+ * buildFixNameGroups uses it to label the unmarked half of a split release
+ * `Part 1` once a sibling has already claimed `Part 2`. Routed through here
+ * rather than stitched onto the finished name so both halves take the exact
+ * same title-strip + append path and can never drift in format. */
 async function proposeCanonicalName(
   db: Database,
   request: any,
@@ -2249,6 +2257,7 @@ async function proposeCanonicalName(
   probe: ProbeInfo | null,
   cachedPieces?: NamingPieces | null,
   siblingBase?: string | null,
+  forcedPart?: string | null,
 ): Promise<{ name: string | null; role: FixNameRow["role"] | null; note: string | null }> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return { name: null, role: null, note: "Naming disabled in Settings" };
@@ -2303,7 +2312,7 @@ async function proposeCanonicalName(
     // competing title, so it rides after whichever title won. A bare special has
     // no episode code to read it from, which is why partMarkerFromSourceName
     // falls back to the name's untagged leading text.
-    const part = partMarkerFromSourceName(base);
+    const part = forcedPart ?? partMarkerFromSourceName(base);
     if (part) {
       // Strip before appending: without TMDB the on-disk title IS
       // "… part 2", and appending to it would render "… part 2 - Part 2".
@@ -2334,7 +2343,7 @@ async function proposeCanonicalName(
   // loser only differs by a `-2` collision suffix — a version number that says
   // nothing when the release had already said exactly what sets them apart. So
   // the marker rides along after whichever title won.
-  const part = partMarkerFromSourceName(base);
+  const part = forcedPart ?? partMarkerFromSourceName(base);
   let episodeTitle = episodeTitleFor(db, request, base, ep);
   if (part) {
     // Strip before appending: when TMDB had nothing cached the release's own
@@ -2573,6 +2582,58 @@ async function buildFixNameGroups(db: Database, request: any): Promise<{ groups:
     }
 
     groups.push({ id: `g${gid++}`, ino, processed, library });
+  }
+
+  // A split release marks only its SECOND half ("… part 2"), so the plain
+  // sibling took the bare canonical name — and then listed BACKWARDS, because
+  // "[tags]" outranks every marker character: "-" (0x2D) and "P" (0x50) both
+  // sort below "[" (0x5B), so Part 2 came first whichever way it was spelled.
+  // Naming the plain half "Part 1" is the only arrangement that orders
+  // correctly, and it is safe precisely because a marked sibling exists: the key
+  // is the canonical name with the marker stripped, so two files only ever meet
+  // here when they are otherwise IDENTICAL — a second version at another quality
+  // strips to a different key and is never filled. The marked half can only be
+  // an episode or a special, since those are the branches that read a marker at
+  // all, so a movie row is left alone.
+  //
+  // Both halves reach the marker through the SAME code path: this re-proposes
+  // rather than stitching " - Part 1" onto a finished name, so the two can never
+  // drift in format.
+  const extless = (n: string) => {
+    const e = path.extname(n);
+    return e && n.endsWith(e) ? n.slice(0, -e.length) : n;
+  };
+  const partBuckets = new Map<string, { nums: Set<number>; plain: FixNameGroup[] }>();
+  for (const g of groups) {
+    if (!g.processed) continue;
+    const canon = extless(g.processed.proposedName ?? g.processed.currentName);
+    let b = partBuckets.get(partGroupKey(canon));
+    if (!b) {
+      b = { nums: new Set(), plain: [] };
+      partBuckets.set(partGroupKey(canon), b);
+    }
+    const n = partNumberIn(canon);
+    if (n != null) b.nums.add(n);
+    else b.plain.push(g);
+  }
+  for (const b of partBuckets.values()) {
+    if (!b.plain.length || !needsPartOne([...b.nums])) continue;
+    for (const g of b.plain) {
+      if (!g.processed || g.processed.role === "movie") continue;
+      const redrive = async (row: FixNameRow, sibling: string | null, srcPath: string) => {
+        let rowProbe: ProbeInfo | null = null;
+        try {
+          const st = fs.statSync(srcPath);
+          rowProbe = probes.get(`${st.dev}:${st.ino}`) || null;
+        } catch {}
+        const r = await proposeCanonicalName(db, request, path.basename(srcPath), rowProbe, cachedPieces, sibling, "Part 1");
+        if (r.name) row.proposedName = `${r.name}${path.extname(srcPath)}`;
+        row.role = r.role;
+        row.note = r.note;
+      };
+      await redrive(g.processed, g.library ? g.library.currentName : null, g.processed.path);
+      if (g.library) await redrive(g.library, g.processed.currentName, g.library.path);
+    }
   }
 
   // Two DIFFERENT files can legitimately claim one SxxExx — that's just two
