@@ -408,9 +408,95 @@ const MISC_PHRASES: Record<string, string> = {
   "sdr upscaling": "SDR UPSCALING",
 };
 
+/** A release can go straight from the episode code into its tags, naming no
+ *  episode at all ("S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR"). Anchored at
+ *  the START of what follows the code, because a real episode title never BEGINS
+ *  with a resolution, source, provider or codec token — unlike the resolution
+ *  search below, which is a substring match and so may fire mid-title. */
+const TAG_RUN_HEAD = /^(?:web-?dl|web-?rip|bluray|blu-?ray|remux|hdtv|brrip|bdrip|dvdrip|amzn|dsnp|atvp|hmax|pcook|starz|hulu|\dK\b|x26[45]|h\.?26[45]|hevc|avc|aac\d|ac3|e-?ac3|ddp?\d?|truehd|dts-?hd|atmos)/i;
+
+/** Where the episode title sits inside a name: the cleaned title text plus its
+ *  CHARACTER RANGE over `base`, or null when the release names none.
+ *
+ *  One implementation serves both callers, because they want different halves of
+ *  the same fact and a second copy would eventually disagree with the first. The
+ *  canonical name wants the TEXT; collectEditions wants the RANGE, so that an
+ *  edition word inside the title's prose is not read as a release tag — "The
+ *  Ultimate Object of Admiration" was claiming `[Ultimate]`, which then appeared
+ *  on every preview as a rename that would never converge. */
+function episodeTitleSpan(base: string): { start: number; end: number; title: string } | null {
+  // "S0XE03" is a season-0 special marker, not a typo — accept it alongside the
+  // normal S00E03 so the title after it is still found.
+  const m = base.match(/(?<![A-Za-z0-9])[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
+  if (!m) return null;
+  // Offset of group 1 inside `base`: the match ends with the group, so the group
+  // occupies the last m[1].length characters of m[0].
+  const start = (m.index ?? 0) + (m[0].length - m[1].length);
+  let rest = m[1];
+  // Cut the release tail at whichever comes first: the first bracket group, or the
+  // run of tags starting at the resolution. The resolution is matched after a DOT
+  // as well as a space — a dotted release name is the common form
+  // ("...S11E01.Episode.1.1080p.AMZN.WEB-DL") and the space-only pattern never
+  // fired on one, so the whole tag run survived as the "title" and the canonical
+  // name read "S11E00 - Episode.1.1080p.AMZN.WEB-DL.DDP2.0.H.264-WADU". Matching
+  // the EARLIER of the two also keeps a bracketed title ahead of a later
+  // resolution from truncating it.
+  const bracket = rest.search(/[[({]/);
+  // The separator in front of the resolution is OPTIONAL, which is what catches
+  // a name that goes straight from the code into the tags: in
+  // "S14E01.1080p.iP.WEB-DL..." nothing precedes "1080p", so a required
+  // separator never matched, res stayed -1, and the entire tag run was returned
+  // as the episode title — printing the release tail TWICE, once as text and
+  // once as tags.
+  const res = rest.search(/[\s._-]?\w*\d{3,4}[pi]\b/i);
+  if (TAG_RUN_HEAD.test(rest)) return null;
+  if (bracket >= 0 && (res < 0 || bracket <= res)) {
+    // A leading bracket means the name went straight from the code to tags
+    // ("- S03E01 [Dual Audio]") — there is no title to keep.
+    if (bracket === 0) return null;
+    rest = rest.slice(0, bracket);
+  } else if (res === 0) {
+    return null;
+  } else if (res > 0) {
+    rest = rest.slice(0, res);
+  } else {
+    // Neither marker: still drop a trailing tag word run, as before.
+    rest = rest.replace(/\s+-\s*[A-Za-z0-9]{2,12}$/, "");
+  }
+  rest = rest.replace(/[[({]\s*$/, "").replace(/\s*[\])}]\s*$/, "").trim().replace(/[-_]+$/, "").trim();
+  // Snapshot the end BEFORE the normalization below: until this line `rest` is
+  // still a raw slice of `base`, so start + rest.length is a real range. The dot
+  // and whitespace collapsing that follows rewrites lengths, after which the
+  // string no longer lines up with `base` and could not be used as an offset.
+  const end = start + rest.length;
+  // Dots and underscores are how a release delimits words; a real title has
+  // spaces. Normalizing here also lets the cached TMDB title agree with it, so
+  // the packed-episode trailing check and the tail-shift search match on words.
+  rest = rest.replace(/[._]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!rest || rest.length > 90) return null;
+  // A leftover tag run ("1080p WEB-DL") is not a title.
+  if (/^\[.*\]$/.test(rest) || /^\d{3,4}[pi]$/i.test(rest)) return null;
+  if (!/[a-z]{3}/i.test(rest)) return null;
+  return { start, end, title: rest };
+}
+
+/** On-disk episode title, or null when the release names none. Exported for
+ *  tests: this decides whether the canonical name carries an episode title at
+ *  all, and getting it wrong prints the whole tag run as the title. */
+export function episodeTitleFromSourceName(base: string): string | null {
+  return episodeTitleSpan(base)?.title ?? null;
+}
+
 function collectEditions(base: string): string[] {
+  const span = episodeTitleSpan(base);
   const out: string[] = [];
   for (const m of base.matchAll(EDITION_MULTI_RE)) {
+    // An edition word inside the episode title is PROSE, not a release claim:
+    // "The Ultimate Object of Admiration" and "The Uncut Truth" are episode
+    // names, and reading them as tags put [Ultimate]/[Uncut] on every preview of
+    // files that are already canonical. Only the region past the title — the
+    // bracket/dot/space run the release actually writes tags in — is evidence.
+    if (span && m.index !== undefined && m.index >= span.start && m.index < span.end) continue;
     const label = editionLabel(m[1]);
     if (!out.includes(label)) out.push(label);
   }
