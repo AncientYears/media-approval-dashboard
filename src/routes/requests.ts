@@ -3533,6 +3533,497 @@ function getContentVideoInodes(contentPath: string): { inodes: Set<number>; name
   return { inodes, names, sizes };
 }
 
+/** Rewrite a movie's identity across every dependent row, then repopulate the
+ *  external-id cache under the new key. Never touches the filesystem. */
+/** The middle segment of a movie `library_key`: the IMDb id when one is known,
+ *  else the title slug. The id is the deterministic anchor -- `imdbIdOwnerKey`
+ *  resolves a file's embedded `[imdbid-tt...]` straight to the key that owns it,
+ *  and the folder veto reads it -- so it wins whenever it is available. Returns
+ *  null for anything that is not a real IMDb id, which is how a bad value falls
+ *  back to the slug instead of minting a nonsense key. */
+function movieKeySegment(name: string, imdbId: string | null | undefined): string {
+  if (imdbId && /^tt\d{6,}$/i.test(imdbId.trim())) return imdbId.trim().toLowerCase();
+  return slugForKeyTitle(name);
+}
+
+async function applyMovieIdentity(
+  db: Database,
+  oldKey: string,
+  resolved: { name: string; year: number | null; tmdbId?: number },
+  lang: string,
+  opts?: { alsoSetTitle?: boolean },
+): Promise<{ newKey: string } | { error: string; status: number }> {
+  const slug = slugForKeyTitle(resolved.name);
+  if (!slug || slug.length < 3) {
+    return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
+  }
+  // Fresh resolution only -- never the old key's cached id, which belongs to
+  // whatever film that key used to name, which is exactly what a repair disputes.
+  let imdbId: string | null = null;
+  if (resolved.tmdbId) {
+    const ids = await fetchExternalIds("movie", resolved.tmdbId, lang).catch(() => null);
+    if (ids?.imdbId) imdbId = ids.imdbId;
+  }
+  // No id from TMDB (a film it has none for, or a lookup that failed) falls back to
+  // the slug, which still round-trips: requestImdbId() reads the cache this function
+  // repopulates below, so a slug-keyed request is not left without an id.
+  const newKey = `movie:${movieKeySegment(resolved.name, imdbId)}:${resolved.year ?? 0}`;
+  // Re-attaching to the film the key ALREADY names is not a no-op: the stored
+  // title is a separate column and is frequently still mangled ("Hobbit" beside
+  // movie:the-hobbit-an-unexpected-journey:2012). That title is what card
+  // matching reads, so leaving it behind would preserve the exact misattribution
+  // the repair was for.
+  if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
+  // A clash only counts when ANOTHER film holds the key. When newKey === oldKey the
+  // request's own row is the sole holder, and re-attaching to the film it already
+  // names is precisely the legitimate case (the key was repaired while the stored
+  // title stayed mangled) — counting itself there made every such repair 409.
+  const clash =
+    (db
+      .prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ? AND library_key != ?")
+      .get(newKey, oldKey) as any)?.c || 0;
+  if (clash > 0) {
+    // Two DIFFERENT films claiming one key is the misattribution this whole
+    // feature exists to prevent, so never merge them silently.
+    return { error: `Key ${newKey} is already in use by another movie — not overwriting`, status: 409 };
+  }
+  db.transaction(() => {
+    if (opts?.alsoSetTitle) {
+      db.prepare("UPDATE media_requests SET title = ?, library_key = ? WHERE library_key = ? AND type = 'movie'").run(
+        resolved.name,
+        newKey,
+        oldKey,
+      );
+    } else {
+      db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'movie'").run(newKey, oldKey);
+    }
+    db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The identity layer must move WITH the key. media_files is keyed by
+    // (dev, inode) and every read is inode-first, so a row left on the old key
+    // keeps claiming the file for a library_key no request owns any more: after
+    // a re-attach the file vanished from its own card ("Nothing to rename in this
+    // layer") while still sitting in /Processed, because the row resolved to the
+    // dead key. It also blocks the rename itself - a registered row is an
+    // absolute veto in Fix Names. Re-attaching is a statement that these inodes
+    // belong to the new film, so the attribution follows.
+    db.prepare("UPDATE media_files SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The stale row must NOT follow the key across: it holds the pre-fix
+    // resolved title, so the next preview would keep printing it. Drop it and
+    // let the repopulate below write the correct one instead.
+    db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
+  })();
+  // Re-resolve under the NEW key so the cache carries the post-fix title AND the
+  // IMDb id. Seeding it is not optional: requestImdbId reads this table first,
+  // and a slug-keyed row for a localized movie ("Niekonczaca sie opowiesc III"
+  // -> movie:the-neverending-story-iii:1994) can find no id in its key or its
+  // stored title, so without this the request silently loses the id that the
+  // folder veto and the canonical name both depend on.
+  await resolveExternalIds(db, newKey, "movie", resolved.name, lang, { ignoreCache: true }).catch(() => null);
+  return { newKey };
+}
+
+/** The middle segment of a series `library_key`: the TVDB id when known (the
+ *  canonical `[tvdbid-####]` convention the dir names embed), then the IMDb id,
+ *  else the title slug. The series mirror of `movieKeySegment`, but a series
+ *  anchors on TVDB rather than IMDb. A slug is a LOSSY artifact of a title, so
+ *  it is the last resort and is built from the RESOLVED name -- never the stored
+ *  row title, which is routinely localized ("Kacze opowiesci" used to mint a
+ *  Polish slug). Returns null for anything unusable, so the caller can refuse. */
+function seriesKeySegment(name: string, tvdbId: string | null | undefined, imdbId: string | null | undefined): string | null {
+  const tv = tvdbId != null ? String(tvdbId).trim() : "";
+  if (/^\d+$/.test(tv)) return tv;
+  const im = imdbId != null ? imdbId.trim() : "";
+  if (/^tt\d{6,}$/i.test(im)) return im.toLowerCase();
+  const slug = slugForKeyTitle(name);
+  return slug && slug.length >= 3 ? slug : null;
+}
+
+/** Rewrite a series franchise's identity across every dependent row, then
+ *  repopulate the external-id cache under the new key. Never touches the
+ *  filesystem. Mirrors `applyMovieIdentity`, with two series-specific pieces:
+ *  the TVDB-first key segment, and the `media_files` migration (a series repair
+ *  that skipped it orphaned every registered inode until a read re-registered
+ *  it). `alsoSetTitle` is the Re-attach path. */
+async function applySeriesIdentity(
+  db: Database,
+  oldKey: string,
+  resolved: { name: string; year: number | null; tmdbId?: number },
+  lang: string,
+  opts?: { alsoSetTitle?: boolean },
+): Promise<{ newKey: string } | { error: string; status: number }> {
+  let tvdbId: string | null = null;
+  let imdbId: string | null = null;
+  if (resolved.tmdbId) {
+    const ids = await fetchExternalIds("series", resolved.tmdbId, lang).catch(() => null);
+    if (ids) {
+      tvdbId = ids.tvdbId;
+      imdbId = ids.imdbId;
+    }
+  }
+  const seg = seriesKeySegment(resolved.name, tvdbId, imdbId);
+  if (!seg) return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
+  const newKey = `series:${seg}:${resolved.year ?? 0}`;
+  // Re-attaching to the show the key ALREADY names is not a no-op when the
+  // stored title differs (the mangled title is what card matching reads), and
+  // because the id segment wins, an already id-anchored key is a no-op here --
+  // that is what stops a repair from DOWNGRADING a TVDB key to a slug.
+  if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
+  // A clash only counts when ANOTHER franchise holds the key; when newKey ===
+  // oldKey this row's own seasons are the sole holders.
+  const clash =
+    (db
+      .prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'series' AND library_key = ? AND library_key != ?")
+      .get(newKey, oldKey) as any)?.c || 0;
+  if (clash > 0) {
+    return { error: `Key ${newKey} is already in use by another franchise — not overwriting`, status: 409 };
+  }
+  db.transaction(() => {
+    if (opts?.alsoSetTitle) {
+      db.prepare("UPDATE media_requests SET title = ?, library_key = ? WHERE library_key = ? AND type = 'series'").run(
+        resolved.name,
+        newKey,
+        oldKey,
+      );
+    } else {
+      db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
+    }
+    db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // An episode ORDER was picked from the show this key named at the time. A
+    // re-attach can point the key at a DIFFERENT show, and keeping the group
+    // would read that show's "Season 1" under our episode numbers from then
+    // on — so the pref is dropped only when the show actually changed, and the
+    // season cache goes with it: every payload in it was fetched under the
+    // order that just died, and episodeTitleFromCache never re-checks the pref.
+    const pref = db
+      .prepare("SELECT episode_group_show_id FROM tmdb_franchise_prefs WHERE library_key = ?")
+      .get(oldKey) as any;
+    // resolved.tmdbId can be missing (a title-only resolution) — then nothing
+    // can prove a mismatch, and fetchTMDBSeason's own guard clears it on the
+    // next fetch instead of dropping a possibly-valid order here.
+    if (pref?.episode_group_show_id && resolved.tmdbId && pref.episode_group_show_id !== resolved.tmdbId) {
+      db.prepare("DELETE FROM tmdb_season_cache WHERE library_key = ?").run(newKey);
+      db.prepare("UPDATE tmdb_franchise_prefs SET episode_group_id = NULL, episode_group_show_id = NULL WHERE library_key = ?").run(newKey);
+    }
+    db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The identity layer must move WITH the key, or a registered inode keeps
+    // claiming a franchise no request owns any more (startup then clears it).
+    db.prepare("UPDATE media_files SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
+    // The stale external-id row holds the pre-fix resolved title, so drop it and
+    // let the repopulate below write the correct one under the new key.
+    db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
+  })();
+  await resolveExternalIds(db, newKey, "series", resolved.name, lang, { ignoreCache: true }).catch(() => null);
+  return { newKey };
+}
+
+// ---------------------------------------------------------------------------
+// Native library_key minting + slug-key reconciliation
+//
+// `library_key` is the arr-free identity (`movie:<imdbId>:<year>` /
+// `series:<tvdbId|imdbId>:<year>`). Everything that MINTS a key now resolves
+// the ids through `nativeLibraryKey` and writes the id key by default, with
+// the title slug only as the "TMDB cannot produce an id" fallback. The minters
+// are unmatched's native fallback, Discover and Seerr sync; scan-downloads
+// attaches torrents to EXISTING keys and libraryImport was already id-first,
+// so neither needs this.
+//
+// The tricky half is that those three minters previously produced SLUG keys
+// (`movie:the-hobbit:2012`). Switching the formula alone would twin every
+// existing request on the next Discover/Seerr sync, so `nativeLibraryKey` also
+// CLAIMS an existing slug-keyed row for its new id key the moment it appears,
+// and `reconcileNativeKeys` migrates the remainder in bulk. No request is ever
+// written twice for one film.
+// ---------------------------------------------------------------------------
+
+/** True when a key's middle segment is a title SLUG rather than an id
+ *  (`movie:tt0110357`, `series:65968` or `series:tt0412175` are ids; anything
+ *  else is a slug). The reconcile uses this to find rows worth migrating. */
+function keySegmentIsSlug(mediaType: "movie" | "series", libraryKey: string): boolean {
+  const seg = String(libraryKey || "").split(":")[1] ?? "";
+  if (!seg) return false;
+  if (mediaType === "movie") return !/^tt\d{6,9}$/i.test(seg);
+  return !/^\d+$/.test(seg) && !/^tt\d{6,9}$/i.test(seg);
+}
+
+/** Persist the external ids behind a key, so the OFFLINE readers
+ *  (`requestImdbId`, `imdbIdOwnerKey`, `nativeLibraryKey`'s cache-first path)
+ *  resolve it without TMDB. Best-effort — a write hiccup must not abort a mint. */
+function persistKeyIds(
+  db: Database,
+  mediaType: "movie" | "series",
+  libraryKey: string,
+  ids: { tmdbId: number; imdbId: string | null; tvdbId: string | null; title: string; year: number | null },
+): void {
+  try {
+    db.prepare(
+      "INSERT OR REPLACE INTO tmdb_external_ids (library_key, media_type, tmdb_id, imdb_id, tvdb_id, title, year, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+    ).run(libraryKey, mediaType, ids.tmdbId, ids.imdbId, ids.tvdbId, ids.title, ids.year ?? null);
+  } catch (err: any) {
+    console.warn(`[NativeKey] failed to cache external ids for ${libraryKey}: ${err.message}`);
+  }
+}
+
+/** The library_key a native request should live under, resolved from a TRUSTED
+ *  TMDB id (Discover, Seerr and unmatched all carry one). Id-anchored by
+ *  default — `movie:<imdbId>:<year>` / `series:<tvdbId|imdbId>:<year>` — with
+ *  the title slug as the fallback only when TMDB cannot produce an id (or is
+ *  unset). Series prefers the TVDB id, then IMDb, exactly like the canonical
+ *  `[tvdbid-####]` dir names embed.
+ *
+ *  Idempotent over every previous spelling of the same franchise, so a
+ *  post-change sync NEVER twins a request minted before it:
+ *   - a row already under the returned key is the caller's lookup, which
+ *     reuses it;
+ *   - a row under the SLUG key (the pre-id formula) is UPGRADED in place via
+ *     applyMovieIdentity/applySeriesIdentity, which migrates every dependent
+ *     row (requests, cache, prefs, media_files) to the new key;
+ *   - a row under the SAME id segment with a different YEAR
+ *     (`movie:tt13622970:0` vs `:2024`) is re-pointed at the correct key the
+ *     same way — but only when this mint states a real year, so it never
+ *     blindly downgrades an established one.
+ *  A refused upgrade (the id key is already owned by another franchise) keeps
+ *  the slug row and RETURNS ITS key, so the caller reuses the existing row
+ *  instead of creating a twin. */
+export async function nativeLibraryKey(
+  db: Database,
+  mediaType: "movie" | "series",
+  opts: { tmdbId: number; title: string; year: number | null; language?: string },
+): Promise<string> {
+  const lang = opts.language || process.env.TMDB_LANGUAGE || "en-US";
+  const title = opts.title || "";
+  const year = opts.year && opts.year > 0 ? opts.year : 0;
+  const slug = slugForKeyTitle(title) || "title";
+  const slugKey = `${mediaType}:${slug}:${year}`;
+
+  // Resolve the film's external ids offline first (a prior mint cached them),
+  // then against TMDB only when configured — a film already known to the app
+  // never touches the network here.
+  let ids: { imdbId: string | null; tvdbId: string | null } | null = null;
+  try {
+    const cached = db
+      .prepare("SELECT imdb_id, tvdb_id FROM tmdb_external_ids WHERE tmdb_id = ? AND media_type = ? LIMIT 1")
+      .get(opts.tmdbId, mediaType) as any;
+    if (cached && (cached.imdb_id || cached.tvdb_id)) {
+      ids = { imdbId: cached.imdb_id ? String(cached.imdb_id) : null, tvdbId: cached.tvdb_id ? String(cached.tvdb_id) : null };
+    }
+  } catch {}
+  if (!ids && isTmdbConfigured()) {
+    ids = await fetchExternalIds(mediaType, opts.tmdbId, lang).catch(() => null);
+  }
+
+  const idKnown = !!(ids?.imdbId || ids?.tvdbId);
+  const seg = idKnown
+    ? mediaType === "series"
+      ? seriesKeySegment(title, ids!.tvdbId, ids!.imdbId) || slug
+      : movieKeySegment(title, ids!.imdbId) || slug
+    : slug;
+  const idKey = `${mediaType}:${seg}:${year}`;
+
+  if (idKnown) {
+    const cacheRow = { tmdbId: opts.tmdbId, imdbId: ids!.imdbId, tvdbId: ids!.tvdbId, title, year: year || null };
+    // Cache under BOTH keys so an offline reader of either spelling resolves it.
+    persistKeyIds(db, mediaType, idKey, cacheRow);
+    persistKeyIds(db, mediaType, slugKey, cacheRow);
+  }
+
+  if (!idKnown || idKey === slugKey) return idKey;
+
+  // A pre-id formula minted the SAME franchise under the slug key. Claim it for
+  // the id key NOW, or the caller's insert would twin it. Prefix-matches across
+  // years (the legacy mint used this same slug formula, so the slug is exactly
+  // the middle segment — a different show's longer slug can never match).
+  const slugPrefix = `${mediaType}:${slug}:%`;
+  // No `!= slugKey`: a pre-id mint produced EXACTLY this slug+year key, and it
+  // is the most common legacy shape to claim. Excluding it left the slug row
+  // in place while the caller's insert landed a fresh id row beside it.
+  const slugRow = db
+    .prepare("SELECT library_key FROM media_requests WHERE library_key LIKE ? AND type = ? LIMIT 1")
+    .get(slugPrefix, mediaType) as any;
+  if (slugRow) {
+    const legacyYear = parseInt(String(slugRow.library_key).split(":")[2] ?? "", 10);
+    const claimYear = year || (Number.isFinite(legacyYear) && legacyYear > 0 ? legacyYear : null);
+    const applied =
+      mediaType === "series"
+        ? await applySeriesIdentity(db, slugRow.library_key, { name: title, year: claimYear, tmdbId: opts.tmdbId }, lang)
+        : await applyMovieIdentity(db, slugRow.library_key, { name: title, year: claimYear, tmdbId: opts.tmdbId }, lang);
+    if ("error" in applied) {
+      // Refused (id key owned by another franchise / unresolved): keep the slug
+      // row — the caller finds it by the returned key and reuses it instead.
+      console.warn(`[NativeKey] keeping ${slugRow.library_key} (upgrade to ${idKey} refused: ${applied.error})`);
+      return slugRow.library_key;
+    }
+    console.log(`[NativeKey] upgraded ${slugRow.library_key} → ${applied.newKey}`);
+    return applied.newKey;
+  }
+
+  // Same id segment under a different year (`movie:tt13622970:0` vs `:2024`):
+  // re-point the year rather than twin it. Only when THIS mint states a real
+  // year — re-pointing an established one to `:0` would be the same guess —
+  // AND the target id key is vacant, or the re-point would land a second row
+  // under an already-taken key (the caller would find the taker anyway).
+  if (year > 0) {
+    const idTaken = db.prepare("SELECT 1 FROM media_requests WHERE library_key = ? LIMIT 1").get(idKey);
+    if (!idTaken) {
+      const segLike = `${mediaType}:${seg}:%`;
+      const yearOwner = db
+        .prepare("SELECT library_key FROM media_requests WHERE library_key LIKE ? AND library_key != ? AND type = ? LIMIT 1")
+        .get(segLike, idKey, mediaType) as any;
+      if (yearOwner) {
+        const applied =
+          mediaType === "series"
+            ? await applySeriesIdentity(db, yearOwner.library_key, { name: title, year, tmdbId: opts.tmdbId }, lang)
+            : await applyMovieIdentity(db, yearOwner.library_key, { name: title, year, tmdbId: opts.tmdbId }, lang);
+        if (!("error" in applied)) {
+          console.log(`[NativeKey] re-pointed ${yearOwner.library_key} → ${applied.newKey}`);
+          return applied.newKey;
+        }
+      }
+    }
+  }
+  return idKey;
+}
+
+export interface ReconcileKeysResult {
+  migrated: string[];
+  kept: string[];
+  failed: string[];
+  skipped: string[];
+}
+
+function loadSkippedKeySet(db: Database): Set<string> {
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'keys.skippedReconcile'").get() as any;
+    if (!row) return new Set();
+    const arr = JSON.parse(String(row.value));
+    return Array.isArray(arr) ? new Set(arr.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistSkippedKeySet(db: Database, keys: Set<string>): void {
+  try {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('keys.skippedReconcile', ?)").run(
+      JSON.stringify([...keys].sort()),
+    );
+  } catch (err: any) {
+    console.warn(`[ReconcileKeys] failed to persist the skipped set: ${err.message}`);
+  }
+}
+
+/** Migrate ONE slug-keyed movie request to its id-anchored key. Conservative:
+ *  requires a year the request itself states and a resolution agreeing with it.
+ *  The no-year/ambiguous rows are left for the VISIBLE fix-identity button —
+ *  binding the first plausible film into a key unattended is exactly the guess
+ *  this reconcile exists to avoid. */
+async function reconcileMovieKey(
+  db: Database,
+  key: string,
+  lang: string,
+): Promise<{ kind: "migrated"; newKey: string } | { kind: "kept"; reason: string }> {
+  const seed = db.prepare("SELECT id, title, library_key FROM media_requests WHERE library_key = ? AND type = 'movie' LIMIT 1").get(key) as any;
+  if (!seed) return { kind: "kept", reason: "no movie row under this key" };
+  const cleaned = cleanFranchiseTitle(seed.title || "");
+  let resolved = cleaned ? await resolveMovieIdentity(key, cleaned, lang) : null;
+  let diskDir: string | null = null;
+  if (!resolved) {
+    const rows = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").all(key) as any[];
+    diskDir = processedMovieDirFromFiles(db, rows.map((r: any) => r.id));
+    if (diskDir) resolved = await resolveMovieIdentity(key, path.basename(diskDir), lang);
+  }
+  const query = cleaned || seed.title || "";
+  const candidates = query ? await searchTMDB(query, "movie", lang).catch(() => []) : [];
+  const plausible = candidates.filter((c) => plausibleMovieCandidate(c.title, query));
+  if (!resolved) return { kind: "kept", reason: "unresolved on TMDB" };
+  const ownYear = requestYear(seed) || (diskDir ? nameYear(diskDir) : null);
+  if (!ownYear) return { kind: "kept", reason: "no stated year — use the card's Fix identity button" };
+  const decision = decideMovieIdentity({ resolvedYear: resolved.year ?? null, ownYear, plausibleTitles: plausible.map((c) => c.title) });
+  if (!decision.apply) return { kind: "kept", reason: decision.reason };
+  const applied = await applyMovieIdentity(db, key, { name: resolved.name, year: resolved.year, tmdbId: resolved.id }, lang);
+  if ("error" in applied) return { kind: "kept", reason: applied.error };
+  return { kind: "migrated", newKey: applied.newKey };
+}
+
+/** Migrate ONE slug-keyed series request to its id-anchored key. Deterministic
+ *  only when the show id is already established from fetched seasons (ground
+ *  truth — the cache was built under this key's identity), or when the row
+ *  states a year the resolution agrees with; anything else stays slug-keyed for
+ *  the visible fix-identity repair. */
+async function reconcileSeriesKey(
+  db: Database,
+  key: string,
+  lang: string,
+): Promise<{ kind: "migrated"; newKey: string } | { kind: "kept"; reason: string }> {
+  const seed = db.prepare("SELECT title, library_key FROM media_requests WHERE library_key = ? AND type = 'series' LIMIT 1").get(key) as any;
+  if (!seed) return { kind: "kept", reason: "no series row under this key" };
+  const cleaned = cleanFranchiseTitle(seed.title || "");
+  if (!cleaned) return { kind: "kept", reason: "empty title" };
+  const resolved = await resolveExternalIds(db, key, "series", cleaned, lang, { ignoreCache: true }).catch(() => null);
+  if (!resolved?.tmdbId) return { kind: "kept", reason: "unresolved on TMDB" };
+  const established = !!cachedShowIdForKey(db, key);
+  const ownYear = requestYear(seed);
+  if (!established && !(ownYear && String(resolved.year ?? "") === String(ownYear))) {
+    return { kind: "kept", reason: "no established show id or agreeing year" };
+  }
+  const applied = await applySeriesIdentity(db, key, { name: resolved.title || cleaned, year: resolved.year, tmdbId: resolved.tmdbId }, lang);
+  if ("error" in applied) return { kind: "kept", reason: applied.error };
+  return { kind: "migrated", newKey: applied.newKey };
+}
+
+/** Migrate every native `media_requests` group still keyed by a title slug to
+ *  its id-anchored key. Conservative and idempotent:
+ *   - id-anchored keys are skipped outright (the middle segment is already an
+ *     id);
+ *   - a migrated key cannot be migrated twice (the next run sees the new id
+ *     key, not the old slug);
+ *   - rows that legitimately cannot migrate (no stated year, ambiguous film,
+ *     unresolved, a refused clash) are reported per reason. Under `skipMarked`
+ *     (the boot call) they are BOTH remembered in `keys.skippedReconcile` and
+ *     left alone, so a permanently-unmigratable row is not re-searched against
+ *     TMDB on every restart; the manual endpoint always retries everything, so
+ *     a later TMDB state can still succeed. */
+export async function reconcileNativeKeys(db: Database, opts?: { skipMarked?: boolean }): Promise<ReconcileKeysResult> {
+  const out: ReconcileKeysResult = { migrated: [], kept: [], failed: [], skipped: [] };
+  const skipMarked = !!opts?.skipMarked;
+  const remembered = skipMarked ? loadSkippedKeySet(db) : new Set<string>();
+  const keys = db
+    .prepare("SELECT library_key, type FROM media_requests WHERE library_key IS NOT NULL AND library_key != '' GROUP BY library_key")
+    .all() as any[];
+  let changed = false;
+  for (const row of keys) {
+    const key = String(row.library_key);
+    const mediaType = row.type === "movie" ? "movie" : "series";
+    if (!keySegmentIsSlug(mediaType, key)) continue;
+    if (remembered.has(key)) {
+      out.skipped.push(key);
+      continue;
+    }
+    try {
+      const lang = franchiseLanguage(db, key) || process.env.TMDB_LANGUAGE || "en-US";
+      const res = mediaType === "movie" ? await reconcileMovieKey(db, key, lang) : await reconcileSeriesKey(db, key, lang);
+      if (res.kind === "migrated") {
+        out.migrated.push(`${key} → ${res.newKey}`);
+        if (remembered.delete(key)) changed = true;
+      } else {
+        out.kept.push(`${key}: ${res.reason}`);
+        if (skipMarked && !remembered.has(key)) {
+          remembered.add(key);
+          changed = true;
+        }
+      }
+    } catch (err: any) {
+      out.failed.push(`${key}: ${err.message}`);
+      if (skipMarked && !remembered.has(key)) {
+        remembered.add(key);
+        changed = true;
+      }
+    }
+  }
+  if (changed) persistSkippedKeySet(db, remembered);
+  return out;
+}
+
 export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr: SonarrService, qbittorrent: QBittorrentService, prowlarr: ProwlarrService, deletedFranchiseIds?: Set<number>) {
   const router = Router();
 
@@ -6077,8 +6568,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         const hits = (await searchTMDB(cleaned, row.type === "movie" ? "movie" : "series")) || [];
         const resolved = hits.find((h: any) => h.id === pick.id) || hits[0];
         if (!resolved) return null;
-        const prefix = row.type === "movie" ? "movie" : "series";
-        return { key: `${prefix}:${slugForKeyTitle(resolved.title)}:${resolved.year ?? 0}`, title: cleaned };
+        const mediaType = row.type === "movie" ? "movie" : "series";
+        // Id-anchored via nativeLibraryKey, which also claims/upgrades any row a
+        // previous slug-keyed mint left under this title — never a twin.
+        return { key: await nativeLibraryKey(db, mediaType, { tmdbId: resolved.id, title: resolved.title, year: resolved.year ?? null }), title: cleaned };
       };
 
       if (row.type === "movie") {
@@ -6337,7 +6830,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
   // same library_key (movie) or key+season (series) is already tracked. A
   // series may request several seasons at once (`seasons` array), which
   // creates one row per season — Discover's multi-select.
-  router.post("/discover/request", (req: Request, res: Response) => {
+  router.post("/discover/request", async (req: Request, res: Response) => {
     try {
       const { type, tmdbId, title, year, season, seasons } = req.body as {
         type?: string;
@@ -6350,7 +6843,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const mediaType = type === "series" ? "series" : "movie";
       if (!tmdbId || !title) return res.status(400).json({ error: "type, tmdbId and title required" });
       const cleaned = cleanFranchiseTitle(title);
-      const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${year ?? 0}`;
+      // Id-anchored via nativeLibraryKey, which also claims/upgrades any row a
+      // previous slug-keyed mint left under this title — never a twin.
+      const key = await nativeLibraryKey(db, mediaType, { tmdbId: Number(tmdbId), title: cleaned, year: year ?? null });
       // Series: use the seasons array when given (even a single-entry one),
       // else the legacy single `season` param, else season 1. Movies are
       // always a single row.
@@ -6406,6 +6901,27 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/keys/reconcile - migrate every native request still keyed
+  // by a title slug to its id-anchored key. The boot call runs the same logic
+  // with skipMarked: true; this manual endpoint retries EVERYTHING (including a
+  // key the boot gave up on), so a later TMDB state can still succeed.
+  router.post("/keys/reconcile", async (req: Request, res: Response) => {
+    try {
+      const result = await reconcileNativeKeys(db, { skipMarked: false });
+      res.json({
+        migratedCount: result.migrated.length,
+        keptCount: result.kept.length,
+        failedCount: result.failed.length,
+        migrated: result.migrated,
+        kept: result.kept,
+        failed: result.failed,
+      });
+    } catch (error: any) {
+      console.error("Error reconciling native keys:", error.message || error);
+      res.status(500).json({ error: "Failed to reconcile native keys" });
     }
   });
 
@@ -8126,189 +8642,9 @@ let episodes: any[];
   // than the stored one: a movie's key is what Fix Names mints the canonical
   // filename and folder from, so keying it off the mangled Polish row title
   // would only relocate the junk.
-/** Rewrite a movie's identity across every dependent row, then repopulate the
- *  external-id cache under the new key. Never touches the filesystem. */
-/** The middle segment of a movie `library_key`: the IMDb id when one is known,
- *  else the title slug. The id is the deterministic anchor -- `imdbIdOwnerKey`
- *  resolves a file's embedded `[imdbid-tt...]` straight to the key that owns it,
- *  and the folder veto reads it -- so it wins whenever it is available. Returns
- *  null for anything that is not a real IMDb id, which is how a bad value falls
- *  back to the slug instead of minting a nonsense key. */
-function movieKeySegment(name: string, imdbId: string | null | undefined): string {
-  if (imdbId && /^tt\d{6,}$/i.test(imdbId.trim())) return imdbId.trim().toLowerCase();
-  return slugForKeyTitle(name);
-}
-
-async function applyMovieIdentity(
-  db: Database,
-  oldKey: string,
-  resolved: { name: string; year: number | null; tmdbId?: number },
-  lang: string,
-  opts?: { alsoSetTitle?: boolean },
-): Promise<{ newKey: string } | { error: string; status: number }> {
-  const slug = slugForKeyTitle(resolved.name);
-  if (!slug || slug.length < 3) {
-    return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
-  }
-  // Fresh resolution only -- never the old key's cached id, which belongs to
-  // whatever film that key used to name, which is exactly what a repair disputes.
-  let imdbId: string | null = null;
-  if (resolved.tmdbId) {
-    const ids = await fetchExternalIds("movie", resolved.tmdbId, lang).catch(() => null);
-    if (ids?.imdbId) imdbId = ids.imdbId;
-  }
-  // No id from TMDB (a film it has none for, or a lookup that failed) falls back to
-  // the slug, which still round-trips: requestImdbId() reads the cache this function
-  // repopulates below, so a slug-keyed request is not left without an id.
-  const newKey = `movie:${movieKeySegment(resolved.name, imdbId)}:${resolved.year ?? 0}`;
-  // Re-attaching to the film the key ALREADY names is not a no-op: the stored
-  // title is a separate column and is frequently still mangled ("Hobbit" beside
-  // movie:the-hobbit-an-unexpected-journey:2012). That title is what card
-  // matching reads, so leaving it behind would preserve the exact misattribution
-  // the repair was for.
-  if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
-  // A clash only counts when ANOTHER film holds the key. When newKey === oldKey the
-  // request's own row is the sole holder, and re-attaching to the film it already
-  // names is precisely the legitimate case (the key was repaired while the stored
-  // title stayed mangled) — counting itself there made every such repair 409.
-  const clash =
-    (db
-      .prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'movie' AND library_key = ? AND library_key != ?")
-      .get(newKey, oldKey) as any)?.c || 0;
-  if (clash > 0) {
-    // Two DIFFERENT films claiming one key is the misattribution this whole
-    // feature exists to prevent, so never merge them silently.
-    return { error: `Key ${newKey} is already in use by another movie — not overwriting`, status: 409 };
-  }
-  db.transaction(() => {
-    if (opts?.alsoSetTitle) {
-      db.prepare("UPDATE media_requests SET title = ?, library_key = ? WHERE library_key = ? AND type = 'movie'").run(
-        resolved.name,
-        newKey,
-        oldKey,
-      );
-    } else {
-      db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'movie'").run(newKey, oldKey);
-    }
-    db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-    db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-    // The identity layer must move WITH the key. media_files is keyed by
-    // (dev, inode) and every read is inode-first, so a row left on the old key
-    // keeps claiming the file for a library_key no request owns any more: after
-    // a re-attach the file vanished from its own card ("Nothing to rename in this
-    // layer") while still sitting in /Processed, because the row resolved to the
-    // dead key. It also blocks the rename itself - a registered row is an
-    // absolute veto in Fix Names. Re-attaching is a statement that these inodes
-    // belong to the new film, so the attribution follows.
-    db.prepare("UPDATE media_files SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-    // The stale row must NOT follow the key across: it holds the pre-fix
-    // resolved title, so the next preview would keep printing it. Drop it and
-    // let the repopulate below write the correct one instead.
-    db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
-  })();
-  // Re-resolve under the NEW key so the cache carries the post-fix title AND the
-  // IMDb id. Seeding it is not optional: requestImdbId reads this table first,
-  // and a slug-keyed row for a localized movie ("Niekonczaca sie opowiesc III"
-  // -> movie:the-neverending-story-iii:1994) can find no id in its key or its
-  // stored title, so without this the request silently loses the id that the
-  // folder veto and the canonical name both depend on.
-  await resolveExternalIds(db, newKey, "movie", resolved.name, lang, { ignoreCache: true }).catch(() => null);
-  return { newKey };
-}
-
-/** The middle segment of a series `library_key`: the TVDB id when known (the
- *  canonical `[tvdbid-####]` convention the dir names embed), then the IMDb id,
- *  else the title slug. The series mirror of `movieKeySegment`, but a series
- *  anchors on TVDB rather than IMDb. A slug is a LOSSY artifact of a title, so
- *  it is the last resort and is built from the RESOLVED name -- never the stored
- *  row title, which is routinely localized ("Kacze opowiesci" used to mint a
- *  Polish slug). Returns null for anything unusable, so the caller can refuse. */
-function seriesKeySegment(name: string, tvdbId: string | null | undefined, imdbId: string | null | undefined): string | null {
-  const tv = tvdbId != null ? String(tvdbId).trim() : "";
-  if (/^\d+$/.test(tv)) return tv;
-  const im = imdbId != null ? imdbId.trim() : "";
-  if (/^tt\d{6,}$/i.test(im)) return im.toLowerCase();
-  const slug = slugForKeyTitle(name);
-  return slug && slug.length >= 3 ? slug : null;
-}
-
-/** Rewrite a series franchise's identity across every dependent row, then
- *  repopulate the external-id cache under the new key. Never touches the
- *  filesystem. Mirrors `applyMovieIdentity`, with two series-specific pieces:
- *  the TVDB-first key segment, and the `media_files` migration (a series repair
- *  that skipped it orphaned every registered inode until a read re-registered
- *  it). `alsoSetTitle` is the Re-attach path. */
-async function applySeriesIdentity(
-  db: Database,
-  oldKey: string,
-  resolved: { name: string; year: number | null; tmdbId?: number },
-  lang: string,
-  opts?: { alsoSetTitle?: boolean },
-): Promise<{ newKey: string } | { error: string; status: number }> {
-  let tvdbId: string | null = null;
-  let imdbId: string | null = null;
-  if (resolved.tmdbId) {
-    const ids = await fetchExternalIds("series", resolved.tmdbId, lang).catch(() => null);
-    if (ids) {
-      tvdbId = ids.tvdbId;
-      imdbId = ids.imdbId;
-    }
-  }
-  const seg = seriesKeySegment(resolved.name, tvdbId, imdbId);
-  if (!seg) return { error: `Could not build a key from "${resolved.name}"`, status: 400 };
-  const newKey = `series:${seg}:${resolved.year ?? 0}`;
-  // Re-attaching to the show the key ALREADY names is not a no-op when the
-  // stored title differs (the mangled title is what card matching reads), and
-  // because the id segment wins, an already id-anchored key is a no-op here --
-  // that is what stops a repair from DOWNGRADING a TVDB key to a slug.
-  if (newKey === oldKey && !opts?.alsoSetTitle) return { error: "already canonical", status: 200 };
-  // A clash only counts when ANOTHER franchise holds the key; when newKey ===
-  // oldKey this row's own seasons are the sole holders.
-  const clash =
-    (db
-      .prepare("SELECT COUNT(*) c FROM media_requests WHERE type = 'series' AND library_key = ? AND library_key != ?")
-      .get(newKey, oldKey) as any)?.c || 0;
-  if (clash > 0) {
-    return { error: `Key ${newKey} is already in use by another franchise — not overwriting`, status: 409 };
-  }
-  db.transaction(() => {
-    if (opts?.alsoSetTitle) {
-      db.prepare("UPDATE media_requests SET title = ?, library_key = ? WHERE library_key = ? AND type = 'series'").run(
-        resolved.name,
-        newKey,
-        oldKey,
-      );
-    } else {
-      db.prepare("UPDATE media_requests SET library_key = ? WHERE library_key = ? AND type = 'series'").run(newKey, oldKey);
-    }
-    db.prepare("UPDATE tmdb_season_cache SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-    // An episode ORDER was picked from the show this key named at the time. A
-    // re-attach can point the key at a DIFFERENT show, and keeping the group
-    // would read that show's "Season 1" under our episode numbers from then
-    // on — so the pref is dropped only when the show actually changed, and the
-    // season cache goes with it: every payload in it was fetched under the
-    // order that just died, and episodeTitleFromCache never re-checks the pref.
-    const pref = db
-      .prepare("SELECT episode_group_show_id FROM tmdb_franchise_prefs WHERE library_key = ?")
-      .get(oldKey) as any;
-    // resolved.tmdbId can be missing (a title-only resolution) — then nothing
-    // can prove a mismatch, and fetchTMDBSeason's own guard clears it on the
-    // next fetch instead of dropping a possibly-valid order here.
-    if (pref?.episode_group_show_id && resolved.tmdbId && pref.episode_group_show_id !== resolved.tmdbId) {
-      db.prepare("DELETE FROM tmdb_season_cache WHERE library_key = ?").run(newKey);
-      db.prepare("UPDATE tmdb_franchise_prefs SET episode_group_id = NULL, episode_group_show_id = NULL WHERE library_key = ?").run(newKey);
-    }
-    db.prepare("UPDATE tmdb_franchise_prefs SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-    // The identity layer must move WITH the key, or a registered inode keeps
-    // claiming a franchise no request owns any more (startup then clears it).
-    db.prepare("UPDATE media_files SET library_key = ? WHERE library_key = ?").run(newKey, oldKey);
-    // The stale external-id row holds the pre-fix resolved title, so drop it and
-    // let the repopulate below write the correct one under the new key.
-    db.prepare("DELETE FROM tmdb_external_ids WHERE library_key = ?").run(oldKey);
-  })();
-  await resolveExternalIds(db, newKey, "series", resolved.name, lang, { ignoreCache: true }).catch(() => null);
-  return { newKey };
-}
+// (applyMovieIdentity / applySeriesIdentity / movieKeySegment / seriesKeySegment and the
+//  native-key minting + reconcile block moved to module scope above createRequestRoutes,
+//  because server.ts and seerr.ts import nativeLibraryKey / reconcileNativeKeys.)
 
 router.post("/:id/fix-identity", async (req: Request, res: Response) => {
     try {

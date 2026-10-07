@@ -289,6 +289,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tmdb_external_ids_imdb ON tmdb_external_ids(imdb_id);
+    CREATE INDEX IF NOT EXISTS idx_tmdb_external_ids_tmdb ON tmdb_external_ids(tmdb_id);
 
 CREATE TABLE IF NOT EXISTS unmatched_torrents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

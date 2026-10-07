@@ -5,11 +5,12 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import path from "path";
 import { initializeDatabase } from "./db/index";
-import { createRequestRoutes, titlesMatch } from "./routes/requests";
+import { createRequestRoutes, titlesMatch, reconcileNativeKeys } from "./routes/requests";
 import { RadarrService } from "./services/radarr";
 import { SonarrService } from "./services/sonarr";
 import { QBittorrentService } from "./services/qbittorrent";
 import { ProwlarrService } from "./services/prowlarr";
+import { isTmdbConfigured } from "./services/tmdb";
 import { createRadarrPoller } from "./jobs/pollRadarr";
 import { createSonarrPoller } from "./jobs/pollSonarr";
 import { createStatusPoller } from "./jobs/pollStatus";
@@ -176,6 +177,34 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         backfilled++;
       }
       if (backfilled > 0) console.log(`[Startup] Backfilled size_mb for ${backfilled} release_candidates`);
+    }
+
+    // Native identity: promote legacy slug-keyed library_keys to id-anchored
+    // ones (`movie:the-hobbit:2012` → `movie:tt0903624:2012`). The minters
+    // (Discover / Seerr / unmatched) now write id keys directly, so this is the
+    // one-time migration of the rows minted before that. Gated on TMDB being
+    // configured, and skip-marked so a row that genuinely cannot migrate (no
+    // stated year, ambiguous film, unresolved) is tried once and remembered
+    // rather than re-searched on every restart — the manual keys/reconcile
+    // endpoint retries everything.
+    if (isTmdbConfigured()) {
+      try {
+        const r = await reconcileNativeKeys(db, { skipMarked: true });
+        if (r.migrated.length) {
+          console.log(`[ReconcileKeys] migrated ${r.migrated.length} slug key(s): ${r.migrated.slice(0, 10).join("; ")}${r.migrated.length > 10 ? " …" : ""}`);
+        }
+        if (r.kept.length) {
+          console.log(`[ReconcileKeys] kept ${r.kept.length} slug key(s) for the manual fix-identity path (${r.kept.slice(0, 5).join("; ")}${r.kept.length > 5 ? " …" : ""})`);
+        }
+        if (r.skipped.length) {
+          console.log(`[ReconcileKeys] ${r.skipped.length} previously-marked slug key(s) left alone`);
+        }
+        if (r.failed.length) {
+          console.warn(`[ReconcileKeys] ${r.failed.length} slug key(s) failed: ${r.failed.slice(0, 5).join("; ")}`);
+        }
+      } catch (err: any) {
+        console.error("[ReconcileKeys] reconcile failed:", err.message || err);
+      }
     }
   } catch (err) {
     console.error("[Startup] Fixup error:", err);

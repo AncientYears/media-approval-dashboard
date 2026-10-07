@@ -1,7 +1,7 @@
 import axios from "axios";
 import type { Database } from "better-sqlite3";
 import { fetchTMDBById } from "./tmdb";
-import { cleanFranchiseTitle, slugForKeyTitle } from "../routes/requests";
+import { cleanFranchiseTitle, nativeLibraryKey } from "../routes/requests";
 import { errorSummary } from "../utils/errorSummary";
 
 /**
@@ -164,7 +164,9 @@ export async function syncSeerr(db: Database): Promise<SeerrSyncResult> {
     if (!t?.title) continue;
 
     const cleaned = cleanFranchiseTitle(t.title);
-    const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${t.year ?? 0}`;
+    // Id-anchored via nativeLibraryKey, which also claims/upgrades any row a
+    // previous slug-keyed mint left under this title — never a twin.
+    const key = await nativeLibraryKey(db, mediaType, { tmdbId, title: cleaned, year: t.year ?? null });
     const user = String(
       req.requestedBy?.displayName ||
       req.requestedBy?.jellyfinUsername ||
