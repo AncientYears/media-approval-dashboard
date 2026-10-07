@@ -502,7 +502,7 @@ export async function discoverTVSeasons(tmdbId: number) {
   return response.data;
 }
 
-export async function discoverRequest(payload: { type: "movie" | "series"; tmdbId: number; title: string; year: number | null; season?: number }) {
+export async function discoverRequest(payload: { type: "movie" | "series"; tmdbId: number; title: string; year: number | null; season?: number; seasons?: number[] }) {
   const response = await api.post("/requests/discover/request", payload);
   return response.data;
 }

@@ -2771,3 +2771,46 @@ body {
   margin-top: 8px;
   flex-wrap: wrap;
 }
+
+.discover-seasons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.discover-seasons-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.discover-season-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.discover-season-chip {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.discover-season-chip:hover {
+  border-color: #64748b;
+}
+
+.discover-season-chip.selected {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}

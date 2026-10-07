@@ -33,7 +33,7 @@ export default function DiscoverModal({
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [seasons, setSeasons] = useState<Record<number, SeasonOption[]>>({});
-  const [selSeason, setSelSeason] = useState<Record<number, number>>({});
+  const [selSeasons, setSelSeasons] = useState<Record<number, number[]>>({});
   const [requesting, setRequesting] = useState<string | null>(null);
   const [message, setMessage] = useState("");
 
@@ -63,7 +63,9 @@ export default function DiscoverModal({
           const opts: SeasonOption[] = (data.seasons || []).filter((s: any) => s.season_number > 0);
           if (opts.length > 0) {
             setSeasons((prev) => ({ ...prev, [tmdbId]: opts }));
-            setSelSeason((prev) => (prev[tmdbId] !== undefined ? prev : { ...prev, [tmdbId]: opts[opts.length - 1].season_number }));
+            // Select every season by default — requesting a show usually means
+            // wanting all of it, and it was the whole point of the multi-select.
+            setSelSeasons((prev) => (prev[tmdbId] !== undefined ? prev : { ...prev, [tmdbId]: opts.map((s) => s.season_number) }));
           } else {
             setSeasons((prev) => ({ ...prev, [tmdbId]: [] }));
           }
@@ -80,7 +82,7 @@ export default function DiscoverModal({
     setMessage("");
     try {
       const payload = r.type === "series"
-        ? { type: r.type, tmdbId: r.id, title: r.title, year: r.year, season: selSeason[r.id] }
+        ? { type: r.type, tmdbId: r.id, title: r.title, year: r.year, seasons: selSeasons[r.id] ?? [] }
         : { type: r.type, tmdbId: r.id, title: r.title, year: r.year };
       const data = await discoverRequest(payload);
       setMessage(`Requested "${data.title}"${data.existed ? " (already tracked)" : ""} — opening request…`);
@@ -140,24 +142,58 @@ export default function DiscoverModal({
                     {r.overview ? <div className="discover-overview">{r.overview}</div> : null}
                     <div className="discover-actions">
                       {r.type === "series" && seasons[r.id] !== undefined && seasons[r.id].length > 0 ? (
-                        <select
-                          className="download-dirs-input"
-                          style={{ width: "auto" }}
-                          value={selSeason[r.id] ?? seasons[r.id][0].season_number}
-                          onChange={(e) => setSelSeason((prev) => ({ ...prev, [r.id]: Number(e.target.value) }))}
-                        >
-                          {[...seasons[r.id]].sort((a, b) => a.season_number - b.season_number).map((s) => (
-                            <option key={s.season_number} value={s.season_number}>
-                              {s.name === `Season ${s.season_number}` || s.name === "Season" ? `S${String(s.season_number).padStart(2, "0")}` : `${s.name} (S${String(s.season_number).padStart(2, "0")})`}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="discover-seasons">
+                          <div className="discover-seasons-head">
+                            <span style={{ fontSize: 12, color: "#94a3b8" }}>Seasons:</span>
+                            <button
+                              className="btn btn-secondary btn-tiny"
+                              style={{ fontSize: 11, padding: "2px 8px" }}
+                              onClick={() => setSelSeasons((prev) => ({ ...prev, [r.id]: seasons[r.id].map((s) => s.season_number) }))}
+                            >
+                              All
+                            </button>
+                            <button
+                              className="btn btn-secondary btn-tiny"
+                              style={{ fontSize: 11, padding: "2px 8px" }}
+                              onClick={() => setSelSeasons((prev) => ({ ...prev, [r.id]: [] }))}
+                            >
+                              None
+                            </button>
+                          </div>
+                          <div className="discover-season-chips">
+                            {[...seasons[r.id]].sort((a, b) => a.season_number - b.season_number).map((s) => {
+                              const sel = (selSeasons[r.id] || []).includes(s.season_number);
+                              const generic = s.name === `Season ${s.season_number}` || s.name === "Season";
+                              return (
+                                <label key={s.season_number} className={`discover-season-chip ${sel ? "selected" : ""}`} title={s.name}>
+                                  <input
+                                    type="checkbox"
+                                    style={{ display: "none" }}
+                                    checked={sel}
+                                    onChange={() =>
+                                      setSelSeasons((prev) => {
+                                        const cur = prev[r.id] || [];
+                                        return {
+                                          ...prev,
+                                          [r.id]: sel
+                                            ? cur.filter((n) => n !== s.season_number)
+                                            : [...cur, s.season_number].sort((a, b) => a - b),
+                                        };
+                                      })
+                                    }
+                                  />
+                                  {generic ? `S${String(s.season_number).padStart(2, "0")}` : `S${String(s.season_number).padStart(2, "0")} · ${s.name}`}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
                       ) : r.type === "series" ? (
                         <span style={{ color: "#f59e0b", fontSize: 12 }}>loading seasons…</span>
                       ) : null}
                       <button
                         className="btn btn-primary btn-tiny"
-                        disabled={requesting !== null || (r.type === "series" && seasons[r.id] === undefined)}
+                        disabled={requesting !== null || (r.type === "series" && seasons[r.id] === undefined) || (r.type === "series" && seasons[r.id] !== undefined && seasons[r.id].length > 0 && (selSeasons[r.id] || []).length === 0)}
                         onClick={() => submitRequest(r)}
                       >
                         {requesting === `${r.type}:${r.id}` ? "Requesting…" : "Request"}

@@ -3560,25 +3560,6 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           WHERE ah.request_id = mr.id AND ah.release_id IS NULL
           AND ah.processed_files IS NOT NULL AND ah.processed_files != '[]'
         )
-        AND NOT (
-          mr.type = 'series' AND mr.library_key IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM media_requests sib
-            WHERE sib.type = 'series' AND sib.library_key = mr.library_key
-            AND (
-              sib.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
-              OR EXISTS (
-                SELECT 1 FROM release_candidates rc6 JOIN approval_history ah6 ON ah6.release_id = rc6.id
-                WHERE ah6.request_id = sib.id AND rc6.torrent_hash != ''
-              )
-              OR EXISTS (
-                SELECT 1 FROM approval_history ah7
-                WHERE ah7.request_id = sib.id AND ah7.release_id IS NULL
-                AND ah7.processed_files IS NOT NULL AND ah7.processed_files != '[]'
-              )
-            )
-          )
-        )
         ORDER BY mr.created_at DESC
       `);
       const rows = stmt.all();
@@ -3605,7 +3586,31 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         };
       });
       
-      res.json(parsedRows);
+      // A native (arr-free) series whose franchise has ANY content — a torrent,
+      // processed-file bookkeeping, registered identity rows, or a season
+      // folder with videos on disk — belongs in the Managed section, not the
+      // pending list. This is the same gate /managed applies, so nothing
+      // straddles both sections. The sibling-EXISTS exclusion this used to
+      // carry lived in SQL and could not see disk content; the read now
+      // post-filters here, once per unique library_key.
+      const nativeKeys = Array.from(
+        new Set(
+          parsedRows
+            .filter((r: any) => r.type === "series" && !r.sonarr_id && r.library_key)
+            .map((r: any) => r.library_key),
+        ),
+      );
+      const nativeContentKeys = new Set<string>();
+      for (const key of nativeKeys) {
+        const seed = parsedRows.find((r: any) => r.library_key === key);
+        if (nativeSeriesHasContent(db, key, cleanFranchiseTitle(seed?.title || ""), null)) nativeContentKeys.add(key);
+      }
+
+      res.json(
+        parsedRows.filter(
+          (r: any) => !(r.type === "series" && !r.sonarr_id && r.library_key && nativeContentKeys.has(r.library_key)),
+        ),
+      );
     } catch (error) {
       console.error("Error fetching requests:", error);
       res.status(500).json({ error: "Failed to fetch requests" });
@@ -4019,6 +4024,49 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     }
   });
 
+  /** Does a native (arr-free) series' franchise hold ANY content that makes it
+   *  a managed card rather than a pending request? Cheap SQL first — any season
+   *  in an active status, an RC with a torrent, or processed-file bookkeeping —
+   *  then registered `media_files` identity rows, then a disk scan for a season
+   *  folder holding videos. Both the managed card list and the pending-requests
+   *  list must agree on this: a franchise with content lives in Managed ONLY,
+   *  and a lone Discover/Seerr NEW row whose season folder is on disk (e.g.
+   *  "The Adventures of Puss in Boots", whose files were placed by hand while a
+   *  panic wiped its request rows) must surface as a managed card instead of
+   *  staying invisible in the pending list. Returns without touching the disk
+   *  as soon as SQL or identity settles it. */
+  function nativeSeriesHasContent(db: Database, libraryKey: string, franchiseTitle: string, extraShowDir?: string | null): boolean {
+    if (
+      db
+        .prepare(
+          `SELECT 1 FROM media_requests
+           WHERE type = 'series' AND library_key = ?
+           AND (
+             status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+             OR EXISTS (
+               SELECT 1 FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id
+               WHERE ah.request_id = media_requests.id AND rc.torrent_hash != ''
+             )
+             OR EXISTS (
+               SELECT 1 FROM approval_history ah2
+               WHERE ah2.request_id = media_requests.id AND ah2.release_id IS NULL
+               AND ah2.processed_files IS NOT NULL AND ah2.processed_files != '[]'
+             )
+           ) LIMIT 1`
+        )
+        .get(libraryKey)
+    ) {
+      return true;
+    }
+    // Registered identity rows are the same evidence the managed reads trust
+    // (coveredEpisodesForRequest, unnumberedFilesInSeasonFolder). A file the
+    // app never processed — or whose rows were wiped — may have no row, which
+    // is exactly why the disk scan below exists.
+    if (db.prepare("SELECT 1 FROM media_files WHERE library_key = ? LIMIT 1").get(libraryKey)) return true;
+    const disk = diskSeasonFolders(franchiseTitle, libraryKeyYear(libraryKey), extraShowDir ?? null);
+    return disk.size > 0;
+  }
+
   // GET /api/requests/managed - Grouped managed media (series by franchise, movies individual)
   router.get("/managed", async (req: Request, res: Response) => {
     try {
@@ -4041,24 +4089,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         WHERE (sub.type = 'series' AND sub.sonarr_id IS NOT NULL)
            OR sub.release_count > 0 OR sub.processed_count > 0
            OR sub.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
-           OR (sub.type = 'series' AND sub.library_key IS NOT NULL
-               AND sub.status IN ('NEW', 'SEARCHING', 'AWAITING_APPROVAL', 'APPROVED', 'DOWNLOADING', 'SEEDING', 'COMPLETED')
-               AND EXISTS (
-             SELECT 1 FROM media_requests sib
-             WHERE sib.type = 'series' AND sib.library_key = sub.library_key
-             AND (
-               sib.status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
-               OR EXISTS (
-                 SELECT 1 FROM release_candidates rc6 JOIN approval_history ah6 ON ah6.release_id = rc6.id
-                 WHERE ah6.request_id = sib.id AND rc6.torrent_hash != ''
-               )
-               OR EXISTS (
-                 SELECT 1 FROM approval_history ah7
-                 WHERE ah7.request_id = sib.id AND ah7.release_id IS NULL
-                 AND ah7.processed_files IS NOT NULL AND ah7.processed_files != '[]'
-               )
-             )
-           ))
+           OR (sub.type = 'series' AND sub.library_key IS NOT NULL)
         ORDER BY sub.title
       `).all() as any[];
 
@@ -4116,6 +4147,14 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // pills fell back to the import-time file snapshot ("47/27"). Native
         // groups only — Sonarr groups take their counts from Sonarr above.
         const filesShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id));
+        // A native group with no content anywhere — no active status, no
+        // torrent, no processed files, no registered inodes, no season folder
+        // on disk — never becomes a managed card. Every native-series row now
+        // reaches this loop (SQL above asks for all of them), so the gate that
+        // used to live in SQL (a sibling with content) is enforced here where
+        // the disk scan is the same evidence the pill counts just used. It must
+        // run BEFORE the cache warm, which is wasted otherwise.
+        if (sonarrId == null && libraryKey && !nativeSeriesHasContent(db, libraryKey, franchiseTitle, filesShowDir)) continue;
         if (sonarrId == null && libraryKey) {
           await warmFranchiseSeasonCache(
             db,
@@ -6295,47 +6334,76 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
   // POST /api/requests/discover/request — create a native request from a
   // discovered TMDB title. Idempotent: returns the existing request when the
-  // same library_key (movie) or key+season (series) is already tracked.
+  // same library_key (movie) or key+season (series) is already tracked. A
+  // series may request several seasons at once (`seasons` array), which
+  // creates one row per season — Discover's multi-select.
   router.post("/discover/request", (req: Request, res: Response) => {
     try {
-      const { type, tmdbId, title, year, season } = req.body as {
+      const { type, tmdbId, title, year, season, seasons } = req.body as {
         type?: string;
         tmdbId?: number;
         title?: string;
         year?: number;
         season?: number;
+        seasons?: number[];
       };
       const mediaType = type === "series" ? "series" : "movie";
       if (!tmdbId || !title) return res.status(400).json({ error: "type, tmdbId and title required" });
       const cleaned = cleanFranchiseTitle(title);
       const key = `${mediaType}:${slugForKeyTitle(cleaned)}:${year ?? 0}`;
-      const reqSeason = mediaType === "series" ? (Number.isFinite(season) ? season! : 1) : null;
+      // Series: use the seasons array when given (even a single-entry one),
+      // else the legacy single `season` param, else season 1. Movies are
+      // always a single row.
+      const wantedSeasons: number[] =
+        mediaType === "series"
+          ? Array.isArray(seasons) && seasons.length > 0
+            ? Array.from(new Set(seasons.map((s) => Math.trunc(Number(s))).filter((s) => Number.isFinite(s) && s >= 0))).sort((a, b) => a - b)
+            : [Number.isFinite(season) ? season! : 1]
+          : [];
 
-      let existing: any;
+      let firstId: number | null = null;
+      let created = 0;
+      let allExisted = true;
       if (mediaType === "movie") {
-        existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+        let existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND type = 'movie'").get(key) as any;
+        if (existing) {
+          firstId = Number(existing.id);
+        } else {
+          const result = db.prepare(
+            "INSERT INTO media_requests (title, type, library_key, status, requested_by) VALUES (?, 'movie', ?, 'NEW', '[]')"
+          ).run(cleaned, key);
+          firstId = Number(result.lastInsertRowid);
+          created++;
+          allExisted = false;
+        }
       } else {
-        existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND season = ?").get(key, reqSeason) as any;
+        for (const reqSeason of wantedSeasons) {
+          const existing = db.prepare("SELECT id FROM media_requests WHERE library_key = ? AND season = ?").get(key, reqSeason) as any;
+          if (existing) {
+            if (firstId == null) firstId = Number(existing.id);
+            continue;
+          }
+          const result = db.prepare(
+            "INSERT INTO media_requests (title, type, library_key, season, status, requested_by) VALUES (?, 'series', ?, ?, 'NEW', '[]')"
+          ).run(cleaned, key, reqSeason);
+          if (firstId == null) firstId = Number(result.lastInsertRowid);
+          created++;
+          allExisted = false;
+        }
       }
-      if (existing) {
-        console.log(`[Discover] Already tracked: ${cleaned} (request_id=${existing.id})`);
-        return res.json({ success: true, request_id: Number(existing.id), existed: true, type: mediaType, title: cleaned });
-      }
-
-      let requestId: number;
-      if (mediaType === "movie") {
-        const result = db.prepare(
-          "INSERT INTO media_requests (title, type, library_key, status, requested_by) VALUES (?, 'movie', ?, 'NEW', '[]')"
-        ).run(cleaned, key);
-        requestId = result.lastInsertRowid as number;
-      } else {
-        const result = db.prepare(
-          "INSERT INTO media_requests (title, type, library_key, season, status, requested_by) VALUES (?, 'series', ?, ?, 'NEW', '[]')"
-        ).run(cleaned, key, reqSeason);
-        requestId = result.lastInsertRowid as number;
-      }
-      console.log(`[Discover] Created ${mediaType} request ${requestId}: ${cleaned} (key=${key}, season=${reqSeason ?? "—"})`);
-      res.json({ success: true, request_id: Number(requestId), existed: false, type: mediaType, title: cleaned });
+      if (firstId == null) return res.status(400).json({ error: "No seasons requested — pass at least one season number" });
+      console.log(
+        `[Discover] ${mediaType} "${cleaned}": ${allExisted ? "already tracked" : `created ${created} of ${wantedSeasons.length || 1}`} (key=${key}${mediaType === "series" ? `, seasons=[${wantedSeasons.join(",")}]` : ""})`,
+      );
+      res.json({
+        success: true,
+        request_id: firstId,
+        existed: allExisted,
+        created,
+        seasons: mediaType === "series" ? wantedSeasons : undefined,
+        type: mediaType,
+        title: cleaned,
+      });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

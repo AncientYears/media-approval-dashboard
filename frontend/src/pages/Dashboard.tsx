@@ -130,31 +130,75 @@ export default function Dashboard() {
       }
     });
 
-  // Group series requests by sonarr_id for franchise grouping
-  const groupedFranchises: { [key: number]: { title: string; sonarr_id: number; seasons: any[] } } = {};
+  // Group series requests into franchise cards. Arr-linked rows group by
+  // sonarr_id; native (arr-free) rows group by library_key — but only when
+  // MORE than one season is actually requested. A lone requested season stays
+  // a plain card: the Managed section already renders the full season list for
+  // a content-bearing franchise, and inflating a single Discover row into a
+  // franchise card would just add ceremony.
+  interface FranchiseGroup {
+    key: string;
+    title: string;
+    sonarr_id?: number;
+    library_key?: string;
+    firstRequestId: number;
+    seasons: any[];
+  }
+  const groupedFranchises = new Map<string, FranchiseGroup>();
   const ungroupedRequests: any[] = [];
+  const nativeKeySeasons = new Map<string, any[]>();
   for (const req of requestsList) {
-    if (req.type === "series" && req.sonarr_id) {
-      if (!groupedFranchises[req.sonarr_id]) {
-        const franchiseTitle = req.title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
-        groupedFranchises[req.sonarr_id] = { title: franchiseTitle, sonarr_id: req.sonarr_id, seasons: [] };
+    if (req.type === "series") {
+      if (req.sonarr_id) {
+        const gk = `s:${req.sonarr_id}`;
+        if (!groupedFranchises.has(gk)) {
+          const franchiseTitle = req.title.replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+          groupedFranchises.set(gk, {
+            key: gk,
+            title: franchiseTitle,
+            sonarr_id: req.sonarr_id,
+            firstRequestId: req.id,
+            seasons: [],
+          });
+        }
+        groupedFranchises.get(gk)!.seasons.push(req);
+      } else if (req.library_key) {
+        const list = nativeKeySeasons.get(req.library_key) || [];
+        list.push(req);
+        nativeKeySeasons.set(req.library_key, list);
+      } else {
+        ungroupedRequests.push(req);
       }
-      groupedFranchises[req.sonarr_id].seasons.push(req);
     } else {
       ungroupedRequests.push(req);
     }
   }
+  for (const [libKey, list] of nativeKeySeasons) {
+    if (list.length > 1) {
+      const gk = `l:${libKey}`;
+      groupedFranchises.set(gk, {
+        key: gk,
+        title: list[0].title.replace(/ S\d+$/, "").replace(/ Season \d+$/, ""),
+        library_key: libKey,
+        firstRequestId: list[0].id,
+        seasons: [...list].sort((a, b) => (a.season ?? 0) - (b.season ?? 0)),
+      });
+    } else {
+      ungroupedRequests.push(list[0]);
+    }
+  }
 
-  // Fetch full season lists for franchise groups
+  // Fetch full season lists for arr-linked franchise groups only (native
+  // groups have no Sonarr list — their pills are the requested seasons).
   useEffect(() => {
-    const ids = Object.keys(groupedFranchises).map(Number);
+    const ids = Array.from(groupedFranchises.values()).filter((g) => g.sonarr_id != null).map((g) => g.sonarr_id!);
     for (const id of ids) {
       if (franchiseSeasons[id]) continue;
       fetchFranchiseSeasons(id).then((data) => {
         setFranchiseSeasons((prev) => ({ ...prev, [id]: data }));
       }).catch(() => {});
     }
-  }, [Object.keys(groupedFranchises).join(",")]);
+  }, [Array.from(groupedFranchises.values()).map((g) => g.key).join(",")]);
 
   if (loading && requests.length === 0) {
     return <div className="container"><p>Loading requests...</p></div>;
@@ -515,29 +559,33 @@ export default function Dashboard() {
 
       <UnmatchedTorrentsPanel />
 
-      {(Object.keys(groupedFranchises).length > 0 || ungroupedRequests.length > 0) && (
+      {(groupedFranchises.size > 0 || ungroupedRequests.length > 0) && (
         <div className="dashboard-section">
           <h3>Requests — {requestsList.length}</h3>
           <div className="requests-grid">
-            {Object.values(groupedFranchises).map((franchise) => {
-              const allSeasons = franchiseSeasons[franchise.sonarr_id]?.seasons || [];
+            {Array.from(groupedFranchises.values()).map((franchise) => {
+              const isNative = franchise.sonarr_id == null;
+              const allSeasons = isNative ? null : (franchiseSeasons[franchise.sonarr_id!]?.seasons || []);
               const requestedMap = new Map(franchise.seasons.map((s: any) => [s.season, s]));
               return (
-                <div key={`franchise-${franchise.sonarr_id}`} className="request-card managed-card">
+                <div key={franchise.key} className="request-card managed-card">
                   <div className="request-header">
-                    <h3>{franchise.title} <span className="type-suffix">- Series ({franchise.seasons.length}/{allSeasons.length || franchise.seasons.length} requested)</span></h3>
+                    <h3>{franchise.title} <span className="type-suffix">- Series ({franchise.seasons.length}{!isNative && allSeasons && allSeasons.length > franchise.seasons.length ? "/" + allSeasons.length : ""} requested)</span></h3>
                   </div>
                   <div className="managed-seasons">
-                    {(allSeasons.length > 0 ? allSeasons : franchise.seasons.map((s: any) => ({ season: s.season }))).map((sn: any) => {
+                    {(isNative ? franchise.seasons : (allSeasons && allSeasons.length > 0 ? allSeasons : franchise.seasons.map((s: any) => ({ season: s.season })))).map((sn: any) => {
                       const req = requestedMap.get(sn.season);
+                      const nav = isNative
+                        ? (req ? () => navigate(`/native/${franchise.firstRequestId}?open=${sn.season}`) : undefined)
+                        : (req ? () => navigate(`/requests/${req.id}`, { state: { back: `/managed/${franchise.sonarr_id}` } }) : undefined);
                       return (
                         <div
                           key={sn.season}
                           className={`managed-season ${req ? "" : "unrequested"}`}
-                          onClick={() => req && navigate(`/requests/${req.id}`, { state: { back: `/managed/${franchise.sonarr_id}` } })}
+                          onClick={nav}
                           style={{ opacity: req ? 1 : 0.4, cursor: req ? "pointer" : "default" }}
                         >
-                          <span className="season-label">S{String(sn.season).padStart(2, "0")}</span>
+                          <span className="season-label">{isNative && sn.season === 0 ? "Special" : `S${String(sn.season).padStart(2, "0")}`}</span>
                           <span className={`season-status ${req ? (req.status === "AWAITING_APPROVAL" ? "has-content" : "empty") : ""}`}>
                             {req ? req.status.replace(/_/g, " ") : "—"}
                           </span>
@@ -546,12 +594,14 @@ export default function Dashboard() {
                     })}
                   </div>
                   <div className="request-actions">
-                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(`/managed/${franchise.sonarr_id}`)}>View Franchise</button>
-                    <button className="btn btn-danger btn-tiny" onClick={() => {
-                      if (window.confirm(`Delete "${franchise.title}" from the dashboard?`)) {
-                        deleteFranchise(franchise.sonarr_id).then(() => loadData());
-                      }
-                    }}>Delete</button>
+                    <button className="btn btn-primary btn-tiny" onClick={() => navigate(isNative ? `/native/${franchise.firstRequestId}` : `/managed/${franchise.sonarr_id}`)}>View Franchise</button>
+                    {franchise.sonarr_id ? (
+                      <button className="btn btn-danger btn-tiny" onClick={() => {
+                        if (window.confirm(`Delete "${franchise.title}" from the dashboard?`)) {
+                          deleteFranchise(franchise.sonarr_id!).then(() => loadData());
+                        }
+                      }}>Delete</button>
+                    ) : null}
                   </div>
                 </div>
               );
