@@ -38,17 +38,53 @@ export interface MediaFileRow {
 
 const VIDEO_EXT = /\.(mkv|mp4|avi|mov|ts|wmv)$/i;
 
-/** Role + episode numbers for a basename, mirroring extractEpisodeFromFilename:
- * S0X specials are deliberately unnumbered, E##/Episode N/leading number are
- * numbered episodes, anything else is an unclassified extra. */
+/** Every episode number a filename states, sorted and deduped — the shared
+ *  parser behind `deriveIdentityFromFilename` and the routes' coverage scans.
+ *
+ *  - `S0X` releases mark standalone specials/movies without TMDB special
+ *    numbers: the trailing number is the release's own, so they state none.
+ *  - A packed range credits BOTH halves: `S01E01-02` is episodes 1 AND 2.
+ *    Two spellings are read — tight `E01-02` and `E01 - E02` — and a span over
+ *    100 is refused (`E01-999` is a typo, not a season pack). A SPACED number
+ *    in front of a hyphen is deliberately NOT a range: `S01E01 - 1080p` or
+ *    `… E01 - 24` would otherwise expand coverage up to that number.
+ *  - Otherwise the classic single read (first `E##`, else a leading number,
+ *    else `Episode N`) — unchanged for every name that has no range. */
+export function episodeNumsFromFilename(filePath: string): number[] {
+  const base = filePath.split(/[/\\]/).pop() || filePath;
+  if (/[Ss]0[Xx]/.test(base)) return [];
+  const nums = new Set<number>();
+  const expand = (a: string, b: string) => {
+    let lo = parseInt(a, 10);
+    let hi = parseInt(b, 10);
+    if (lo > hi) [lo, hi] = [hi, lo];
+    if (hi - lo > 100) return;
+    for (let i = lo; i <= hi; i++) nums.add(i);
+  };
+  for (const m of filePath.matchAll(/[Ee](\d{1,3})-(\d{1,3})/g)) expand(m[1], m[2]);
+  for (const m of filePath.matchAll(/[Ee](\d{1,3})\s*-\s*[Ee](\d{1,3})/g)) expand(m[1], m[2]);
+  const m = filePath.match(/[Ee](\d{1,3})/);
+  if (m) {
+    nums.add(parseInt(m[1], 10));
+  } else {
+    const lead = base.match(/^(\d{1,3})\s/);
+    if (lead) nums.add(parseInt(lead[1], 10));
+    else {
+      const ep = base.match(/[Ee]pisode\s*(\d{1,3})/);
+      if (ep) nums.add(parseInt(ep[1], 10));
+    }
+  }
+  return [...nums].sort((a, b) => a - b);
+}
+
+/** Role + episode numbers for a basename: S0X specials are deliberately
+ *  unnumbered, E##/Episode N/leading number are numbered episodes, anything
+ *  else is an unclassified extra. A range yields EVERY number it states, so a
+ *  packed double-feature registers both episodes. */
 export function deriveIdentityFromFilename(fileBase: string): { role: FileRole; episodeNumbers: number[] } {
   if (/[Ss]0[Xx]/.test(fileBase)) return { role: "special", episodeNumbers: [] };
-  const m = fileBase.match(/[Ee](\d{1,3})/);
-  if (m) return { role: "numbered", episodeNumbers: [parseInt(m[1], 10)] };
-  const lead = fileBase.match(/^(\d{1,3})\s/);
-  if (lead) return { role: "numbered", episodeNumbers: [parseInt(lead[1], 10)] };
-  const ep = fileBase.match(/[Ee]pisode\s*(\d{1,3})/);
-  if (ep) return { role: "numbered", episodeNumbers: [parseInt(ep[1], 10)] };
+  const nums = episodeNumsFromFilename(fileBase);
+  if (nums.length) return { role: "numbered", episodeNumbers: nums };
   return { role: "extra", episodeNumbers: [] };
 }
 

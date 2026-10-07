@@ -892,9 +892,9 @@ production order, DVD order, broadcast pairings … — via `GET /api/requests/:
 and `POST /api/requests/:id/episode-order {groupId|null}` (series-only, 400 for
 movies; frontend: the second select beside the language pick on
 `NativeFranchise`, shown only when the show actually has groups). Phineas and
-Ferb (show 1877) is the case this exists for: releases and Wikipedia follow
-Production Order while TMDB's aired order numbers the same episodes
-differently.
+Ferb (show 1877) is the case this exists for: its releases (and Jellyfin's
+"Digital" = TVDB numbering) follow TMDB's type-4 **Disney+** group while
+TMDB's default aired order numbers the same episodes differently.
 
 - **Storage**: `tmdb_franchise_prefs.episode_group_id` + `episode_group_show_id`
   beside the language. The SHOW id rides with the group id because a group
@@ -911,7 +911,16 @@ differently.
   self-heals (clear the pref, delete the key's cache rows, fall back to aired),
   because `episodeTitleFromCache` reads payloads without ever consulting the
   pref. A season the group lacks (usually S00) falls back to the aired
-  endpoint, still recorded under the pref so the cache round-trips.
+  endpoint, still recorded under the pref so the cache round-trips — but the
+  aired list can hold episodes the order FILED IN A NUMBERED SEASON, so the
+  fallback is RECONCILED against the group: rows matching a group episode
+  outside this season (normalized title + air date) are dropped before saving
+  (`orderRelocatedEpisodes`/`relocatedByOrder`), or P&F's aired S00 keeps
+  listing "The O.W.C.A. Files" as a missing special forever while the Disney+
+  order fills it as S4E48. Both fetch paths stamp `order_pruned` on the row;
+  an order row without the stamp (written before this existed, or during a
+  group-detail outage) is a cache MISS and is deleted at boot, because the
+  SQL-direct readers never call fetchTMDBSeason.
 - **Cache**: the ORDER lives INSIDE the payload (`SeasonMeta.episode_group_id`);
   only a payload carrying the same order (or none, when none is selected) is a
   cache hit. Any order change deletes `tmdb_season_cache` for the key and then
@@ -920,31 +929,23 @@ differently.
 - **Validation**: the POST re-checks the group against THIS show's own
   `/tv/{id}/episode_groups` list (a hand-crafted id could point at another
   show), rejects non-hex ids, and stores the show id it verified against.
-- **The dropdown lists only COMPLETE orders — structurally, not by type.** TMDB
-  carries streaming-derived snapshots beside the real ones — regional Disney+
-  listings (Brazil-only 47 eps), Netflix missing an episode, broadcast
-  double-features — and none of them is a numbering a release follows. The
-  first cut uses the list alone: a group with FEWER episodes than the **aired
-  group's** total cannot renumber the same set (Netflix 223 vs 224, Brazil-only
-  47, merges 151/51). Each survivor's group detail is then fetched and compared
-  season-by-season with the aired group's: every aired season must be present
-  with the SAME episode count; extra seasons are allowed (Disney+'s S5 (38) is
-  a real season the aired group doesn't hold — total 262 = 224 + 38). A
-  `type === 4` ("Digital") hide was the first attempt and it was WRONG for
-  exactly the show that proved the point: Phineas and Ferb's on-disk numbering
-  (Jellyfin "Digital" = TVDB's order) matches TMDB's type-4 **Disney+** group
-  to within ONE swap (disk `S04E48` = Kelly, `S04E49` = O.W.C.A. Files; the
-  group has them reversed) while **Production Order** differs from disk at
-  `S04E26/27` (Zwrot / Burza niedoskonała) — so the type-4 hide concealed the
-  one order the releases follow. (~10 further disk-vs-group differences are
-  pl-translation wording variants, not numbering.) The order currently in force
-  is always included, or the select would render the default while another
-  order stays applied; with no aired group to anchor on (or its detail
-  unreadable) the code falls back to hiding type 4. The POST still validates
-  against the FULL list, so a pre-filter selection can be kept or cleared.
+- **The dropdown lists EVERY order — no filtering, by design.** A structural
+  "complete orders only" filter (aired-anchor season-count comparison, shipped
+  `a65d185`) was reverted on user request, and the lesson is written down so it
+  isn't re-derived: TMDB's type vocabulary does not encode "official" (GoT's
+  "Aired Order" and Stranger Things' "Release Volumes" are both type 1; the
+  order Phineas and Ferb releases actually follow is type 4 "Disney+"), and the
+  two failure modes are not symmetric — a wrong SELECTION self-corrects the
+  moment the user picks another option, while a wrong FILTER hides the correct
+  order entirely, which is exactly what the type-4 hide did for P&F before the
+  structural filter then cost N+1 detail fetches per open for the same
+  guarantee. The select only renders when the show has groups, an empty list
+  costs nothing, Jellyfin lists raw too, and the POST validates against this
+  same full list. Regional/partial/merged snapshots may be offered — nothing
+  breaks if one is picked: it just renumbers, and re-picking fixes it.
 - The endpoint list/handlers sit right after `set-language` in
   `src/routes/requests.ts`; `fetchEpisodeGroups`/`franchiseEpisodeOrder`/
-  `completeEpisodeOrders` live in `src/services/tmdb.ts`.
+  `seasonFromEpisodeGroup` live in `src/services/tmdb.ts`.
 
 ## Key Files
 
@@ -1098,6 +1099,20 @@ SEERR_API_KEY=
     being renumbered wholesale.
   - **An explicit `S01E01-02` range in the name is authoritative** and never
     re-inferred; the release already declared its own span.
+- **A double-feature range in a FILENAME credits both episodes in coverage.**
+  `episodeNumsFromFilename` (shared by `deriveIdentityFromFilename` and every
+  coverage scan — `coveredEpisodesForRequest`, the `/managed` season scans, the
+  native franchise disk scan) parses `E01-02` (tight) and `E01 - E02` into
+  BOTH numbers; the first-number-only read left every even half missing, so
+  Phineas and Ferb's S01 — 26 files with ranges covering all 47 episodes —
+  rendered 26/47 with every second row red. A spaced number after a hyphen is
+  deliberately NOT a range (`S01E01 - 1080p` / `… E01 - 24` would expand
+  coverage up to that number) and a span over 100 is refused as a typo.
+  `extractEpisodeFromFilename` is now a first-number wrapper over the shared
+  parser and remains correct for the presence checks (extras, unnumbered
+  counts); only scans that CREDIT numbers need the array form. Registered
+  `media_files.episode_nums` rows carry the full range too — a read that
+  re-registers self-heals old single-number rows.
 - **A Fix Names batch renames in two phases, because a season-wide renumber is a
   permutation.** Every file's canonical name can be the name another file in the same
   folder is about to vacate, and `uniqueDestPath` answers a collision with a `-2`

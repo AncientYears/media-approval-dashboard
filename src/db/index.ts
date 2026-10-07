@@ -522,6 +522,23 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       } catch {}
     }
 
+    // Drop season-cache rows written under an episode order BEFORE the
+    // order-reconciliation existed: they still list an order-relocated special
+    // under S00 (P&F's "The O.W.C.A. Files", which the Disney+ order files in
+    // S4), and the SQL-direct readers (pill denominators, season injections)
+    // never refetch. A row carrying an order but no order_pruned marker is
+    // unreconciled by definition; the next fetch rewrites it reconciled.
+    try {
+      const stale = db
+        .prepare(`DELETE FROM tmdb_season_cache WHERE payload LIKE '%"episode_group_id":"%' AND payload NOT LIKE '%"order_pruned":true%'`)
+        .run();
+      if (stale.changes > 0) {
+        console.log(`[DB] Dropped ${stale.changes} unreconciled episode-order cache rows (refetching on demand)`);
+      }
+    } catch (err: any) {
+      console.error(`[DB] Could not drop unreconciled episode-order cache rows: ${err.message}`);
+    }
+
     // Clean dangling filenames from processed_files that no longer exist on disk.
     // Try inode-identity relocation FIRST (a manual mv/rename keeps the inode and
     // the file is still findable in the request's season folder); only drop the

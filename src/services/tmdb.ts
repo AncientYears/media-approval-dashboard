@@ -19,6 +19,16 @@ export interface SeasonMeta {
    *  answers a different question (its numbers belong to that order), so it
    *  is never served as a cache hit for the pref in force now. */
   episode_group_id?: string | null;
+  /** Whether a row fetched while an order was in force has been RECONCILED
+   *  against it — the aired-endpoint fallback drops episodes the order filed
+   *  in a numbered season (see fetchTMDBSeason). Both fetch paths mark the
+   *  row they write: the group path marks immediately (the group IS the
+   *  order), the fallback marks only when the group detail was readable. An
+   *  unmarked order row is a cache MISS on the next read and is dropped at
+   *  boot, because the SQL-direct readers (pill denominators, season
+   *  injections) never call fetchTMDBSeason and would keep serving the
+   *  phantom unreconciled list. */
+  order_pruned?: boolean;
   episodes: EpisodeMeta[];
 }
 
@@ -300,82 +310,6 @@ export async function fetchEpisodeGroups(
   return { show_id: showId, groups };
 }
 
-/** Per-season episode counts of one episode group: `season -> episode count`,
- *  reading the sub-group name first ("Season 3") with `order` as fallback —
- *  the same read `groupSeasonSub` does. Null when the detail can't be read
- *  (a dead id or a TMDB miss), which the caller treats as "not verifiable". */
-async function episodeGroupSeasonCounts(groupId: string, language: string): Promise<Map<number, number> | null> {
-  try {
-    const detail = await tmdbGet<any>(`/tv/episode_group/${encodeURIComponent(groupId)}?language=${language}`);
-    const subs = detail?.groups;
-    if (!Array.isArray(subs) || !subs.length) return null;
-    const counts = new Map<number, number>();
-    for (const sub of subs) {
-      const name = String(sub?.name || "");
-      const m = name.match(/season[^\d]*(\d{1,2})/i);
-      const season = m ? parseInt(m[1], 10) : /special/i.test(name) ? 0 : Number(sub?.order);
-      if (!Number.isFinite(season)) continue;
-      const eps = Array.isArray(sub?.episodes) ? sub.episodes.length : Number(sub?.episode_count) || 0;
-      counts.set(season, eps);
-    }
-    return counts.size ? counts : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The episode orders worth OFFERING — a complete renumbering of the episodes
- *  the aired order holds. TMDB also carries platform snapshots: regional
- *  listings (Brazil-only Disney+), Netflix missing an episode, broadcast
- *  double-feature merges — none a release's numbering follows. The rule is
- *  structural, not type-based: a type-4 hide was wrong, because Phineas and
- *  Ferb's own on-disk order (Jellyfin "Digital" = TVDB) is closest to TMDB's
- *  type-4 **Disney+** group — the blanket hide concealed the one order the
- *  releases actually follow.
- *
- *  1. Lists with fewer episodes than the aired total can't renumber the same
- *     set (Netflix 223 vs 224, Brazil-only 47, merges 151/51) — dropped from
- *     the list alone, no detail fetch.
- *  2. Each survivor's group detail is fetched and compared season-by-season
- *     with the aired group's: EVERY aired season must be present with the
- *     SAME episode count. Extra seasons are allowed — Disney+'s S5 (38) is a
- *     real season the aired group simply doesn't hold — so totals may exceed
- *     the aired total legitimately (262 = 224 + 38).
- *  3. The order in force is always kept, or the select would render the
- *     default while another order stays applied.
- *  4. No aired group to anchor on (or its detail unreadable): fall back to
- *     hiding type 4 — TMDB's own "Digital" type — rather than showing every
- *     snapshot unfiltered. The POST validates against the FULL list either
- *     way, so a pre-filter selection can still be kept or cleared. */
-export async function completeEpisodeOrders(
-  groups: EpisodeGroupInfo[],
-  currentId: string | null,
-  language: string | null,
-): Promise<EpisodeGroupInfo[]> {
-  const lang = language || process.env.TMDB_LANGUAGE || "en-US";
-  const isCurrent = (g: EpisodeGroupInfo) => g.id === currentId;
-  const aired = groups.find((g) => /^aired\b/i.test(g.name) || /original air/i.test(g.name)) || null;
-  if (!aired) return groups.filter((g) => isCurrent(g) || g.type !== 4);
-  const candidates = groups.filter((g) => isCurrent(g) || g.episode_count >= aired.episode_count);
-  const airedCounts = await episodeGroupSeasonCounts(aired.id, lang);
-  if (!airedCounts) return groups.filter((g) => isCurrent(g) || g.type !== 4);
-  const details = new Map<string, Map<number, number> | null>([[aired.id, airedCounts]]);
-  await Promise.all(
-    candidates
-      .filter((g) => g.id !== aired.id)
-      .map(async (g) => {
-        details.set(g.id, await episodeGroupSeasonCounts(g.id, lang));
-      }),
-  );
-  return candidates.filter((g) => {
-    if (isCurrent(g)) return true;
-    const counts = details.get(g.id);
-    if (!counts) return false;
-    for (const [season, n] of airedCounts) if (counts.get(season) !== n) return false;
-    return true;
-  });
-}
-
 /** Which sub-group of an episode group holds season `season`? Groups are one
  *  season each, named "Season 1"/"Specials" with `order` matching the season
  *  number — the name is read first (a group's `order` can skip), then `order`
@@ -444,8 +378,77 @@ async function seasonFromEpisodeGroup(
     resolvedVia: show.via,
     language,
     episode_group_id: groupId,
+    order_pruned: true,
     episodes,
   };
+}
+
+/** Lowercased, apostrophes deleted, everything else collapsed to single spaces
+ *  — a local mirror of routes' `normalizeTitleForCompare` (routes imports THIS
+ *  module; the import cannot run the other way). Apostrophes are deleted, not
+ *  swept to a space: they are the only difference between "Scrooges Pet" and
+ *  "Scrooge's Pet", and a space would split the word so the two would stop
+ *  comparing as the same episode. */
+function normTitleKey(s: string): string {
+  return s.toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Every episode the active order holds OUTSIDE `skipSeason`, keyed by
+ *  normalized title with the air dates it aired on. A null return means the
+ *  group detail could not be read (dead id, TMDB outage) — the caller then
+ *  skips reconciliation entirely and writes the row UNMARKED so the next read
+ *  tries again, rather than filtering against nothing. `skipSeason` is the
+ *  season being fetched: when the group LACKS it the fetch fell back to the
+ *  aired endpoint, but a transient failure inside `seasonFromEpisodeGroup`
+ *  can produce the same fallback while the group actually holds the season —
+ *  without the skip, the group's own entries would match the aired rows and
+ *  empty the season out. */
+async function orderRelocatedEpisodes(
+  groupId: string,
+  language: string,
+  skipSeason: number,
+): Promise<Map<string, Set<string>> | null> {
+  try {
+    const detail = await tmdbGet<any>(`/tv/episode_group/${encodeURIComponent(groupId)}?language=${language}`);
+    const subs = detail?.groups;
+    if (!Array.isArray(subs) || !subs.length) return null;
+    const map = new Map<string, Set<string>>();
+    for (const sub of subs) {
+      const name = String(sub?.name || "");
+      const m = name.match(/season[^\d]*(\d{1,2})/i);
+      const s = m ? parseInt(m[1], 10) : /special/i.test(name) ? 0 : Number(sub?.order);
+      if (!Number.isFinite(s) || s === skipSeason) continue;
+      for (const e of Array.isArray(sub?.episodes) ? sub.episodes : []) {
+        const key = normTitleKey(String(e?.name || ""));
+        const date = e?.air_date ? String(e.air_date) : "";
+        if (!key || !date) continue;
+        let set = map.get(key);
+        if (!set) map.set(key, (set = new Set()));
+        set.add(date);
+      }
+    }
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether an aired-endpoint row is an episode the active order FILED IN ANOTHER
+ *  SEASON. Matched on normalized title AND air date, so an unrelated same-named
+ *  special (remakes, re-titled recaps) survives — only the pair identifies one
+ *  episode. A slot title ("Episode 2" / "Odcinek 2") states nothing, so a
+ *  slot-titled row is decided by its air date alone; a non-slot row never
+ *  matches a slot-titled group entry (titles are compared within one language,
+ *  so both sides come from the same translation table and the asymmetric case
+ *  does not arise in practice). */
+function relocatedByOrder(relocated: Map<string, Set<string>>, e: any): boolean {
+  const date = e?.air_date ? String(e.air_date) : "";
+  if (!date) return false;
+  const raw = typeof e?.name === "string" ? e.name : "";
+  const key = normTitleKey(raw);
+  if (key && !SLOT_TITLE.test(raw)) return relocated.get(key)?.has(date) ?? false;
+  for (const dates of relocated.values()) if (dates.has(date)) return true;
+  return false;
 }
 
 /**
@@ -477,7 +480,13 @@ export async function fetchTMDBSeason(
   if (cacheRow) {
     try {
       const payload = JSON.parse(cacheRow.payload) as SeasonMeta;
-      if ((payload.episode_group_id ?? null) === rowGroup) cached = payload;
+      // Same order AND already reconciled against it: a row fetched under an
+      // order but written before the reconciliation existed (or during a
+      // group-detail outage) still lists an order-relocated special as a
+      // missing S00 entry — treat it as a miss so the next read rewrites it.
+      const sameOrder = (payload.episode_group_id ?? null) === rowGroup;
+      const reconciled = rowGroup == null || payload.order_pruned === true;
+      if (sameOrder && reconciled) cached = payload;
     } catch {}
   }
   if (cached && !force) return cached;
@@ -523,6 +532,20 @@ export async function fetchTMDBSeason(
   const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`);
   if (!data?.episodes) return cached;
 
+  // The selected order lacks this season (S00 is the usual case), so the aired
+  // endpoint answers — but the aired list can hold episodes the order FILED IN
+  // A NUMBERED SEASON. Phineas and Ferb's Disney+ order files "The O.W.C.A.
+  // Files" in S4 while aired S00 still lists it: unfiltered, the S00 grid and
+  // the Specials pill call it a missing special forever while the same episode
+  // fills S4E48 in the next tab. Drop rows the order relocates elsewhere; a
+  // null `relocated` (group detail unreadable) skips the filter and marks the
+  // row unreconciled, so it is refetched next read instead of served as a hit.
+  let relocated: Map<string, Set<string>> | null = null;
+  if (rowGroup) relocated = await orderRelocatedEpisodes(rowGroup, language, season);
+  const airedEpisodes: any[] = (Array.isArray(data.episodes) ? data.episodes : []).filter(
+    (e: any) => !relocated || !relocatedByOrder(relocated, e),
+  );
+
   // Where the requested language has no translation, TMDB leaves the original
   // name — except some episodes bottom out as "Episode N" placeholders. Overlay
   // the en-US names so we never show a placeholder when a real English title
@@ -549,7 +572,10 @@ export async function fetchTMDBSeason(
     // aired endpoint (an S00 in a production-order franchise): the row was
     // computed under that pref, so it must compare equal to it later.
     episode_group_id: rowGroup,
-    episodes: data.episodes.map((e: any) => {
+    // Reconciled when there is no order in force (nothing to reconcile against)
+    // or the filter above actually ran; unmarked rows are refetched next read.
+    order_pruned: !rowGroup || relocated !== null,
+    episodes: airedEpisodes.map((e: any) => {
       const preferred = typeof e.name === "string" ? e.name.trim() : "";
       let name = preferred;
       if ((!name || isPlaceholder(name)) && fallbackNames) {

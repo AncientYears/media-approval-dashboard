@@ -299,7 +299,7 @@ export default function NativeFranchise() {
             className="lang-select"
             value={order || ""}
             onChange={(e) => handleOrder(e.target.value)}
-            title="Episode order — which numbering TMDB reports for this show's episodes. Only complete orderings are listed: each renumbers every season the aired order holds with the same episode count (extra seasons allowed), so partial, regional and merged double-episode snapshots stay hidden. Pick the order your files follow — it renumbers the grids and everything Fix Names derives from them."
+            title="Episode order — which numbering TMDB reports for this show's episodes. Pick the order your files follow; it renumbers the grids and everything Fix Names derives from them."
             style={{ marginLeft: 8, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
           >
             <option value="">Aired order (default)</option>

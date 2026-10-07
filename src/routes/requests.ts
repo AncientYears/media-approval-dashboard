@@ -15,11 +15,11 @@ import {
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
-import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts } from "../services/identity";
+import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts, episodeNumsFromFilename } from "../services/identity";
 import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, 
 resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, 
 episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, isTmdbConfigured, franchiseEpisodeOrder, 
-fetchEpisodeGroups, completeEpisodeOrders, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+fetchEpisodeGroups, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -103,19 +103,15 @@ function isSeasonPackTitle(title: string, season: number): boolean {
   return false;
 }
 
+/** The first episode number a filename states, or null — a thin wrapper over
+ *  the shared range-aware parser, for the presence checks that only need to
+ *  know "does this name carry a number". Coverage scans that CREDIT numbers
+ *  must call `episodeNumsFromFilename` instead: a packed range (`S01E01-02`)
+ *  credits BOTH halves, and a first-number-only read leaves every even episode
+ *  of a double-feature pack missing from the grid. */
 function extractEpisodeFromFilename(filePath: string): number | null {
-  const base = filePath.split(/[/\\]/).pop() || filePath;
-  // "S0X" releases mark standalone specials/movies without TMDB special numbers
-  // (e.g. "Fineasz i Ferb S0XE03 Fretka kontra Wszechświat.mkv"). The trailing
-  // number is the release's own, not a real episode — treat as unnumbered.
-  if (/[Ss]0[Xx]/.test(base)) return null;
-  const m = filePath.match(/[Ee](\d{1,3})/);
-  if (m) return parseInt(m[1], 10);
-  const lead = base.match(/^(\d{1,3})\s/);
-  if (lead) return parseInt(lead[1], 10);
-  const ep = base.match(/[Ee]pisode\s*(\d{1,3})/);
-  if (ep) return parseInt(ep[1], 10);
-  return null;
+  const nums = episodeNumsFromFilename(filePath);
+  return nums.length ? nums[0] : null;
 }
 
 /**
@@ -175,9 +171,9 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
       seasonFolderExists = true;
       for (const f of fs.readdirSync(seasonFolder)) {
         if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-        const epNum = extractEpisodeFromFilename(f);
-        if (epNum != null) {
-          diskEps.add(epNum);
+        const epNums = episodeNumsFromFilename(f);
+        if (epNums.length) {
+          for (const n of epNums) diskEps.add(n);
           continue;
         }
         // Identity-first fallback: the name tells us nothing (renamed or
@@ -194,9 +190,9 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
   for (const pa of processedAh) {
     const files: string[] = JSON.parse(pa.processed_files || "[]");
     for (const pf of files) {
-      const epNum = extractEpisodeFromFilename(pf);
-      if (epNum != null) {
-        coveredEps.add(epNum);
+      const epNums = episodeNumsFromFilename(pf);
+      if (epNums.length) {
+        for (const n of epNums) coveredEps.add(n);
         continue;
       }
       const row = processedRoot ? identifyByPath(db, path.join(processedRoot, pf)) : null;
@@ -4139,8 +4135,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             try {
               if (fs.existsSync(seasonFolder)) {
                 for (const f of fs.readdirSync(seasonFolder)) {
-                  const epNum = extractEpisodeFromFilename(f);
-                  if (epNum != null) coveredEps.add(epNum);
+                  for (const n of episodeNumsFromFilename(f)) coveredEps.add(n);
                 }
               }
             } catch {}
@@ -4185,8 +4180,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const coveredEps = new Set<number>();
             let extras = 0;
             for (const f of files) {
-              const epNum = extractEpisodeFromFilename(f);
-              if (epNum != null) coveredEps.add(epNum);
+              const epNums = episodeNumsFromFilename(f);
+              if (epNums.length) for (const n of epNums) coveredEps.add(n);
               else extras++;
             }
             mappedSeasons.push({
@@ -4483,8 +4478,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           for (const pf of files) {
             const fullPath = path.join(processedTvDir, franchiseTitle, pf);
             if (!fs.existsSync(fullPath)) continue;
-            const epNum = extractEpisodeFromFilename(pf);
-            if (epNum != null) coveredEps.add(epNum);
+            for (const n of episodeNumsFromFilename(pf)) coveredEps.add(n);
           }
         }
         // Also scan the season folder on disk for files not yet in approval_history
@@ -4495,8 +4489,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (fs.existsSync(seasonFolder)) {
             for (const f of fs.readdirSync(seasonFolder)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              const epNum = extractEpisodeFromFilename(f);
-              if (epNum != null) diskEps.add(epNum);
+              for (const n of episodeNumsFromFilename(f)) diskEps.add(n);
               try { folderSizeBytes += fs.statSync(path.join(seasonFolder, f)).size; } catch {}
             }
             // Prefer disk coverage over RC coverage when season folder exists
@@ -4555,8 +4548,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
                 for (const f of fs.readdirSync(seasonFolder2)) {
                   const fp = path.join(seasonFolder2, f);
                   try { folderSize += fs.statSync(fp).size; } catch {}
-                  const epNum = extractEpisodeFromFilename(f);
-                  if (epNum != null) coveredEps3.add(epNum);
+                  for (const n of episodeNumsFromFilename(f)) coveredEps3.add(n);
                 }
               }
             } catch {}
@@ -4630,10 +4622,9 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           if (fs.existsSync(seasonFolder3)) {
             for (const f of fs.readdirSync(seasonFolder3)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              const epNum = extractEpisodeFromFilename(f);
-              if (epNum != null) {
-                coveredEpsFS.add(epNum);
-                if (!epQualityFS[epNum]) epQualityFS[epNum] = "WEB-DL";
+              for (const n of episodeNumsFromFilename(f)) {
+                coveredEpsFS.add(n);
+                if (!epQualityFS[n]) epQualityFS[n] = "WEB-DL";
               }
             }
           }
@@ -4728,11 +4719,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       for (const pa of processedAh2) {
         const files: string[] = JSON.parse(pa.processed_files || "[]");
         for (const pf of files) {
-          const epNum = extractEpisodeFromFilename(pf);
-          if (epNum != null) {
-            coveredEps.add(epNum);
-            const quality = "WEB-DL";
-            if (!epQuality[epNum] || quality.toLowerCase().includes("remux")) epQuality[epNum] = quality;
+          const quality = "WEB-DL";
+          for (const n of episodeNumsFromFilename(pf)) {
+            coveredEps.add(n);
+            if (!epQuality[n] || quality.toLowerCase().includes("remux")) epQuality[n] = quality;
           }
         }
       }
@@ -4747,8 +4737,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         if (fs.existsSync(seasonFolder)) {
           for (const f of fs.readdirSync(seasonFolder)) {
             if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-            const epNum = extractEpisodeFromFilename(f);
-            if (epNum != null) diskEps2.add(epNum);
+            for (const n of episodeNumsFromFilename(f)) diskEps2.add(n);
           }
           // Prefer disk coverage over RC coverage when season folder exists
           for (const ep of coveredEps) {
@@ -7633,8 +7622,8 @@ let episodes: any[];
         const coveredEps = new Set<number>();
         let extras = 0;
         for (const f of files) {
-          const epNum = extractEpisodeFromFilename(f);
-          if (epNum != null) coveredEps.add(epNum);
+          const epNums = episodeNumsFromFilename(f);
+          if (epNums.length) for (const n of epNums) coveredEps.add(n);
           else extras++;
         }
         seasons.push({
@@ -8390,16 +8379,16 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       );
       const pref = franchiseEpisodeOrder(db, request.library_key);
       const current = pref && show_id && pref.show_id === show_id ? pref.id : null;
-      // Offer only COMPLETE orders — every season the aired group holds,
-      // renumbered episode-for-episode (extra seasons allowed). Regional,
-      // partial and merged snapshots drop out structurally; see
-      // completeEpisodeOrders for why the filter is not type-based (P&F's own
-      // on-disk order is TMDB's type-4 "Disney+" group). The order in force is
-      // always kept, or the select would render the default while another order
-      // stays applied. POST still validates against the FULL list, so a
-      // selection made before this filter can still be kept or cleared.
-      const shown = await completeEpisodeOrders(groups, current, language);
-      res.json({ current, groups: shown, show_id });
+      // Every order is offered, unfiltered. The structural "complete orders
+      // only" filter was shipped and reverted: "official" is not encoded in
+      // TMDB's type vocab (GoT's "Aired Order" and Stranger Things' "Release
+      // Volumes" are both type 1; the order Phineas and Ferb releases actually
+      // follow is type 4 "Disney+"), and a wrong SELECTION self-corrects the
+      // moment the user picks another option, while a wrong FILTER hides the
+      // correct order entirely — which is exactly what happened. The select
+      // only renders when groups exist, so an empty list costs nothing.
+      // POST still validates against this same full list.
+      res.json({ current, groups, show_id });
     } catch (error) {
       console.error("Error listing episode orders:", error);
       res.status(500).json({ error: "Failed to list episode orders" });
