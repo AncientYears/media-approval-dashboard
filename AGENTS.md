@@ -920,19 +920,31 @@ differently.
 - **Validation**: the POST re-checks the group against THIS show's own
   `/tv/{id}/episode_groups` list (a hand-crafted id could point at another
   show), rejects non-hex ids, and stores the show id it verified against.
-- **The dropdown lists only COMPLETE, non-platform orders.** TMDB carries
-  streaming-derived snapshots beside the real ones — regional Disney+ listings
-  (Brazil-only 47 eps), Netflix missing an episode, broadcast double-features —
-  and none of them is a numbering a release follows. The GET filters those out:
-  `type === 4` is TMDB's own **Digital** type (labelled exactly that on the
-  site), and any group whose `episode_count` differs from the **aired group's**
-  renumbers a different set of episodes than the default holds. The order
-  currently in force is always included, or the select would render the default
-  while another order stays applied. The POST still validates against the FULL
-  list, so a pre-filter selection can be kept or cleared.
+- **The dropdown lists only COMPLETE orders — structurally, not by type.** TMDB
+  carries streaming-derived snapshots beside the real ones — regional Disney+
+  listings (Brazil-only 47 eps), Netflix missing an episode, broadcast
+  double-features — and none of them is a numbering a release follows. The
+  first cut uses the list alone: a group with FEWER episodes than the **aired
+  group's** total cannot renumber the same set (Netflix 223 vs 224, Brazil-only
+  47, merges 151/51). Each survivor's group detail is then fetched and compared
+  season-by-season with the aired group's: every aired season must be present
+  with the SAME episode count; extra seasons are allowed (Disney+'s S5 (38) is
+  a real season the aired group doesn't hold — total 262 = 224 + 38). A
+  `type === 4` ("Digital") hide was the first attempt and it was WRONG for
+  exactly the show that proved the point: Phineas and Ferb's on-disk numbering
+  (Jellyfin "Digital" = TVDB's order) matches TMDB's type-4 **Disney+** group
+  to within ONE swap (disk `S04E48` = Kelly, `S04E49` = O.W.C.A. Files; the
+  group has them reversed) while **Production Order** differs from disk at
+  `S04E26/27` (Zwrot / Burza niedoskonała) — so the type-4 hide concealed the
+  one order the releases follow. (~10 further disk-vs-group differences are
+  pl-translation wording variants, not numbering.) The order currently in force
+  is always included, or the select would render the default while another
+  order stays applied; with no aired group to anchor on (or its detail
+  unreadable) the code falls back to hiding type 4. The POST still validates
+  against the FULL list, so a pre-filter selection can be kept or cleared.
 - The endpoint list/handlers sit right after `set-language` in
-  `src/routes/requests.ts`; `fetchEpisodeGroups`/`franchiseEpisodeOrder` live in
-  `src/services/tmdb.ts`.
+  `src/routes/requests.ts`; `fetchEpisodeGroups`/`franchiseEpisodeOrder`/
+  `completeEpisodeOrders` live in `src/services/tmdb.ts`.
 
 ## Key Files
 

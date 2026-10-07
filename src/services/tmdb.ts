@@ -300,6 +300,82 @@ export async function fetchEpisodeGroups(
   return { show_id: showId, groups };
 }
 
+/** Per-season episode counts of one episode group: `season -> episode count`,
+ *  reading the sub-group name first ("Season 3") with `order` as fallback —
+ *  the same read `groupSeasonSub` does. Null when the detail can't be read
+ *  (a dead id or a TMDB miss), which the caller treats as "not verifiable". */
+async function episodeGroupSeasonCounts(groupId: string, language: string): Promise<Map<number, number> | null> {
+  try {
+    const detail = await tmdbGet<any>(`/tv/episode_group/${encodeURIComponent(groupId)}?language=${language}`);
+    const subs = detail?.groups;
+    if (!Array.isArray(subs) || !subs.length) return null;
+    const counts = new Map<number, number>();
+    for (const sub of subs) {
+      const name = String(sub?.name || "");
+      const m = name.match(/season[^\d]*(\d{1,2})/i);
+      const season = m ? parseInt(m[1], 10) : /special/i.test(name) ? 0 : Number(sub?.order);
+      if (!Number.isFinite(season)) continue;
+      const eps = Array.isArray(sub?.episodes) ? sub.episodes.length : Number(sub?.episode_count) || 0;
+      counts.set(season, eps);
+    }
+    return counts.size ? counts : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The episode orders worth OFFERING — a complete renumbering of the episodes
+ *  the aired order holds. TMDB also carries platform snapshots: regional
+ *  listings (Brazil-only Disney+), Netflix missing an episode, broadcast
+ *  double-feature merges — none a release's numbering follows. The rule is
+ *  structural, not type-based: a type-4 hide was wrong, because Phineas and
+ *  Ferb's own on-disk order (Jellyfin "Digital" = TVDB) is closest to TMDB's
+ *  type-4 **Disney+** group — the blanket hide concealed the one order the
+ *  releases actually follow.
+ *
+ *  1. Lists with fewer episodes than the aired total can't renumber the same
+ *     set (Netflix 223 vs 224, Brazil-only 47, merges 151/51) — dropped from
+ *     the list alone, no detail fetch.
+ *  2. Each survivor's group detail is fetched and compared season-by-season
+ *     with the aired group's: EVERY aired season must be present with the
+ *     SAME episode count. Extra seasons are allowed — Disney+'s S5 (38) is a
+ *     real season the aired group simply doesn't hold — so totals may exceed
+ *     the aired total legitimately (262 = 224 + 38).
+ *  3. The order in force is always kept, or the select would render the
+ *     default while another order stays applied.
+ *  4. No aired group to anchor on (or its detail unreadable): fall back to
+ *     hiding type 4 — TMDB's own "Digital" type — rather than showing every
+ *     snapshot unfiltered. The POST validates against the FULL list either
+ *     way, so a pre-filter selection can still be kept or cleared. */
+export async function completeEpisodeOrders(
+  groups: EpisodeGroupInfo[],
+  currentId: string | null,
+  language: string | null,
+): Promise<EpisodeGroupInfo[]> {
+  const lang = language || process.env.TMDB_LANGUAGE || "en-US";
+  const isCurrent = (g: EpisodeGroupInfo) => g.id === currentId;
+  const aired = groups.find((g) => /^aired\b/i.test(g.name) || /original air/i.test(g.name)) || null;
+  if (!aired) return groups.filter((g) => isCurrent(g) || g.type !== 4);
+  const candidates = groups.filter((g) => isCurrent(g) || g.episode_count >= aired.episode_count);
+  const airedCounts = await episodeGroupSeasonCounts(aired.id, lang);
+  if (!airedCounts) return groups.filter((g) => isCurrent(g) || g.type !== 4);
+  const details = new Map<string, Map<number, number> | null>([[aired.id, airedCounts]]);
+  await Promise.all(
+    candidates
+      .filter((g) => g.id !== aired.id)
+      .map(async (g) => {
+        details.set(g.id, await episodeGroupSeasonCounts(g.id, lang));
+      }),
+  );
+  return candidates.filter((g) => {
+    if (isCurrent(g)) return true;
+    const counts = details.get(g.id);
+    if (!counts) return false;
+    for (const [season, n] of airedCounts) if (counts.get(season) !== n) return false;
+    return true;
+  });
+}
+
 /** Which sub-group of an episode group holds season `season`? Groups are one
  *  season each, named "Season 1"/"Specials" with `order` matching the season
  *  number — the name is read first (a group's `order` can skip), then `order`

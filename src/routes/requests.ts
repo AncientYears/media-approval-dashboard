@@ -19,7 +19,7 @@ import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFr
 import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, 
 resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, 
 episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, isTmdbConfigured, franchiseEpisodeOrder, 
-fetchEpisodeGroups, type SeasonMeta, type NamingDiag } from "../services/tmdb";
+fetchEpisodeGroups, completeEpisodeOrders, type SeasonMeta, type NamingDiag } from "../services/tmdb";
 import {
   loadNamingConf,
   vendorList,
@@ -8381,31 +8381,24 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       if (!request) return res.status(404).json({ error: "Request not found" });
       if (request.type !== "series" || !request.library_key) return res.status(400).json({ error: "Episode orders are a series setting" });
       if (!isTmdbConfigured()) return res.json({ current: null, groups: [], show_id: null });
+      const language = franchiseLanguage(db, request.library_key);
       const { show_id, groups } = await fetchEpisodeGroups(
         db,
         request.library_key,
         cleanFranchiseTitle(request.title || ""),
-        franchiseLanguage(db, request.library_key),
+        language,
       );
       const pref = franchiseEpisodeOrder(db, request.library_key);
       const current = pref && show_id && pref.show_id === show_id ? pref.id : null;
-      // Offer only COMPLETE orders. TMDB also carries platform snapshots —
-      // regional listings (Brazil-only Disney+, Netflix missing an episode)
-      // and broadcast double-feature rearrangements — all streaming-derived,
-      // none of which a release's numbering follows. A usable order renumbers
-      // the SAME episodes the aired order holds, so its episode_count must
-      // match the aired group's; type 4 is TMDB's own "Digital" type (labelled
-      // exactly that on the site). The order already in force is always kept,
-      // or the select would render the default while another order stays
-      // applied. POST still validates against the FULL list, so a selection
-      // made before this filter can still be kept or cleared.
-      const aired = groups.find((g) => /^aired\b/i.test(g.name) || /original air/i.test(g.name)) || null;
-      const shown = groups.filter((g) => {
-        if (g.id === current) return true;
-        if (g.type === 4) return false;
-        if (aired && g.episode_count !== aired.episode_count) return false;
-        return true;
-      });
+      // Offer only COMPLETE orders — every season the aired group holds,
+      // renumbered episode-for-episode (extra seasons allowed). Regional,
+      // partial and merged snapshots drop out structurally; see
+      // completeEpisodeOrders for why the filter is not type-based (P&F's own
+      // on-disk order is TMDB's type-4 "Disney+" group). The order in force is
+      // always kept, or the select would render the default while another order
+      // stays applied. POST still validates against the FULL list, so a
+      // selection made before this filter can still be kept or cleared.
+      const shown = await completeEpisodeOrders(groups, current, language);
       res.json({ current, groups: shown, show_id });
     } catch (error) {
       console.error("Error listing episode orders:", error);
