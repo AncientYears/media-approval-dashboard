@@ -612,16 +612,29 @@ export default function Dashboard() {
                         : item.sonarr_id
                           ? (total ? total + extra : shown)
                           : (total || shown);
-                      const label = s.request_id ? (denom ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : s.status === "COMPLETED" ? "in library" : "pending") : (denom > 0 ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : "—");
+                      const finished = s.status === "COMPLETED";
+                      // A content-less COMPLETED row is the dormancy artifact of
+                      // clicking a season pill's "Open Releases" (ensure-season
+                      // creates exactly one) — no request was made and nothing is
+                      // on disk, so dim it beside the truly unrequested seasons
+                      // instead of lighting it up as in-library. Genuinely in-flight
+                      // rows (Discover/Seerr NEW, SEARCHING/APPROVED, torrents
+                      // DOWNLOADING/SEEDING) stay bright while empty, and so does
+                      // a row with release/disk history (a season completed via
+                      // move-to-library may hold no processed copy of its own).
+                      const activeRequest = !!s.request_id && s.status != null && s.status !== "COMPLETED" && s.status !== "DISMISSED";
+                      const hasHistory = (s.release_count || 0) > 0 || (s.total_size_mb || 0) > 0;
+                      const dimmed = shown === 0 && !(activeRequest || hasHistory);
+                      const contentPresent = shown > 0 || (finished && hasHistory);
+                      const requestedEmpty = !!s.request_id && shown === 0 && !finished && !dimmed;
+                      const label = s.request_id ? (denom ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : s.status === "COMPLETED" && hasHistory ? "in library" : "pending") : (denom > 0 ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : "—");
                       const nav = item.sonarr_id
                         ? (s.request_id ? () => navigate(`/requests/${s.request_id}`, { state: { back: `/managed/${item.sonarr_id}` } }) : undefined)
                         : () => navigate(`/native/${item.first_request_id}?open=${s.season}`);
-                      const finished = s.status === "COMPLETED";
-                      const requestedEmpty = !!s.request_id && shown === 0 && !finished;
                       return (
-                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""} ${requestedEmpty ? "requested-empty" : ""}`} onClick={nav} style={{ opacity: s.request_id || shown > 0 ? 1 : 0.4, cursor: nav ? "pointer" : "default" }}>
+                        <div key={s.season} className={`managed-season ${!s.request_id ? "unrequested" : ""} ${requestedEmpty ? "requested-empty" : ""}`} onClick={nav} style={{ opacity: dimmed ? 0.4 : 1, cursor: nav ? "pointer" : "default" }}>
                           <span className={`season-label ${s.season === 0 ? "season-special" : ""}`}>{s.season === 0 ? "Special" : `S${String(s.season).padStart(2, "0")}`}</span>
-                          <span className={`season-status ${finished || shown > 0 ? "has-content" : "empty"}`}>
+                          <span className={`season-status ${contentPresent ? "has-content" : "empty"}`}>
                             {label}
                           </span>
                         </div>
