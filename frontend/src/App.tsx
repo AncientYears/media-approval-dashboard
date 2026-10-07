@@ -6,6 +6,7 @@ import FranchiseDetail from "./pages/FranchiseDetail";
 import NativeFranchise from "./pages/NativeFranchise";
 import Settings from "./pages/Settings";
 import DatabaseViewer from "./pages/DatabaseViewer";
+import Torrents from "./pages/Torrents";
 import { ToastProvider } from "./components/Toast";
 import WorkspaceOverview from "./components/WorkspaceOverview";
 
@@ -30,6 +31,9 @@ function App() {
                 <Link to="/db">DB</Link>
               </li>
               <li>
+                <Link to="/torrents">Torrents</Link>
+              </li>
+              <li>
                 <Link to="/settings">Settings</Link>
               </li>
             </ul>
@@ -40,6 +44,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/db" element={<DatabaseViewer />} />
+            <Route path="/torrents" element={<Torrents />} />
             <Route path="/requests/:id" element={<RequestDetail />} />
             <Route path="/managed/:sonarrId" element={<FranchiseDetail />} />
             <Route path="/native/:id" element={<NativeFranchise />} />

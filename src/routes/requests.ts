@@ -16,7 +16,7 @@ import {
 import { executeAdoption, planAdoption } from "../services/adopt";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts, episodeNumsFromFilename } from "../services/identity";
-import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity, 
+import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity,
 resolveMovieIdentity, searchTMDB, fetchTMDBById, resolveExternalIds, fetchExternalIds, resolveSpecialIdentity, 
 episodeTitleFromCache, episodeAirDateFromCache, findSpecialByAirDate, isTmdbConfigured, franchiseEpisodeOrder, 
 fetchEpisodeGroups, type SeasonMeta, type NamingDiag } from "../services/tmdb";
@@ -46,6 +46,15 @@ import {
 import { probeVideoFile } from "../services/mediaProbe";
 import { seerrRemoveRequest } from "../services/seerr";
 import { parseTorrentName, formatEpisodes, parseQualityFromName } from "../utils/torrentParser";
+import {
+  listSavedTrackers,
+  collectVideos,
+  planMatches,
+  placeFilesIntoDownload,
+  storeTrackers,
+  torrentIsVerified,
+  torrentIsChecking,
+} from "../services/torrentRecovery";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
 import {
   fromQBittorrentPath,
@@ -8089,6 +8098,378 @@ alreadyExtra = true;
       res.json({ table, columns, rows, total: total.c, limit, offset });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ---- Global torrents + saved-tracker recovery (restore lost seeding) ----
+  // The static GET paths below MUST stay registered before `router.get("/:id")`
+  // or a two-segment-less path like /torrents would be parsed as a request id.
+
+  // GET /api/requests/torrents - every qBittorrent torrent + its linked request
+  router.get("/torrents", async (req: Request, res: Response) => {
+    try {
+      const torrents = await qbittorrent.getTorrents();
+      const linked = new Map<string, any>();
+      for (const r of db.prepare(
+        "SELECT rc.torrent_hash, rc.id as rc_id, rc.title as rc_title, mr.id as request_id, mr.title, mr.type, mr.status, mr.season " +
+        "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash != ''"
+      ).all() as any[]) {
+        linked.set(r.torrent_hash, { rc_id: r.rc_id, title: r.title, request_id: r.request_id, request_title: r.rc_title, status: r.status });
+      }
+      const out = torrents.map((t) => ({
+        hash: t.hash,
+        name: t.name,
+        state: t.state,
+        progress: t.progress,
+        size: t.size,
+        completed: t.completed,
+        dlspeed: t.dlspeed,
+        upspeed: t.upspeed,
+        ratio: t.ratio,
+        num_seeds: t.num_seeds,
+        num_leechs: t.num_leechs,
+        added_on: t.added_on,
+        completion_on: t.completion_on,
+        category: t.category,
+        save_path: fromQBittorrentPath(t.save_path),
+        content_path: fromQBittorrentPath(t.content_path),
+        verified: torrentIsVerified(t),
+        checking: torrentIsChecking(t.state || ""),
+        hasStoredTracker: t.hash ? fs.existsSync(path.join(TRACKERS_DIR, t.hash)) : false,
+        linkedRequest: linked.get(t.hash) || null,
+      }));
+      out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      res.json({ torrents: out });
+    } catch (error: any) {
+      console.error("Error listing torrents:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/torrents/:hash/:action - start | stop | recheck | delete
+  router.post("/torrents/:hash/:action", async (req: Request, res: Response) => {
+    const { hash, action } = req.params;
+    const { deleteFiles } = req.body || {};
+    const allowed = ["start", "stop", "recheck", "delete"];
+    if (!allowed.includes(action)) {
+      return res.status(400).json({ error: `Unknown action: ${action}` });
+    }
+    try {
+      const torrent = await qbittorrent.getTorrentByHash(hash);
+      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+      switch (action) {
+        case "start":
+          await qbittorrent.resumeTorrent(hash);
+          break;
+        case "stop":
+          await qbittorrent.pauseTorrent(hash);
+          break;
+        case "recheck":
+          await qbittorrent.recheck(hash);
+          break;
+        case "delete":
+          await qbittorrent.deleteTorrent(hash, !!deleteFiles);
+          break;
+      }
+      console.log(`[Torrents] ${action} ${torrent.name} (${hash.slice(0, 8)})`);
+      res.json({ success: true, action, hash });
+    } catch (error: any) {
+      console.error(`Error on torrent ${action}:`, error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/requests/trackers/scan - match saved .torrent trackers against
+  // every file we have (download/processed/library) and list download orphans.
+  router.get("/trackers/scan", async (req: Request, res: Response) => {
+    try {
+      const scan = listSavedTrackers();
+      let torrents: any[] = [];
+      try {
+        torrents = await qbittorrent.getTorrents();
+      } catch {}
+      const liveHashes = new Set(torrents.map((t: any) => t.hash));
+      const videos = collectVideos();
+      const plans = planMatches(scan.trackers, videos);
+
+      const linkedByHash = new Map<string, any>();
+      for (const r of db.prepare(
+        "SELECT rc.torrent_hash, rc.request_id, mr.title FROM release_candidates rc " +
+        "JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash != ''"
+      ).all() as any[]) {
+        linkedByHash.set(r.torrent_hash, { request_id: r.request_id, title: r.title });
+      }
+
+      const trackerRows = plans.map((p) => {
+        const liveTorrent = torrents.find((t: any) => t.hash === p.infoHash) || null;
+        return {
+          infoHash: p.infoHash,
+          name: p.name,
+          sourcePath: p.sourcePath,
+          announce: p.announce,
+          layout: p.layout,
+          typeGuess: p.typeGuess,
+          totalSize: p.totalSize,
+          complete: p.complete,
+          coveredBytes: p.coveredBytes,
+          fileCount: p.files.length,
+          matches: p.matches.map((m) => ({
+            torrentPath: m.torrentPath,
+            length: m.length,
+            sourcePath: m.sourcePath,
+            tree: m.tree,
+            unique: m.unique,
+          })),
+          missing: p.missing.map((m) => m.torrentPath),
+          live: !!liveTorrent,
+          liveState: liveTorrent ? liveTorrent.state : null,
+          liveProgress: liveTorrent ? liveTorrent.progress : null,
+          liveVerified: liveTorrent ? torrentIsVerified(liveTorrent) : false,
+          liveChecking: liveTorrent ? torrentIsChecking(liveTorrent.state || "") : false,
+          linkedRequest: liveTorrent && linkedByHash.has(p.infoHash) ? linkedByHash.get(p.infoHash) : null,
+          storedTracker: fs.existsSync(path.join(TRACKERS_DIR, p.infoHash)),
+        };
+      });
+
+      // Download orphans: entries with no live torrent and not claimed as the
+      // restore source of any plan. These are who "link trackers to them, or
+      // move to processed when no tracker exists" applies to.
+      const orphans: any[] = [];
+      const scanOrphans = (root: string, rootType: string) => {
+        if (!fs.existsSync(root)) return;
+        const relevantProc = rootType === "movie" ? PROCESSED_MOVIES : PROCESSED_TV;
+        const procInodes = fs.existsSync(relevantProc) ? collectVideoInodes(relevantProc) : new Set<number>();
+        for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+          if (e.name.startsWith(".")) continue;
+          const full = path.join(root, e.name);
+          const coveredByLive = torrents.some((t: any) => {
+            const cp = t.content_path ? fromQBittorrentPath(t.content_path) : "";
+            return cp === full || cp.startsWith(full + path.sep);
+          });
+          if (coveredByLive) continue;
+          const isPlanSource = plans.some((p) =>
+            p.matches.some((m) => m.sourcePath && (m.sourcePath === full || m.sourcePath.startsWith(full + path.sep)))
+          );
+          if (isPlanSource) continue;
+          const inodes = collectVideoInodes(full);
+          const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
+          const parsed = parseTorrentName(e.name);
+          const matched = findBestRequestForDownload(
+            db,
+            e.name,
+            rootType,
+            rootType === "series" && parsed.season != null ? parsed.season : null
+          );
+          orphans.push({
+            path: full,
+            type: rootType,
+            name: e.name,
+            isDir: e.isDirectory(),
+            sizeMb: Math.round(dirSizeBytes(full) / (1024 * 1024)),
+            videoCount: inodes.size,
+            existsInProcessed,
+            matchedRequest: matched ? { id: matched.id, title: matched.title, season: matched.season ?? null } : null,
+          });
+        }
+      };
+      scanOrphans(DOWNLOADS_MOVIES, "movie");
+      scanOrphans(DOWNLOADS_TV, "series");
+      orphans.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+
+      res.json({
+        trackers: trackerRows,
+        orphans,
+        duplicates: scan.duplicates.map((d) => ({ infoHash: d.infoHash, sourcePath: d.sourcePath })),
+        parseErrors: scan.errors,
+      });
+    } catch (error: any) {
+      console.error("Error scanning trackers:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/trackers/restore - hardlink a complete plan into a
+  // download root, add the torrent (paused, verifying), store the tracker into
+  // TRACKERS_DIR/<hash>/. DB linking happens only after verification via
+  // POST /trackers/link.
+  router.post("/trackers/restore", async (req: Request, res: Response) => {
+    try {
+      const items: any[] = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (items.length === 0) return res.status(400).json({ error: "No items provided" });
+
+      const scan = listSavedTrackers();
+      const byHash = new Map(scan.trackers.map((t) => [t.infoHash, t]));
+      const videos = collectVideos();
+      const plans = planMatches(scan.trackers, videos);
+      const planByHash = new Map(plans.map((p) => [p.infoHash, p]));
+      const liveHashes = new Set((await qbittorrent.getTorrents()).map((t: any) => t.hash));
+
+      const results: any[] = [];
+      for (const item of items) {
+        const hash = String(item.infoHash || "").toLowerCase();
+        const type = item.type === "series" ? "series" : "movie";
+        const tracker = byHash.get(hash);
+        const plan = planByHash.get(hash);
+        const out: any = { infoHash: hash, name: tracker?.name || null, ok: false };
+
+        if (!tracker || !plan) {
+          out.error = "Tracker not found in current scan — re-run the scan";
+          results.push(out);
+          continue;
+        }
+        if (liveHashes.has(hash)) {
+          const t = await qbittorrent.getTorrentByHash(hash);
+          results.push({ ...out, ok: true, alreadyLive: true, hash, state: t?.state || null, progress: t?.progress ?? null });
+          continue;
+        }
+        if (!plan.complete) {
+          out.error = `Incomplete match — ${plan.missing.length} file(s) missing`;
+          results.push(out);
+          continue;
+        }
+
+        const saveRoot = type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
+        const placeResults = placeFilesIntoDownload(plan, saveRoot);
+        const failures = placeResults.filter((r) => r.status === "error" || r.status === "collision");
+        if (failures.length > 0) {
+          out.error = `Placement: ${failures.map((r) => `${r.dest} (${r.detail || r.status})`).join("; ")}`;
+          out.placeResults = placeResults;
+          results.push(out);
+          continue;
+        }
+
+        const bytes = fs.readFileSync(tracker.sourcePath);
+        try {
+          await qbittorrent.addTorrentFile(bytes, path.basename(tracker.sourcePath), toQBittorrentPath(saveRoot), { paused: true });
+        } catch (err: any) {
+          out.error = `qBittorrent add failed: ${err.message}`;
+          results.push(out);
+          continue;
+        }
+
+        let added: any = null;
+        for (let i = 0; i < 10 && !added; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          added = await qbittorrent.getTorrentByHash(hash);
+        }
+        if (!added) {
+          out.error = "Torrent was added but did not appear in qBittorrent";
+          results.push(out);
+          continue;
+        }
+
+        try { await qbittorrent.recheck(hash); } catch {}
+
+        let storedDir: string | null = null;
+        try {
+          storedDir = storeTrackers(plan, bytes).dir;
+        } catch (err: any) {
+          out.warn = `tracker store failed: ${err.message}`;
+        }
+
+        console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — verifying, then link via POST /trackers/link`);
+        results.push({
+          ...out,
+          ok: true,
+          added: true,
+          state: added.state,
+          progress: added.progress,
+          hash,
+          storedTracker: storedDir,
+          placeResults: placeResults.map((r) => ({ dest: r.dest, status: r.status, detail: r.detail })),
+        });
+      }
+      res.json({ results });
+    } catch (error: any) {
+      console.error("Error restoring trackers:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/trackers/link - link a verified torrent to its best
+  // matching request (RC + approval_history). Refuses while still checking or
+  // when content failed verification, so "link and pretend it always existed"
+  // is only ever done on a fully-seen file.
+  router.post("/trackers/link", async (req: Request, res: Response) => {
+    try {
+      const hash = String(req.body?.hash || "").toLowerCase();
+      const type = req.body?.type === "series" ? "series" : "movie";
+      if (!hash) return res.status(400).json({ error: "Missing hash" });
+      const torrent = await qbittorrent.getTorrentByHash(hash);
+      if (!torrent) return res.status(404).json({ error: "Torrent not found in qBittorrent" });
+      if (torrentIsChecking(torrent.state || "")) {
+        return res.status(409).json({ error: "Torrent is still verifying", checking: true, progress: torrent.progress });
+      }
+      if (!torrentIsVerified(torrent)) {
+        return res.status(409).json({ error: "Torrent content is not fully verified — refusing to link", progress: torrent.progress, state: torrent.state });
+      }
+      const root = type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
+      const existing = db.prepare("SELECT rc.request_id, mr.title FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash = ?").get(hash) as any;
+      if (existing) {
+        return res.json({ success: true, linked: { requestId: existing.request_id, title: existing.title, existing: true } });
+      }
+      const linked = linkTorrentToRequest(db, torrent, torrent.name, type, root);
+      res.json({
+        success: true,
+        linked: linked ? { requestId: linked.id, title: linked.title, existing: !!linked.existing } : null,
+      });
+    } catch (error: any) {
+      console.error("Error linking torrent:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/trackers/orphans/move - bulk move orphaned download
+  // entries (no torrent anywhere) into /Processed, registering their identity.
+  router.post("/trackers/orphans/move", async (req: Request, res: Response) => {
+    try {
+      const items: any[] = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (items.length === 0) return res.status(400).json({ error: "No items provided" });
+      const results: any[] = [];
+      for (const item of items) {
+        const p = String(item?.path || "");
+        const type = item?.type === "movie" ? "movie" : "series";
+        const out: any = { path: p, ok: false };
+        if (!p || !isWithinDownloadRoot(p)) {
+          out.error = "Path is outside download directories";
+          results.push(out);
+          continue;
+        }
+        if (!fs.existsSync(p)) {
+          out.error = "Path no longer exists";
+          results.push(out);
+          continue;
+        }
+        const { destDir } = processedDestForEntry(p, type);
+        const dest = type === "movie" ? path.join(destDir, path.basename(p)) : path.join(destDir, path.basename(p));
+        fs.mkdirSync(destDir, { recursive: true });
+        if (fs.existsSync(dest)) {
+          out.error = `Destination already exists: ${dest}`;
+          results.push(out);
+          continue;
+        }
+        try {
+          fs.renameSync(p, dest);
+        } catch (err: any) {
+          out.error = err.message;
+          results.push(out);
+          continue;
+        }
+        try {
+          const ident = autodetectIdentity(db, dest);
+          registerVideoTree(db, dest, {
+            library_key: ident?.library_key || "",
+            title: ident?.title || path.basename(dest),
+            season: ident?.season ?? 0,
+          });
+        } catch {}
+        console.log(`[Trackers] Moved orphan ${p} → ${dest}`);
+        results.push({ ...out, ok: true, dest, type });
+      }
+      res.json({ results });
+    } catch (error: any) {
+      console.error("Error moving orphans:", error);
+      res.status(500).json({ error: error.message });
     }
   });
 

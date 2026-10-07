@@ -506,3 +506,34 @@ export async function discoverRequest(payload: { type: "movie" | "series"; tmdbI
   const response = await api.post("/requests/discover/request", payload);
   return response.data;
 }
+
+export async function fetchTorrents() {
+  const response = await api.get("/requests/torrents");
+  return response.data;
+}
+
+export async function torrentAction(hash: string, action: "start" | "stop" | "recheck" | "delete", deleteFiles = false) {
+  const response = await api.post(`/requests/torrents/${encodeURIComponent(hash)}/${action}`, { deleteFiles });
+  return response.data;
+}
+
+export async function scanTrackers() {
+  const response = await api.get("/requests/trackers/scan");
+  return response.data;
+}
+
+export async function restoreTrackers(items: { infoHash: string; type: "movie" | "series" }[]) {
+  const response = await api.post("/requests/trackers/restore", { items });
+  return response.data;
+}
+
+/** Link a fully-verified torrent to its best matching request (RC + AH). */
+export async function linkTrackerTorrent(hash: string, type: "movie" | "series") {
+  const response = await api.post("/requests/trackers/link", { hash, type });
+  return response.data;
+}
+
+export async function moveOrphans(items: { path: string; type: "movie" | "series" }[]) {
+  const response = await api.post("/requests/trackers/orphans/move", { items });
+  return response.data;
+}

@@ -175,11 +175,20 @@ export class QBittorrentService {
     await this.post("/api/v2/torrents/add", data);
   }
 
-  async addTorrentFile(buffer: Buffer, filename: string, savePath?: string): Promise<void> {
+  async addTorrentFile(
+    buffer: Buffer,
+    filename: string,
+    savePath?: string,
+    opts?: { paused?: boolean; skipCheck?: boolean; category?: string },
+  ): Promise<void> {
     await this.ensureAuth();
     const form = new FormData();
     form.append("torrents", buffer, { filename, contentType: "application/x-bittorrent" });
     if (savePath) form.append("savepath", savePath);
+    if (opts?.category) form.append("category", opts.category);
+    if (opts?.paused) form.append("paused", "true");
+    // skipCheck defaults to false = qBittorrent verifies the placed files.
+    if (opts?.skipCheck) form.append("skip_checking", "true");
     try {
       await this.client.post("/api/v2/torrents/add", form, {
         headers: { ...this.getHeaders(), ...form.getHeaders() },
@@ -195,6 +204,11 @@ export class QBittorrentService {
         throw error;
       }
     }
+  }
+
+  /** Force qBittorrent to re-hash the on-disk files for the given torrent(s). */
+  async recheck(hash: string): Promise<void> {
+    await this.post("/api/v2/torrents/recheck", `hashes=${encodeURIComponent(hash)}`);
   }
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {
