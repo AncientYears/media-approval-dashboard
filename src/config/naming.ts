@@ -408,6 +408,17 @@ const MISC_PHRASES: Record<string, string> = {
   "sdr upscaling": "SDR UPSCALING",
 };
 
+/** A bracketed run stating which SUBTITLE tracks the file carries: the Polish
+ *  "Napisy" (plus its "Podpisy" variant) or the English "Subs"/"Subtitles",
+ *  with "Forced" and "SDH" covered as marker-only forms. The languages that
+ *  follow the marker ("[Napisy ENG-PL]") describe the SUBTITLE tracks, not the
+ *  audio, so the whole bracket is kept as one tag — otherwise the whitespace
+ *  split tore "[Napisy ENG-PL]" into a "[Napisy]" marker and an "[ENG-PL]"
+ *  language list that read as unrelated tags. The marker must be the FIRST
+ *  word, so a bracket that merely contains "Subs" among real tags ("[1080p
+ *  Subs x264]") still tokenizes normally. */
+const SUBTITLE_MARKER_RE = /^(?:subs?|subtitles?|napisy|podpisy|forced|sdh)\b/i;
+
 /** A release can go straight from the episode code into its tags, naming no
  *  episode at all ("S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR"). Anchored at
  *  the START of what follows the code, because a real episode title never BEGINS
@@ -629,6 +640,12 @@ export interface ReleaseTags {
   hdr: string[];
   video: string[];
   misc: string[];
+  /** A bracketed run stating which SUBTITLE tracks the file carries, whole
+   *  bracket preserved ("Napisy ENG-PL", "Forced Subs", "SDH"). It renders
+   *  immediately after the language/dub bracket, because for a Polish release
+   *  the subs are the companion to the dub track. Name-only: nothing probes
+   *  subtitles, and it is never inherited from a same-inode twin. */
+  subs: string[];
   /** Scene ENCODE-QUALITY modifiers ("Proper", "Repack", "Rerip"). They qualify
    *  the resolution and are written right after it ("2160p Proper"), so they
    *  render inside the source/resolution bracket rather than as standalone tags
@@ -727,6 +744,7 @@ function renderTags(f: {
   hdr: string[];
   video: string[];
   misc: string[];
+  subs?: string[];
   qualityMods?: string[];
 }): string {
   // Language and dub share ONE bracket ("[PL DUB]" / "[PL LEKTOR]") because they
@@ -736,6 +754,12 @@ function renderTags(f: {
   // voices the characters, a lektor is one narrator over the picture.
   const lang = f.language ? (f.dubKind ? `${f.language} ${f.dubKind}` : f.language) : f.dubKind;
   let tags = lang ? `[${lang}] ` : "";
+  // Subtitle tracks render right after the language/dub bracket: for a Polish
+  // release they are the companion to the dub track, and "[Napisy ENG-PL]"
+  // reads as one fact about the same region of the name rather than a trailing
+  // tag. Nothing else sits between the two, so the pairing a name states stays
+  // visibly paired.
+  for (const s of f.subs || []) tags += `[${s}] `;
   // Encode-quality modifiers ride inside the resolution group ("[Remux-2160p
   // Proper]"), which is where groups write them. They are dropped rather than
   // orphaned into their own bracket when there is no resolution to attach to -
@@ -1396,7 +1420,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // `?? DEFAULT_VENDORS` rather than a parameter default: a caller passing an
   // explicit null would otherwise skip the default and crash on `.length`.
   const vList = vendors ?? DEFAULT_VENDORS;
-  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubKind: null, source: null, provider: null, resolution: null, audio: [], hdr: [], video: [], misc: [], qualityMods: [] };
+  const out: ReleaseTags = { tags: "", group: null, vendor: null, language: null, dubKind: null, source: null, provider: null, resolution: null, audio: [], hdr: [], video: [], misc: [], subs: [], qualityMods: [] };
   let base = baseName.replace(/\.(mkv|mp4|avi|mov|ts|wmv|iso|m2ts|webm)$/i, "");
 
   // Editions ("International", "Extended", "Director's Cut", …) are preserved
@@ -1690,7 +1714,19 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
         // Placeholders ("[Unknown]", "[Group]", "[NoGrp]") say "not stated", so
         // they are dropped outright — neither a tag nor a group. See
         // PLACEHOLDER_WORDS for why the group case is not merely cosmetic.
-        if (!isPlaceholderWord(at)) misc.push(at);
+        if (!isPlaceholderWord(at)) {
+          // A subtitle marker word ALONE ("[Subs]", "[SDH]") is a subtitle tag,
+          // not trailing misc. Routing it to subs here — where the token was
+          // torn out of a mixed bracket ("[1080p Subs x264]") — keeps such a
+          // bracket from flip-flopping between misc and subs across Fix Names
+          // passes, since a lone word its own bracket is caught by the
+          // whole-bracket rule.
+          if (/^(?:subs?|subtitles?|napisy|podpisy|forced|sdh)$/i.test(at)) {
+            if (!out.subs.includes(at)) out.subs.push(at);
+          } else {
+            misc.push(at);
+          }
+        }
       }
     }
   };
@@ -1743,6 +1779,15 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       misc.push(phrase);
       continue;
     }
+    // A subtitle run ("[Napisy ENG-PL]", "[Forced Subs]", "[SDH]") states which
+    // SUBTITLE tracks the file carries. The languages after the marker belong to
+    // those tracks, not the audio, so the whole bracket stays ONE tag — letting
+    // the split below handle it would tear it into a "[Napisy]" marker and an
+    // "[ENG-PL]" language list that read as unrelated tags.
+    if (SUBTITLE_MARKER_RE.test(whole)) {
+      if (!out.subs.includes(whole)) out.subs.push(whole);
+      continue;
+    }
     audioMark = out.audio.length;
     // Split on whitespace, and on a dot that is NOT between digits, so
     // "[UHD.BluRay]" becomes two recognizable tags while channel numbers
@@ -1777,7 +1822,7 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // only when it actually states a release tag, and prose, an edition or a bare
   // year is left alone (editions have their own pass, which does read parens).
   const PAREN_TAG_RE =
-    /\b\d{3,4}[pi]\b|blu-?ray|remux|web-?dl|web-?rip|hdtv|bd-?rip|dvd-?rip|\bx26[45]\b|h\.?26[45]|\bhevc\b|\bavc\b|\bav1\b|\bvp9\b|\bxvid\b|\bdivx\b|true-?hd|dts-?hd|\bdts\b|e-?ac3|\beac3\b|\bac3\b|\baac\b|\bflac\b|\batmos\b|10-?bit|8-?bit|\bhdr10?\b|\bdv\b/i;
+    /\b\d{3,4}[pi]\b|blu-?ray|remux|web-?dl|web-?rip|hdtv|bd-?rip|dvd-?rip|\bx26[45]\b|h\.?26[45]|\bhevc\b|\bavc\b|\bav1\b|\bvp9\b|\bxvid\b|\bdivx\b|true-?hd|dts-?hd|\bdts\b|e-?ac3|\beac3\b|\bac3\b|\baac\b|\bflac\b|\batmos\b|10-?bit|8-?bit|\bhdr10?\b|\bdv\b|\b(?i:subs?|subtitles?|napisy|podpisy|forced|sdh)\b/i;
   for (const m of base.matchAll(/\(([^()]+)\)/g)) {
     if (!PAREN_TAG_RE.test(m[1])) continue;
     // Same shape as the square-bracket pass. A paren can carry the release group
@@ -1802,6 +1847,11 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     const phrase = MISC_PHRASES[content.trim().toLowerCase()];
     if (phrase) {
       if (!misc.includes(phrase)) misc.push(phrase);
+      continue;
+    }
+    const subtitle = content.trim();
+    if (SUBTITLE_MARKER_RE.test(subtitle)) {
+      if (!out.subs.includes(subtitle)) out.subs.push(subtitle);
       continue;
     }
     audioMark = out.audio.length;
