@@ -219,9 +219,18 @@ function coveredEpisodesForRequest(db: Database, req: any): Set<number> {
 // episode grid and should count as covered in summary pills too. A file whose
 // name won't parse but whose registered inode is a NUMBERED episode is covered,
 // not an extra — identity beats guessing twice.
-function unnumberedFilesInSeasonFolder(db: Database, baseTitle: string, season: number, year?: number | null): number {
+function unnumberedFilesInSeasonFolder(db: Database, baseTitle: string, season: number, year?: number | null, libraryKey?: string | null): number {
   try {
-    const folder = findSeasonFolder(baseTitle, season, year);
+    // With a library_key, resolve the folder the way every other native read
+    // does (title match first, then the franchise's own file paths). Title-only
+    // matching misses a folder named from the RESOLVED TMDB title when the row
+    // title is the user's localized/mangled input ("Phineas and Ferb" vs the
+    // on-disk "Fineasz i Ferb (2007) [tvdbid-81848]") — the S00 movies then
+    // counted as 0 extras while fileCount (which already used this path) said 4,
+    // so the pill read "4 files, 1/3" beside a folder holding four.
+    const folder = libraryKey
+      ? seasonFolderForLibraryKey(db, libraryKey, baseTitle, season)
+      : findSeasonFolder(baseTitle, season, year);
     if (!folder) return 0;
     let count = 0;
     for (const f of fs.readdirSync(folder)) {
@@ -1154,7 +1163,12 @@ function nativeSeasonDenominator(
       if (tc) tmdb = ((JSON.parse(tc.payload)?.episodes || []) as any[]).length || 0;
     } catch {}
   }
-  if (!tmdb) return snapshot || covered.size + extras;
+  // Floor with what the folder actually holds even when the snapshot is
+  // present: the snapshot is taken at import and never refreshed, so files
+  // added later ("47 covered" in a season imported as 27 files) reported a
+  // denominator UNDER the numerator — "47/27". Both are file evidence; the
+  // larger is the only claim both can support.
+  if (!tmdb) return Math.max(snapshot || 0, covered.size + extras);
   return Math.max(tmdb, covered.size + extras);
 }
 
@@ -1401,6 +1415,39 @@ async function warmSeasonCache(db: Database, request: any, hintFolders: string[]
       language: lang,
       altTitle,
     });
+  } catch {}
+}
+
+/** Refill tmdb_season_cache rows a franchise's denominators read but no list
+ *  endpoint fetches: boot cleanup deletes rows written before the
+ *  order-reconciliation stamp existed (db/index.ts), and GET /managed +
+ *  GET /native-franchise only ever actively fetched a MISSING season 0 — so a
+ *  whole franchise fell back to the import-time file snapshot and every pill
+ *  rendered "47/27" against a season TMDB calls 47. Only rows that are ABSENT
+ *  fetch (a cached season is one indexed SELECT and hits no network), all
+ *  misses go in parallel so the extra latency is one round-trip, not N, and a
+ *  TMDB outage just leaves the fallback in place. Callers filter season 0 to
+ *  shows whose S00 folder exists: TMDB 404s for a show with no specials and a
+ *  404 is never cached, so warming it unconditionally would cost a request on
+ *  every list load. */
+async function warmFranchiseSeasonCache(
+  db: Database,
+  libraryKey: string,
+  seasons: number[],
+  title: string,
+  altTitle: string | null,
+): Promise<void> {
+  if (!isTmdbConfigured()) return;
+  try {
+    const has = db.prepare("SELECT 1 FROM tmdb_season_cache WHERE library_key = ? AND season = ? LIMIT 1");
+    const missing = [...new Set(seasons)].filter((n) => Number.isFinite(n) && n >= 0 && !has.get(libraryKey, n));
+    if (!missing.length) return;
+    const language = franchiseLanguage(db, libraryKey);
+    await Promise.all(
+      missing.map((season) =>
+        fetchTMDBSeason(db, libraryKey, season, title, { language, altTitle }).catch(() => null),
+      ),
+    );
   } catch {}
 }
 
@@ -4062,6 +4109,22 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
       const franchiseTitleSeason = seasons.find((s: any) => s.season !== 0) || seasons[0];
       const franchiseTitle = cleanFranchiseTitle(franchiseTitleSeason.title);
         const firstRequestId = seasons[0].id;
+        // Refill missing season caches before mappedSeasons reads them for the
+        // denominators — same boot-cleanup hole the native franchise page has:
+        // rows written before the order-reconciliation stamp are deleted at
+        // boot and no endpoint re-fetches regular seasons, so the dashboard
+        // pills fell back to the import-time file snapshot ("47/27"). Native
+        // groups only — Sonarr groups take their counts from Sonarr above.
+        const filesShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id));
+        if (sonarrId == null && libraryKey) {
+          await warmFranchiseSeasonCache(
+            db,
+            libraryKey,
+            seasons.map((s: any) => s.season ?? 0).filter((n: number) => n > 0 || seasonFolderOnDisk(franchiseTitle, 0, libraryKeyYear(libraryKey), filesShowDir)),
+            franchiseTitle,
+            filesShowDir ? path.basename(filesShowDir) : null,
+          );
+        }
         // Compute total size from processed files (source of truth), fall back to torrent sizes
         const processedTvDir = PROCESSED_TV;
         let processedBytes = 0;
@@ -4089,7 +4152,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           // processed_files rows (including torrent-linked ones), unlike the old
           // inline version which only counted release_id IS NULL rows.
           const coveredEps = coveredEpisodesForRequest(db, s);
-          const extras = unnumberedFilesInSeasonFolder(db, franchiseTitle, s.season, libraryKeyYear(libraryKey));
+          const extras = unnumberedFilesInSeasonFolder(db, franchiseTitle, s.season, libraryKeyYear(libraryKey), libraryKey);
           // Compute folder size from the season folder (source of truth)
           let folderSizeBytes = 0;
           try {
@@ -4155,7 +4218,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               title: franchiseTitle,
               episode_count: actualEpCount,
               covered_episodes: Array.from(coveredEps).sort((a, b) => a - b),
-              extras: unnumberedFilesInSeasonFolder(db, franchiseTitle, sn.seasonNumber),
+              extras: unnumberedFilesInSeasonFolder(db, franchiseTitle, sn.seasonNumber, undefined, libraryKey),
             });
             existingSeasons.add(sn.seasonNumber);
           }
@@ -4168,7 +4231,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         // above simply wins for seasons both sources agree on.
         {
           const franchiseYear = libraryKeyYear(libraryKey);
-          const fallbackShowDir = processedShowDirFromFiles(db, seasons.map((s: any) => s.id)) ?? showDirByStructure(seasons.map((s: any) => s.season ?? 0), franchiseTitle);
+          const fallbackShowDir = filesShowDir ?? showDirByStructure(seasons.map((s: any) => s.season ?? 0), franchiseTitle);
           const diskSeasons = diskSeasonFolders(franchiseTitle, franchiseYear, fallbackShowDir);
           for (const [sn, files] of diskSeasons) {
             if (existingSeasons.has(sn)) continue;
@@ -7578,10 +7641,24 @@ let episodes: any[];
       if (!rows.length) return res.status(404).json({ error: "No seasons for this franchise" });
       const titleSeason = rows.find((r: any) => r.season !== 0) || rows[0];
       const title = cleanFranchiseTitle(titleSeason.title);
+      const franchiseYear = libraryKeyYear(seed.library_key);
+      const filesShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id));
+      // Refill missing season caches BEFORE the map below reads them for
+      // denominators — boot cleanup drops pre-deploy rows and neither list
+      // endpoint re-fetches, so pills fell back to the import-time file
+      // snapshot ("47/27"). S00 is warmed only when its folder exists, so a
+      // show TMDB has no specials for does not 404 on every page load.
+      await warmFranchiseSeasonCache(
+        db,
+        seed.library_key,
+        rows.map((s: any) => s.season ?? 0).filter((n: number) => n > 0 || seasonFolderOnDisk(title, 0, franchiseYear, filesShowDir)),
+        title,
+        filesShowDir ? path.basename(filesShowDir) : null,
+      );
       const seasons = rows.map((s: any) => {
         const baseTitle = cleanFranchiseTitle(s.title || "");
         const covered = coveredEpisodesForRequest(db, s);
-        const extras = unnumberedFilesInSeasonFolder(db, baseTitle, s.season ?? 0, libraryKeyYear(s.library_key));
+        const extras = unnumberedFilesInSeasonFolder(db, baseTitle, s.season ?? 0, libraryKeyYear(s.library_key), s.library_key);
         let fileCount = 0;
         try {
           const folder = seasonFolderForLibraryKey(db, s.library_key, baseTitle, s.season ?? 0);
@@ -7608,9 +7685,8 @@ let episodes: any[];
       // Inject seasons present on disk when no media_request row exists (the
       // processed structure is authoritative; e.g. episodes loose in the library
       // root got imported as Specials, or a season exists disk-first).
-      const franchiseYear = libraryKeyYear(seed.library_key);
       const existingSeasons = new Set(seasons.map((s: any) => s.season));
-      const fallbackShowDir = processedShowDirFromFiles(db, rows.map((r: any) => r.id)) ?? showDirByStructure(rows.map((r: any) => r.season ?? 0), title);
+      const fallbackShowDir = filesShowDir ?? showDirByStructure(rows.map((r: any) => r.season ?? 0), title);
       const diskSeasons = diskSeasonFolders(title, franchiseYear, fallbackShowDir);
       for (const [sn, files] of diskSeasons) {
         if (existingSeasons.has(sn)) continue;

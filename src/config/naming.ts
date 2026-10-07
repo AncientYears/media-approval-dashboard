@@ -426,8 +426,15 @@ const TAG_RUN_HEAD = /^(?:web-?dl|web-?rip|bluray|blu-?ray|remux|hdtv|brrip|bdri
  *  on every preview as a rename that would never converge. */
 function episodeTitleSpan(base: string): { start: number; end: number; title: string } | null {
   // "S0XE03" is a season-0 special marker, not a typo — accept it alongside the
-  // normal S00E03 so the title after it is still found.
-  const m = base.match(/(?<![A-Za-z0-9])[sS](?:\d{1,2}[\s._-]*[eE]\d{1,3}|0[xX][\s._-]*[eE]\d{1,3})\b[\s._-]+(.+)$/);
+  // normal S00E03 so the title after it is still found. The episode number may
+  // also be an X PLACEHOLDER ("S03EXX", "S0XEXX"): a release that files an
+  // unnumbered special but never wrote its number. Without it the whole span
+  // came back null, the bare fallback for the title became the ENTIRE filename,
+  // and the specials resolver searched TMDB for "Fineasz i Ferb S03EXX Podróż…
+  // - Sceny usunięte" — no hits — so a real film in S00 kept its release name
+  // while its sibling resolved fine. X's are explicit here (no `i` flag) so
+  // ordinary words cannot start a match.
+  const m = base.match(/(?<![A-Za-z0-9])[sS](?:\d{1,2}[\s._-]*[eE](?:\d{1,3}|[xX]{1,3})|0[xX][\s._-]*[eE](?:\d{1,3}|[xX]{1,3}))\b[\s._-]+(.+)$/);
   if (!m) return null;
   // Offset of group 1 inside `base`: the match ends with the group, so the group
   // occupies the last m[1].length characters of m[0].

@@ -327,7 +327,12 @@ export default function NativeFranchise() {
           const isExpanded = expanded.has(season.season);
           const epCount = season.episode_count || 0;
           const coveredCount = season.covered_episodes?.length || 0;
-          const missingCount = epCount > 0 ? epCount - coveredCount : 0;
+          // Extras (unnumbered S00 movies / bonuses) count as FILLED — the
+          // dashboard's pills already add them (`shown` = covered + extra), so
+          // the same folder rendered "4 files, 1/3, 3 missing" beside the
+          // dashboard's honest total. One numerator for both surfaces.
+          const filledCount = coveredCount + (season.extras || 0);
+          const missingCount = epCount > 0 ? Math.max(0, epCount - filledCount) : 0;
           const data = episodes[season.season];
 
           return (
@@ -339,14 +344,15 @@ export default function NativeFranchise() {
                     season.file_count > 0 || epCount > 0 ? (
                       <>
                         <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{season.file_count} file{season.file_count === 1 ? "" : "s"}</span>
-                        <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>numbered {coveredCount}/{epCount}</span>
+                        <span className={`ep-badge ${missingCount > 0 ? "ep-missed" : "ep-filled"}`} style={{ fontSize: 9 }}>{filledCount}{epCount > 0 ? `/${epCount}` : ""}</span>
+                        {missingCount > 0 && <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>}
                       </>
                     ) : (
                       <span className="season-status empty">no episodes</span>
                     )
-                  ) : coveredCount > 0 ? (
+                  ) : filledCount > 0 ? (
                     <>
-                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{coveredCount}{epCount > 0 ? `/${epCount}` : ""}</span>
+                      <span className="ep-badge ep-filled" style={{ fontSize: 9 }}>{filledCount}{epCount > 0 ? `/${epCount}` : ""}</span>
                       {missingCount > 0 && <span className="ep-badge ep-missed" style={{ fontSize: 9 }}>{missingCount} missing</span>}
                     </>
                   ) : (

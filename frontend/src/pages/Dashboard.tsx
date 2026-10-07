@@ -602,11 +602,16 @@ export default function Dashboard() {
                       const extra = s.extras || 0;
                       const shown = covered + extra;
                       const isNativeSpecials = !item.sonarr_id && s.season === 0;
-                      // Native S00 episode_count is a file snapshot that already
-                      // includes the unnumbered extras — adding extras would double
-// count. TMDB-backed totals are real episode lists,
-                        // so extras are additive there.
-                      const denom = isNativeSpecials ? Math.max(shown, total || 0) : total ? total + extra : shown;
+                      // Native S00 episode_count is nativeSpecialDenominator,
+                      // which already floors with covered+extras — so does
+                      // nativeSeasonDenominator for a native regular season.
+                      // Only Sonarr's episode_count is a bare list, where the
+                      // unnumbered extras are genuinely additive.
+                      const denom = isNativeSpecials
+                        ? Math.max(shown, total || 0)
+                        : item.sonarr_id
+                          ? (total ? total + extra : shown)
+                          : (total || shown);
                       const label = s.request_id ? (denom ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : s.status === "COMPLETED" ? "in library" : "pending") : (denom > 0 ? `${shown}/${denom} EP` : shown > 0 ? `${shown} EP` : "—");
                       const nav = item.sonarr_id
                         ? (s.request_id ? () => navigate(`/requests/${s.request_id}`, { state: { back: `/managed/${item.sonarr_id}` } }) : undefined)

@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, fixMovieIdentity, retitleMovie, getIdentityCandidates, LANGUAGES } from "../api";
+import { fetchReleases, approveRelease, fetchTorrentStatuses, moveToProcessed, moveToWorkspace, moveToLibrary, removeFromLibrary, pauseTorrent, resumeTorrent, destroyRelease, fetchMoveStatus, fetchRequestProcessed, deleteProcessedFile, processedToWorkspace, fetchWorkspaces, scanProcessedDir, associateProcessedFiles, setFranchiseLanguage, getEpisodeOrders, setFranchiseEpisodeOrder, fixMovieIdentity, retitleMovie, getIdentityCandidates, LANGUAGES } from "../api";
 import { useToast } from "../components/Toast";
 import TorrentPanel from "../components/TorrentPanel";
 import WorkspacePickerModal from "../components/WorkspacePickerModal";
@@ -201,6 +201,10 @@ export default function RequestDetail() {
   // TMDB language for the canonical title — a movie carries the same per-library_key
   // preference a franchise does, it just had no control of its own.
   const [language, setLanguage] = useState<string>("");
+  // Episode-order options for a native series request (the show's per-library_key
+  // preference). Only loaded for series with a key — the endpoint 400s otherwise.
+  const [orderGroups, setOrderGroups] = useState<any[]>([]);
+  const [order, setOrder] = useState<string | null>(null);
   const [filterIndexer, setFilterIndexer] = useState("ALL");
   const [filterLanguage, setFilterLanguage] = useState("ALL");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
@@ -258,6 +262,21 @@ export default function RequestDetail() {
       const data = await fetchReleases(Number(id));
       setRequest(data);
       setLanguage(data.language || "");
+      if (data.type === "series" && data.library_key) {
+        try {
+          const od = await getEpisodeOrders(Number(id));
+          setOrderGroups(od?.groups || []);
+          setOrder(od?.current || null);
+        } catch {
+          // A failed listing just hides the selector — the order in force (if
+          // any) keeps applying server-side.
+          setOrderGroups([]);
+          setOrder(null);
+        }
+      } else {
+        setOrderGroups([]);
+        setOrder(null);
+      }
       setReleases(data.releases || []);
       setApprovedReleases(data.approved_releases || []);
       if (initial) setSearchTerm(data.title || "");
@@ -325,6 +344,18 @@ export default function RequestDetail() {
     } catch (e: any) {
       setLanguage(prev);
       toast(e?.response?.data?.error || "Could not set language", "error");
+    }
+  };
+
+  const handleOrder = async (value: string) => {
+    const prev = order;
+    setOrder(value || null);
+    try {
+      await setFranchiseEpisodeOrder(Number(id), value || null);
+      toast(value ? "Episode order changed" : "Using default aired order", "success");
+    } catch (e: any) {
+      setOrder(prev);
+      toast(e?.response?.data?.error || "Could not set episode order", "error");
     }
   };
 
@@ -879,6 +910,23 @@ export default function RequestDetail() {
                 <option value="">Default language</option>
                 {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
               </select>
+              {/* Series requests reach this page too (a single season's card),
+                  and the order pick is per library_key — hiding it here meant a
+                  show with multiple numbering orders could only be re-ordered
+                  from the franchise page. Hidden when the show has no groups
+                  (same rule as NativeFranchise) or for movies/arr rows. */}
+              {request.type === "series" && orderGroups.length > 0 && (
+                <select
+                  className="lang-select"
+                  value={order || ""}
+                  onChange={(e) => handleOrder(e.target.value)}
+                  title="Episode order (aired, production, DVD…) for this show — renumbers the episode grids under the picked order."
+                  style={{ marginLeft: 8, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0" }}
+                >
+                  <option value="">Aired order (default)</option>
+                  {orderGroups.map((g: any) => <option key={g.id} value={g.id}>{g.name || g.id}</option>)}
+                </select>
+              )}
             </>
           )}
         </div>
