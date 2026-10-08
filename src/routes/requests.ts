@@ -809,31 +809,6 @@ function contentAlreadyInLibrary(db: Database, request: any, contentRoot: string
   const own = mediaFilesOf(contentRoot);
   if (own.length === 0) return false;
 
-  const libRoots = libraryRootsForRequest(db, request);
-  if (libRoots.length === 0) return false;
-  const libFiles: MediaFileInfo[] = [];
-  for (const r of libRoots) libFiles.push(...mediaFilesOf(r));
-  if (libFiles.length === 0) return false;
-
-  const libInodes = new Set<number>();
-  for (const r of libRoots) for (const ino of mediaInodesOf(r)) libInodes.add(ino);
-  for (const ino of mediaInodesOf(contentRoot)) {
-    if (libInodes.has(ino)) return true;
-  }
-
-  // Fallback: exact size + basename. The recovery engine already treats an
-  // exact byte length as a match, so this agrees with how the file was placed.
-  for (const f of own) {
-    if (f.size <= 0) continue;
-    if (libFiles.some((l) => l.size === f.size && l.leaf === f.leaf && l.ext === f.ext)) return true;
-  }
-  return false;
-}
-
-/** Resolve the library folder(s) that would hold this request's files. []
- *  means "no detection here" (arr-managed rows defer to Radarr/Sonarr). */
-function libraryRootsForRequest(db: Database, request: any): string[] {
-  if (!request) return [];
   const libRoots: string[] = [];
 
   if (request.type === "movie") {
@@ -861,211 +836,29 @@ function libraryRootsForRequest(db: Database, request: any): string[] {
       const seasonFolder = findExistingSeasonFolder(showFolder, seasonNum);
       if (seasonFolder) libRoots.push(seasonFolder);
     }
+  } else {
+    // Arr-managed rows defer to Radarr/Sonarr — no detection here.
+    return false;
   }
-  return libRoots;
-}
 
-interface RequestContentHit {
-  processedPath: string;
-  libraryPath: string;
-}
+  if (libRoots.length === 0) return false;
+  const libFiles: MediaFileInfo[] = [];
+  for (const r of libRoots) libFiles.push(...mediaFilesOf(r));
+  if (libFiles.length === 0) return false;
 
-/** Request-level "already in library": every processed file this request has
- *  ACCEPTED (approval_history associations, workspace outputs, registered
- *  identity rows) still exists under /Processed and has a counterpart in the
- *  library — same inode, same size, or exact basename. Unlike
- *  contentAlreadyInLibrary this never looks at a torrent's own bytes, which
- *  is the Hobbit case: a re-grabbed release (64.52 GB) whose library copy was
- *  imported separately (64.08 GB) fails every byte check while the request's
- *  own content demonstrably sits in the library. Returns the matched pair so
- *  status endpoints can show real paths, or null when not done. */
-function requestContentInLibrary(db: Database, request: any): RequestContentHit | null {
-  if (!request || !request.id) return null;
-  const type = request.type === "series" ? "series" : "movie";
-  const procRoot = getProcessedDir(type);
-  if (!procRoot || !fs.existsSync(procRoot)) return null;
-
-  // The names the panel itself treats as this request's content.
-  const names = new Set<string>();
-  try {
-    const approvals = db.prepare(
-      "SELECT processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'",
-    ).all(request.id) as any[];
-    for (const ah of approvals) {
-      try {
-        for (const n of JSON.parse(ah.processed_files)) {
-          if (typeof n === "string" && n) names.add(n);
-        }
-      } catch {}
-    }
-  } catch {}
-  try {
-    for (const ws of listWorkspaces(request.id, request.title || "")) {
-      for (const op of ws.metadata?.outputPaths || []) {
-        try {
-          if (fs.existsSync(op)) names.add(path.basename(op));
-        } catch {}
-      }
-    }
-  } catch {}
-  if (request.library_key) {
-    try {
-      for (const r of db.prepare(
-        "SELECT release_name FROM media_files WHERE library_key = ? AND release_name IS NOT NULL AND release_name != ''",
-      ).all(request.library_key) as any[]) {
-        if (r.release_name) names.add(r.release_name);
-      }
-    } catch {}
-  }
-  if (names.size === 0) return null;
-
-  // Resolve each accepted name under the processed root. Movies are flat;
-  // series entries may be "Show/Sxx/file.mkv" (relative) or a bare basename
-  // (per-file moves append the basename) — the latter needs one walk.
-  let byBasename: Map<string, string[]> | null = null;
-  const procFiles: { full: string; size: number; ino: number; base: string }[] = [];
-  const seen = new Set<string>();
-  const pushProc = (full: string) => {
-    try {
-      const st = fs.statSync(full);
-      if (!st.isFile()) return;
-      const key = `${st.dev}:${st.ino}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      procFiles.push({ full, size: st.size, ino: st.ino, base: path.basename(full) });
-    } catch {}
-  };
-  for (const n of names) {
-    const direct = path.join(procRoot, ...n.split(/[\\/]/));
-    if (fs.existsSync(direct)) {
-      pushProc(direct);
-      continue;
-    }
-    if (n.includes("/") || n.includes("\\")) continue;
-    if (!byBasename) {
-      byBasename = new Map<string, string[]>();
-      const walk = (dir: string) => {
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const e of entries) {
-          if (e.name.startsWith(".")) continue;
-          const full = path.join(dir, e.name);
-          if (e.isDirectory()) walk(full);
-          else if (e.isFile()) {
-            const list = byBasename!.get(e.name) || [];
-            list.push(full);
-            byBasename!.set(e.name, list);
-          }
-        }
-      };
-      walk(procRoot);
-    }
-    for (const full of byBasename.get(n) || []) pushProc(full);
-  }
-  if (procFiles.length === 0) return null;
-
-  const libRoots = libraryRootsForRequest(db, request);
-  if (libRoots.length === 0) return null;
   const libInodes = new Set<number>();
-  const libSizes = new Set<number>();
-  const libNames = new Set<string>();
-  for (const root of libRoots) {
-    const walk = (dir: string) => {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const e of entries) {
-        if (e.name.startsWith(".")) continue;
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          walk(full);
-        } else if (e.isFile()) {
-          try {
-            const st = fs.statSync(full);
-            libInodes.add(st.ino);
-            if (st.size > 0) libSizes.add(st.size);
-            libNames.add(e.name);
-          } catch {}
-        }
-      }
-    };
-    try {
-      if (fs.statSync(root).isFile()) {
-        const st = fs.statSync(root);
-        libInodes.add(st.ino);
-        if (st.size > 0) libSizes.add(st.size);
-        libNames.add(path.basename(root));
-        continue;
-      }
-    } catch {}
-    walk(root);
+  for (const r of libRoots) for (const ino of mediaInodesOf(r)) libInodes.add(ino);
+  for (const ino of mediaInodesOf(contentRoot)) {
+    if (libInodes.has(ino)) return true;
   }
 
-  // Every accepted processed file must have its library counterpart. The first
-  // one found is returned as the representative hit for path display.
-  let hit: RequestContentHit | null = null;
-  for (const pf of procFiles) {
-    const inLib = libInodes.has(pf.ino) || (pf.size > 0 && libSizes.has(pf.size)) || libNames.has(pf.base);
-    if (!inLib) return null;
-    if (!hit) {
-      let libraryPath = "";
-      const walk = (dir: string): boolean => {
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch {
-          return false;
-        }
-        for (const e of entries) {
-          if (e.name.startsWith(".")) continue;
-          const full = path.join(dir, e.name);
-          if (e.isDirectory()) {
-            if (walk(full)) return true;
-          } else if (e.isFile()) {
-            try {
-              const st = fs.statSync(full);
-              if (st.ino === pf.ino || (pf.size > 0 && st.size === pf.size) || e.name === pf.base) {
-                libraryPath = full;
-                return true;
-              }
-            } catch {}
-          }
-        }
-        return false;
-      };
-      for (const root of libRoots) {
-        if (fs.existsSync(root) && walk(root)) break;
-      }
-      hit = { processedPath: pf.full, libraryPath };
-    }
+  // Fallback: exact size + basename. The recovery engine already treats an
+  // exact byte length as a match, so this agrees with how the file was placed.
+  for (const f of own) {
+    if (f.size <= 0) continue;
+    if (libFiles.some((l) => l.size === f.size && l.leaf === f.leaf && l.ext === f.ext)) return true;
   }
-  return hit;
-}
-
-/** Content-is-done check for the tracker-recovery flow: a torrent's own bytes
- *  first (exact, covers files this request never recorded), then the
- *  request-level acceptance check (covers bytes that differ). */
-function requestOrContentInLibrary(db: Database, request: any, contentRoot?: string | null): RequestContentHit | null {
-  if (contentRoot && contentRoot !== "unknown") {
-    try {
-      if (contentAlreadyInLibrary(db, request, contentRoot)) {
-        // Content match: surface where the content itself lives, best-effort.
-        return { processedPath: "", libraryPath: "" };
-      }
-    } catch {}
-  }
-  try {
-    return requestContentInLibrary(db, request);
-  } catch {
-    return null;
-  }
+  return false;
 }
 
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
@@ -8586,11 +8379,11 @@ alreadyExtra = true;
         if (!liveTorrent) continue;
         let contentRoot = liveTorrent.content_path || "";
         if (contentRoot && !fs.existsSync(contentRoot)) contentRoot = fromQBittorrentPath(contentRoot);
-        if (!contentRoot || !fs.existsSync(contentRoot)) contentRoot = "";
+        if (!contentRoot || !fs.existsSync(contentRoot)) continue;
         const req = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(row.linkedRequest.request_id) as any;
         if (!req) continue;
         try {
-          if (requestOrContentInLibrary(db, req, contentRoot)) {
+          if (contentAlreadyInLibrary(db, req, contentRoot)) {
             db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
             row.linkedRequest.status = "COMPLETED";
             healed.push({ request_id: req.id, title: req.title });
@@ -8884,7 +8677,7 @@ alreadyExtra = true;
         requestRow = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(requestId);
         let contentRoot = torrent.content_path || root;
         if (!fs.existsSync(contentRoot)) contentRoot = fromQBittorrentPath(contentRoot);
-        if (requestRow && requestOrContentInLibrary(db, requestRow, contentRoot)) {
+        if (requestRow && contentAlreadyInLibrary(db, requestRow, contentRoot)) {
           inLibrary = true;
           if (requestRow.status === "DOWNLOADING" || requestRow.status === "SEEDING") {
             db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
@@ -10112,27 +9905,6 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
         }
       } catch {}
 
-      // The request's own accepted content may already sit in processed/library
-      // even when THIS torrent's bytes differ (a re-grabbed release or a muxed
-      // variant: 64.52 GB on disk vs a 64.08 GB library copy passes no inode /
-      // size / name check). The Move buttons exist to get the request's content
-      // there — when it already is, they must not be offered.
-      if ((!inLibrary || !inProcessed) && request) {
-        try {
-          const hit = requestContentInLibrary(db, request);
-          if (hit) {
-            if (!inLibrary) {
-              inLibrary = true;
-              if (!destPath && hit.libraryPath) destPath = hit.libraryPath;
-            }
-            if (!inProcessed) {
-              inProcessed = true;
-              if (!processedPath && hit.processedPath) processedPath = hit.processedPath;
-            }
-          }
-        } catch {}
-      }
-
       const _debug = {
         releaseId: release.release_id,
         releaseTitle: release.title,
@@ -10290,25 +10062,6 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
                   break;
                 }
               } catch {}
-            }
-          } catch {}
-        }
-
-        // Same request-level fallback as the singular endpoint: hide the Move
-        // controls when the request's accepted content is already in the library
-        // even though this torrent's bytes are a different release of it.
-        if ((!inLibrary || !inProcessed) && request) {
-          try {
-            const hit = requestContentInLibrary(db, request);
-            if (hit) {
-              if (!inLibrary) {
-                inLibrary = true;
-                if (!destPath && hit.libraryPath) destPath = hit.libraryPath;
-              }
-              if (!inProcessed) {
-                inProcessed = true;
-                if (!processedPath && hit.processedPath) processedPath = hit.processedPath;
-              }
             }
           } catch {}
         }
