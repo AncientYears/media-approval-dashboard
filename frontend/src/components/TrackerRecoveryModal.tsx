@@ -288,9 +288,9 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   }
 
   const allTrackers = scan?.trackers || [];
-  // Show rows still to restore, plus live+verified ones — a linked torrent that
-  // is live is the one a wrong link (cross-franchise match) can be fixed on.
-  const visible = allTrackers.filter((t) => !t.linkedRequest || (t.live && t.liveVerified));
+  // Restore = things to restore: only unlinked rows. Linked torrents live on
+  // the Torrents page, where their Re-link action belongs.
+  const visible = allTrackers.filter((t) => !t.linkedRequest);
   const orphans = scan?.orphans || [];
 
   return (
@@ -356,13 +356,8 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                         <span className={`tor-state ${st.cls}`}>{st.label}</span>
                         <div className="tracker-item-actions">
                           {t.live && t.liveVerified && (
-                            <button
-                              className="btn btn-small btn-primary"
-                              disabled={busy !== null}
-                              title={t.linkedRequest ? "Linked to a different request — re-check the match and move it if the name fits another request" : undefined}
-                              onClick={() => link(t)}
-                            >
-                              {t.linkedRequest ? "Re-link" : "Link to request"}
+                            <button className="btn btn-small btn-primary" disabled={busy !== null} onClick={() => link(t)}>
+                              Link to request
                             </button>
                           )}
                           {!t.live && (
@@ -379,9 +374,6 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                       </div>
                       <div className="tracker-name-row">
                         <span className="tracker-name" title={t.name}>{t.name}</span>
-                        {t.linkedRequest && (
-                          <span className="tracker-linked" title={t.linkedRequest.title}>request #{t.linkedRequest.request_id}</span>
-                        )}
                         <span className="tor-hash" title={t.infoHash}>{t.infoHash.slice(0, 12)}</span>
                       </div>
                       <div className="tracker-item-sub">

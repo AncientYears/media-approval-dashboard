@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchTorrents, torrentAction } from "../api";
+import { fetchTorrents, torrentAction, linkTrackerTorrent } from "../api";
 import { useToast } from "../components/Toast";
 import TrackerRecoveryModal from "../components/TrackerRecoveryModal";
 
@@ -160,6 +160,43 @@ export default function Torrents() {
     }
   }
 
+  // Mirror of the recovery modal's type guess — the link endpoint needs to know
+  // which download tree/library family to match against.
+  async function link(t: TorrentRow) {
+    setPending((p) => ({ ...p, [t.hash]: "link" }));
+    try {
+      const type = /\bS\d{1,2}(?:E\d|\b)|Se(zon)?\s*\d|(^|[.\-_ ])S\d{2}[.\-_ ]/i.test(t.name) ? "series" : "movie";
+      const res = await linkTrackerTorrent(t.hash, type);
+      if (res.linked) {
+        if (res.moved) {
+          toast(
+            `${t.name}: moved to #${res.linked.requestId} — was linked to #${res.moved.fromId} (${res.moved.fromTitle})`,
+            "success",
+          );
+        } else {
+          toast(
+            res.inLibrary
+              ? `${t.name}: linked to #${res.linked.requestId} — already in library, marked complete`
+              : `${t.name}: linked to request #${res.linked.requestId}`,
+            "success",
+          );
+        }
+        if (res.note) toast(`${t.name}: ${res.note}`, "error");
+      } else {
+        toast(`${t.name}: no matching request found`, "error");
+      }
+      load(true);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || err.message, "error");
+    } finally {
+      setPending((p) => {
+        const next = { ...p };
+        delete next[t.hash];
+        return next;
+      });
+    }
+  }
+
   async function doDelete() {
     if (!confirmDelete) return;
     const { hash, name } = confirmDelete;
@@ -248,21 +285,6 @@ export default function Torrents() {
                   <span className={`tor-state ${stateTone(t.state)}`}>{t.state || "—"}</span>
                   <span>{fmtMB(t.size)}</span>
                   <span>ratio {t.ratio.toFixed(2)}</span>
-                  <span>{t.linkedRequest ? `request #${t.linkedRequest.request_id}` : "unlinked"}</span>
-                  <span className="tor-hash" title={t.hash}>{t.hash.slice(0, 12)}</span>
-                </div>
-                <div className="tor-progress">
-                  <div className="tor-progress-track">
-                    <div
-                      className={`tor-progress-fill ${t.checking ? "tor-progress-check" : ""}`}
-                      style={{ width: `${Math.round((t.progress || 0) * 100)}%` }}
-                    />
-                  </div>
-                  <span className="tor-progress-label">
-                    {t.checking ? `checking… ${Math.round((t.progress || 0) * 100)}%` : `${Math.round((t.progress || 0) * 100)}%`}
-                  </span>
-                </div>
-                <div className="tor-sub">
                   {t.dlspeed > 0 && <span>↓ {fmtSpeed(t.dlspeed)}</span>}
                   {t.upspeed > 0 && <span>↑ {fmtSpeed(t.upspeed)}</span>}
                   {t.num_seeds > 0 && <span>{t.num_seeds} seeds</span>}
@@ -277,13 +299,30 @@ export default function Torrents() {
                       : ""}
                   </span>
                   <span>{fmtAge(t.added_on)} ago</span>
+                  <span className="tor-hash" title={t.hash}>{t.hash.slice(0, 12)}</span>
+                </div>
+                <div className="tor-progress">
+                  <div className="tor-progress-track">
+                    <div
+                      className={`tor-progress-fill ${t.checking ? "tor-progress-check" : ""}`}
+                      style={{ width: `${Math.round((t.progress || 0) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="tor-progress-label">
+                    {t.checking ? `checking… ${Math.round((t.progress || 0) * 100)}%` : `${Math.round((t.progress || 0) * 100)}%`}
+                  </span>
                 </div>
               </div>
               <div className="tor-actions">
                 {t.linkedRequest && (
                   <Link className="btn btn-small btn-library-ok" to={`/requests/${t.linkedRequest.request_id}`}>
-                    Open request
+                    Request #{t.linkedRequest.request_id}
                   </Link>
+                )}
+                {t.verified && !t.checking && (
+                  <button className="btn btn-small btn-primary" disabled={!!pending[t.hash]} onClick={() => link(t)}>
+                    {t.linkedRequest ? "Re-link" : "Link"}
+                  </button>
                 )}
                 <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "start")} disabled={!!pending[t.hash] || t.checking || !isStopped(t.state)}>
                   Start
