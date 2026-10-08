@@ -119,7 +119,17 @@ export default function Torrents() {
         ),
       );
       toast(`${name}: ${action}`, "success");
-      load(true);
+      if (action === "recheck") {
+        load(true);
+      } else {
+        // qBittorrent applies start/stop asynchronously, so an immediate
+        // refetch can still report the pre-action state and revert the
+        // optimistic update above — and with no poll left running (the
+        // checking poll stops once verification ends) the buttons would stay
+        // wrong until a manual Refresh. Hold `pending` until qBittorrent
+        // agrees (or a few seconds pass).
+        await converge(hash, action);
+      }
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
     } finally {
@@ -128,6 +138,26 @@ export default function Torrents() {
         delete next[hash];
         return next;
       });
+    }
+  }
+
+  // Poll until the torrent's fetched state reflects the action, so Start/Stop
+  // enable/disable from real qBittorrent state instead of a stale read.
+  async function converge(hash: string, action: "start" | "stop") {
+    const wanted = (t: TorrentRow) => (action === "stop" ? isStopped(t.state) : !isStopped(t.state));
+    for (let i = 0; i < 16; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      let list: TorrentRow[] = [];
+      try {
+        const data = await fetchTorrents();
+        list = data.torrents || [];
+      } catch {
+        return;
+      }
+      setRows(list);
+      setAnyChecking(list.some((t) => t.checking));
+      const t = list.find((r) => r.hash === hash);
+      if (!t || wanted(t)) return;
     }
   }
 
