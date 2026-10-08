@@ -11,6 +11,7 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { parseTorrentFile, type ParsedTorrent } from "./torrentMeta";
 import {
   DOWNLOADS_MOVIES,
@@ -179,10 +180,16 @@ export interface TorrentMatch {
 export interface TorrentPlan {
   infoHash: string;
   name: string;
+  /** info["name.utf-8"] — qBittorrent prefers it over `name` when both exist,
+   *  and some publishers ship a totally different string there (junk wrapper
+   *  names), which is the path it will look for on disk. */
+  nameUtf8: string | null;
   sourcePath: string;
   announce: string[];
   layout: ParsedTorrent["layout"];
   totalSize: number;
+  pieceLength: number;
+  firstPieceHash: Buffer | null;
   files: ParsedTorrent["files"];
   matches: TorrentMatch[];
   missing: TorrentMatch[];
@@ -306,10 +313,13 @@ export function planMatches(
     return {
       infoHash: t.infoHash,
       name: t.name,
+      nameUtf8: t.parsed.nameUtf8,
       sourcePath: t.sourcePath,
       announce: t.announce,
       layout: t.parsed.layout,
       totalSize: t.parsed.totalSize,
+      pieceLength: t.parsed.pieceLength,
+      firstPieceHash: t.parsed.firstPieceHash,
       files: t.parsed.files,
       matches,
       missing,
@@ -336,6 +346,119 @@ function hasSize(
  */
 export function contentDest(saveRoot: string, plan: TorrentPlan, torrentPath: string): string {
   return path.join(saveRoot, ...torrentPath.split("/"));
+}
+
+export interface ContentAlignment {
+  aligned: boolean;
+  linked: number;
+  detail?: string;
+}
+
+/** Does this file's first piece hash to what the torrent claims? null = cannot
+ *  decide (no hash, unreadable, empty file) — the caller treats null as "do not
+ *  touch what is already there". */
+function firstPieceMatches(file: string, plan: TorrentPlan): boolean | null {
+  if (!plan.firstPieceHash || plan.pieceLength <= 0) return null;
+  let fd: number | null = null;
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile()) return false;
+    const n = Math.min(plan.pieceLength, st.size);
+    if (n <= 0) return null;
+    fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(n);
+    let got = 0;
+    while (got < n) {
+      const r = fs.readSync(fd, buf, got, n - got, got);
+      if (r <= 0) break;
+      got += r;
+    }
+    if (got !== n) return false;
+    return crypto.createHash("sha1").update(buf).digest().equals(plan.firstPieceHash);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+/**
+ * qBittorrent resolves info["name.utf-8"] over info.name when they differ, so
+ * some rips (a junk wrapper name — "[some.site] Title....avi.ts") make it look
+ * for the content under a path we never placed. Make the path qBittorrent will
+ * actually read resolve to OUR files: hardlink each entry there (never copy,
+ * never rename the real download-tree file — the plain name is the one the
+ * request/UI expects). A file already sitting at qBittorrent's path is kept
+ * only when its first piece hashes correctly; otherwise it is a stale leftover
+ * from an earlier bad attempt and is replaced. Returns aligned:false with a
+ * detail string when anything could not be aligned, so the route can report it.
+ */
+export function alignQbitContentPath(plan: TorrentPlan, expectedContent: string, actualContent: string): ContentAlignment {
+  const out: ContentAlignment = { aligned: false, linked: 0 };
+  try {
+    if (path.resolve(actualContent) === path.resolve(expectedContent)) {
+      out.aligned = true;
+      return out;
+    }
+    if (!fs.existsSync(expectedContent)) {
+      out.detail = `expected content not found at "${expectedContent}"`;
+      return out;
+    }
+    const targets: { src: string | null; dst: string }[] = [];
+    if (plan.layout === "single") {
+      targets.push({ src: expectedContent, dst: actualContent });
+    } else {
+      for (const m of plan.matches) {
+        const rel = m.torrentPath.includes("/") ? m.torrentPath.slice(m.torrentPath.indexOf("/") + 1) : m.torrentPath;
+        targets.push({ src: m.sourcePath, dst: path.join(actualContent, ...rel.split("/")) });
+      }
+    }
+    const sameInode = (a: string, b: string): boolean => {
+      try {
+        const sa = fs.statSync(a);
+        const sb = fs.statSync(b);
+        return sa.dev === sb.dev && sa.ino === sb.ino;
+      } catch {
+        return false;
+      }
+    };
+    for (const t of targets) {
+      if (fs.existsSync(t.dst)) {
+        if (!t.src) continue;
+        if (sameInode(t.src, t.dst)) continue;
+        const ok = firstPieceMatches(t.dst, plan);
+        if (ok === true) continue;
+        if (ok === null) {
+          out.detail = `cannot verify existing "${t.dst}" and it is not our file`;
+          return out;
+        }
+        try {
+          fs.unlinkSync(t.dst);
+        } catch (err: any) {
+          out.detail = `stale file at "${t.dst}" could not be removed (${err.code || err.message})`;
+          return out;
+        }
+      }
+      try {
+        fs.mkdirSync(path.dirname(t.dst), { recursive: true });
+        if (t.src) fs.linkSync(t.src, t.dst);
+        else fs.writeFileSync(t.dst, "");
+      } catch (err: any) {
+        out.detail = `link "${t.dst}" failed (${err.code || err.message})`;
+        return out;
+      }
+      out.linked++;
+    }
+    out.aligned = true;
+    return out;
+  } catch (err: any) {
+    out.detail = err.code || err.message;
+    return out;
+  }
 }
 
 export interface PlaceEntry {

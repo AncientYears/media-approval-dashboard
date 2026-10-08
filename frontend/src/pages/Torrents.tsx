@@ -282,7 +282,7 @@ export default function Torrents() {
               <div className="tor-actions">
                 {t.linkedRequest && (
                   <Link className="btn btn-small btn-library-ok" to={`/requests/${t.linkedRequest.request_id}`}>
-                    Request #{t.linkedRequest.request_id}
+                    Open request
                   </Link>
                 )}
                 <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "start")} disabled={!!pending[t.hash] || t.checking || !isStopped(t.state)}>

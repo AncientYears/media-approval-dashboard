@@ -51,6 +51,7 @@ import {
   collectVideos,
   planMatches,
   placeFilesIntoDownload,
+  alignQbitContentPath,
   storeTrackers,
   torrentIsVerified,
   torrentIsChecking,
@@ -8574,7 +8575,12 @@ alreadyExtra = true;
         const expectedContent = path.join(toQBittorrentPath(saveRoot), plan.name);
         const actualContent = String(added.content_path || "");
         if (actualContent && path.resolve(actualContent) !== path.resolve(expectedContent)) {
-          out.warn = `${out.warn ? out.warn + "; " : ""}qBittorrent expects "${actualContent}" but content was placed at "${expectedContent}" — rename the torrent in qBittorrent to "${plan.name}", otherwise the recheck will verify the wrong file`;
+          const aligned = alignQbitContentPath(plan, expectedContent, actualContent);
+          if (aligned.aligned) {
+            if (aligned.linked > 0) out.contentAligned = aligned.linked;
+          } else {
+            out.warn = `${out.warn ? out.warn + "; " : ""}qBittorrent looks for content at "${actualContent}" but it was placed at "${expectedContent}"${aligned.detail ? ` — ${aligned.detail}` : ""} — the recheck will not see the file`;
+          }
         }
 
         // Missing sidecar files (nfo/txt/jpg…) cannot be fabricated — the piece
@@ -8683,10 +8689,51 @@ alreadyExtra = true;
         return res.status(409).json({ error: "Torrent content is not fully verified — refusing to link", progress: torrent.progress, state: torrent.state });
       }
       const root = type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
-      const existing = db.prepare("SELECT rc.request_id, mr.title FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash = ?").get(hash) as any;
-      let requestId: number = 0;
-      if (existing) {
-        requestId = existing.request_id;
+      const existingRows = db
+        .prepare(
+          "SELECT rc.id AS rc_id, rc.request_id, mr.title FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash = ?",
+        )
+        .all(hash) as { rc_id: number; request_id: number; title: string }[];
+      let requestId = 0;
+      let moved: { fromId: number; fromTitle: string } | null = null;
+      let note: string | null = null;
+      if (existingRows.length > 0) {
+        // Re-parent instead of reusing a wrong link: a torrent whose name
+        // contradicts the request it is linked to (cross-franchise matches —
+        // Mufasa's card holding The Lion King 1994's torrent) is moved onto the
+        // request the name actually matches, and its approval row follows.
+        const wrong: typeof existingRows = [];
+        for (const r of existingRows) {
+          const owner = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(r.request_id) as any;
+          if (owner && nameContradictsRequest(db, owner, torrent.name || "")) wrong.push(r);
+        }
+        if (wrong.length > 0) {
+          const pn = parseTorrentName(torrent.name || "");
+          const season = type === "series" && pn.season != null ? pn.season : null;
+          const best = findBestRequestForDownload(db, torrent.name || "", type, season);
+          if (best) {
+            const alreadyOnBest = existingRows.some((r) => r.request_id === best.id);
+            for (const r of wrong) {
+              if (alreadyOnBest) {
+                db.prepare("DELETE FROM approval_history WHERE release_id = ?").run(r.rc_id);
+                db.prepare("DELETE FROM release_candidates WHERE id = ?").run(r.rc_id);
+              } else {
+                db.prepare("UPDATE approval_history SET request_id = ? WHERE release_id = ?").run(best.id, r.rc_id);
+                db.prepare("UPDATE release_candidates SET request_id = ? WHERE id = ?").run(best.id, r.rc_id);
+              }
+            }
+            moved = { fromId: wrong[0].request_id, fromTitle: wrong[0].title };
+            requestId = best.id;
+            console.log(
+              `[Trackers] Re-homed ${torrent.name} (${hash.slice(0, 8)}) from request #${moved.fromId} to #${best.id} — the torrent name contradicts the old owner`,
+            );
+          } else {
+            requestId = wrong[0].request_id;
+            note = `the torrent name contradicts linked request #${requestId} and no better match was found — left linked`;
+          }
+        } else {
+          requestId = existingRows[0].request_id;
+        }
       } else {
         const linked = linkTorrentToRequest(db, torrent, torrent.name, type, root);
         if (!linked) {
@@ -8737,9 +8784,11 @@ alreadyExtra = true;
         success: true,
         linked: {
           requestId,
-          title: requestRow?.title || existing?.title || null,
-          existing: !!existing,
+          title: requestRow?.title || existingRows[0]?.title || null,
+          existing: existingRows.length > 0 && !moved,
         },
+        moved,
+        note,
         inLibrary,
         trackerStored,
       });

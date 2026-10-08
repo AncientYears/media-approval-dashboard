@@ -19,6 +19,10 @@ export interface ParsedTorrent {
   infoHash: string;
   /** info.name, decoded as UTF-8. */
   name: string;
+  /** info["name.utf-8"], decoded. Publishers of some rips ship a DIFFERENT
+   *  name here than in `name`, and qBittorrent (libtorrent) prefers this one —
+   *  so it, not `name`, is what qBittorrent will look for on disk. */
+  nameUtf8: string | null;
   /** announce + announce-list, de-duplicated. */
   announce: string[];
   /** "single" = a bare file in the save path; "folder" = the files sit under <name>/ */
@@ -28,6 +32,9 @@ export interface ParsedTorrent {
   totalSize: number;
   /** Every file the torrent claims, including 0-length padding entries. */
   files: TorrentFileEntry[];
+  /** Raw 20-byte sha1 of the first piece — cheap ground truth for "does this
+   *  file on disk actually hold this torrent's data?". */
+  firstPieceHash: Buffer | null;
 }
 
 function asUtf8(latin1: string): string {
@@ -133,6 +140,8 @@ export function parseTorrentFile(buf: Buffer): ParsedTorrent {
   const info = top.info;
   const infoHash = crypto.createHash("sha1").update(rawInfo as unknown as Buffer).digest("hex");
   const name = asUtf8(String(info.name || ""));
+  const nameUtf8Raw = info["name.utf-8"];
+  const nameUtf8 = typeof nameUtf8Raw === "string" && nameUtf8Raw.length > 0 ? asUtf8(nameUtf8Raw) : null;
 
   const announce: string[] = [];
   const single = typeof top.announce === "string";
@@ -165,15 +174,19 @@ export function parseTorrentFile(buf: Buffer): ParsedTorrent {
   }
 
   const pieceLength = typeof info["piece length"] === "number" ? info["piece length"] : 0;
+  const piecesStr = typeof info.pieces === "string" ? info.pieces : "";
+  const firstPieceHash = piecesStr.length >= 20 ? Buffer.from(piecesStr.slice(0, 20), "latin1") : null;
 
   return {
     infoHash,
     name,
+    nameUtf8,
     announce,
     layout: isFolder ? "folder" : "single",
     pieceLength,
     pieceCount: pieceLength > 0 ? Math.ceil(totalSize / pieceLength) : 0,
     totalSize,
     files,
+    firstPieceHash,
   };
 }

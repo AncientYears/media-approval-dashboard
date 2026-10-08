@@ -193,7 +193,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       const r = res.results?.[0];
       if (r?.ok) {
         toast(
-          `${t.name}: ${r.verified ? "added, verified" : "added, verifying"}${r.skippedFiles ? ` (skipping ${r.skippedFiles} missing sidecar file(s))` : ""}`,
+          `${t.name}: ${r.verified ? "added, verified" : "added, verifying"}${r.skippedFiles ? ` (skipping ${r.skippedFiles} missing sidecar file(s))` : ""}${r.contentAligned ? ` (linked ${r.contentAligned} file(s) to qBittorrent's path)` : ""}`,
           "success",
         );
         if (r.warn) toast(`${t.name}: ${r.warn}`, "error");
@@ -213,12 +213,20 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     try {
       const res = await linkTrackerTorrent(t.infoHash, types[t.infoHash] || t.typeGuess);
       if (res.linked) {
-        toast(
-          res.inLibrary
-            ? `${t.name}: linked to #${res.linked.requestId} — already in library, marked complete`
-            : `${t.name}: linked to request #${res.linked.requestId}`,
-          "success",
-        );
+        if (res.moved) {
+          toast(
+            `${t.name}: moved to #${res.linked.requestId} — was linked to #${res.moved.fromId} (${res.moved.fromTitle})`,
+            "success",
+          );
+        } else {
+          toast(
+            res.inLibrary
+              ? `${t.name}: linked to #${res.linked.requestId} — already in library, marked complete`
+              : `${t.name}: linked to request #${res.linked.requestId}`,
+            "success",
+          );
+        }
+        if (res.note) toast(`${t.name}: ${res.note}`, "error");
       } else {
         toast(`${t.name}: restored but no matching request found`, "error");
       }
@@ -280,7 +288,9 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   }
 
   const allTrackers = scan?.trackers || [];
-  const visible = allTrackers.filter((t) => !t.linkedRequest);
+  // Show rows still to restore, plus live+verified ones — a linked torrent that
+  // is live is the one a wrong link (cross-franchise match) can be fixed on.
+  const visible = allTrackers.filter((t) => !t.linkedRequest || (t.live && t.liveVerified));
   const orphans = scan?.orphans || [];
 
   return (
@@ -346,8 +356,13 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                         <span className={`tor-state ${st.cls}`}>{st.label}</span>
                         <div className="tracker-item-actions">
                           {t.live && t.liveVerified && (
-                            <button className="btn btn-small btn-primary" disabled={busy !== null} onClick={() => link(t)}>
-                              Link to request
+                            <button
+                              className="btn btn-small btn-primary"
+                              disabled={busy !== null}
+                              title={t.linkedRequest ? "Linked to a different request — re-check the match and move it if the name fits another request" : undefined}
+                              onClick={() => link(t)}
+                            >
+                              {t.linkedRequest ? "Re-link" : "Link to request"}
                             </button>
                           )}
                           {!t.live && (
@@ -364,6 +379,9 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                       </div>
                       <div className="tracker-name-row">
                         <span className="tracker-name" title={t.name}>{t.name}</span>
+                        {t.linkedRequest && (
+                          <span className="tracker-linked" title={t.linkedRequest.title}>request #{t.linkedRequest.request_id}</span>
+                        )}
                         <span className="tor-hash" title={t.infoHash}>{t.infoHash.slice(0, 12)}</span>
                       </div>
                       <div className="tracker-item-sub">
