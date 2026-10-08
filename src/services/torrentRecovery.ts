@@ -168,6 +168,12 @@ export interface TorrentMatch {
   unique: boolean;
   /** 0-based index in the torrent's file list (the id qBittorrent's filePrio takes). */
   fileIndex: number;
+  /** Set when no full-size copy exists anywhere BUT the file sits at its
+   *  expected download path — a partially-downloaded torrent writes pieces to
+   *  the final path, so the file exists at less than its full length. That is
+   *  "present, incomplete", not missing: qBittorrent resumes it, and it never
+   *  blocks a restore. */
+  partialPath?: string | null;
 }
 
 export interface TorrentPlan {
@@ -181,9 +187,11 @@ export interface TorrentPlan {
   matches: TorrentMatch[];
   missing: TorrentMatch[];
   coveredBytes: number;
-  /** True when no MEDIA file is missing. Missing sidecars (nfo/txt/jpg/…)
+  /** True when no MEDIA file is genuinely missing. Missing sidecars (nfo/txt/jpg/…)
    *  do not block a restore: they are skipped in qBittorrent (filePrio 0) so
-   *  the recheck can still reach 100% — the release seeds without them. */
+   *  the recheck can still reach 100% — the release seeds without them. A
+   *  partial file at its download path also does not block: qBittorrent
+   *  resumes it. */
   complete: boolean;
   /** Best-effort kind from the torrent name. The route lets the user override. */
   typeGuess: "movie" | "series";
@@ -207,10 +215,25 @@ function leaf(s: string): string {
   return path.basename(s).replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+/** Does the torrent's own layout already hold this file under a download root?
+ *  A partial download writes its pieces to the final path, so the file exists
+ *  there at less than full length — classified as partial, not missing. */
+function downloadPathIfExists(roots: RecoveryRoots, torrentPath: string): string | null {
+  for (const root of [roots.downloadMovies, roots.downloadTv]) {
+    if (!root) continue;
+    try {
+      const full = path.join(root, ...torrentPath.split("/"));
+      if (fs.statSync(full).isFile()) return full;
+    } catch {}
+  }
+  return null;
+}
+
 /** Match every saved tracker against the collected videos, each source used once. */
 export function planMatches(
   trackers: SavedTracker[],
   videos: VideoEntry[],
+  roots: RecoveryRoots = defaultRecoveryRoots(),
 ): TorrentPlan[] {
   // Order: torrents whose files already live in the download tree first — those
   // are the ones sitting in place, waiting for their torrent back. Stable-sort
@@ -244,7 +267,16 @@ export function planMatches(
       }
       const candidates = (bySize.get(f.length) || []).filter((v) => !used.has(`${v.dev}:${v.ino}`));
       if (candidates.length === 0) {
-        missing.push({ torrentPath, length: f.length, sourcePath: null, tree: "download", type: null, unique: false, fileIndex: fileIdx });
+        missing.push({
+          torrentPath,
+          length: f.length,
+          sourcePath: null,
+          tree: "download",
+          type: null,
+          unique: false,
+          fileIndex: fileIdx,
+          partialPath: downloadPathIfExists(roots, torrentPath),
+        });
         continue;
       }
       const ranked = [...candidates].sort((a, b) => {
@@ -282,7 +314,7 @@ export function planMatches(
       matches,
       missing,
       coveredBytes,
-      complete: missing.every((m) => !isMediaTorrentPath(m.torrentPath)),
+      complete: missing.every((m) => m.partialPath || !isMediaTorrentPath(m.torrentPath)),
       typeGuess: guessType(t.name),
     };
   });

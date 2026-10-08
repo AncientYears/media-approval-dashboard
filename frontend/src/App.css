@@ -3158,11 +3158,11 @@ body {
   font-weight: 500;
   color: var(--text);
   font-size: 0.8rem;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   min-width: 0;
   flex: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tracker-trees {
@@ -3202,11 +3202,6 @@ body {
   font-size: 0.78rem;
 }
 
-.tracker-hint {
-  color: #fcd34d;
-  font-size: 0.75rem;
-}
-
 .tracker-item-actions {
   display: flex;
   gap: 8px;
@@ -3225,6 +3220,10 @@ body {
 
 .tracker-missing-details.blocking > summary {
   color: #fbbf24;
+}
+
+.tracker-missing-details.partial > summary {
+  color: #93c5fd;
 }
 
 .tracker-missing-details.skippable > summary {
@@ -3257,10 +3256,10 @@ body {
 
 .tracker-missing-details li .miss-path {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   flex: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tracker-missing-details li .miss-size {
@@ -3276,6 +3275,11 @@ body {
 .tracker-missing-details li.miss-side .miss-path,
 .tracker-missing-details li.miss-side .miss-size {
   color: #94a3b8;
+}
+
+.tracker-missing-details li.miss-partial .miss-path,
+.tracker-missing-details li.miss-partial .miss-size {
+  color: #93c5fd;
 }
 
 .tracker-orphan {

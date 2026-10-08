@@ -8558,6 +8558,10 @@ alreadyExtra = true;
             length: m.length,
             media: isMediaTorrentPath(m.torrentPath),
             fileIndex: m.fileIndex,
+            partialPath: m.partialPath || null,
+            partialSize: m.partialPath
+              ? (() => { try { return fs.statSync(m.partialPath as string).size; } catch { return 0; } })()
+              : 0,
           })),
           live: !!liveTorrent,
           liveState: liveTorrent ? liveTorrent.state : null,
@@ -8724,7 +8728,7 @@ alreadyExtra = true;
           continue;
         }
         if (!plan.complete) {
-          const mediaMissing = plan.missing.filter((m) => isMediaTorrentPath(m.torrentPath)).length;
+          const mediaMissing = plan.missing.filter((m) => !m.partialPath && isMediaTorrentPath(m.torrentPath)).length;
           out.error = `Incomplete match — ${mediaMissing} media file(s) missing (sidecars like nfo/txt/jpg are skipped on restore; video files must exist)`;
           results.push(out);
           continue;

@@ -8,6 +8,11 @@ interface MissingFile {
   /** Video file — its absence blocks a restore. Sidecars (nfo/txt/jpg/…) are skipped instead. */
   media: boolean;
   fileIndex: number;
+  /** Non-null when the file sits at its expected download path but is not at
+   *  full length yet (a partially-downloaded torrent). Present, not missing. */
+  partialPath?: string | null;
+  /** Bytes currently on disk for a partial file. */
+  partialSize?: number;
 }
 
 interface TrackerRow {
@@ -65,8 +70,19 @@ function fmtBytes(v: number): string {
   return `${v} B`;
 }
 
-function mediaMissingCount(t: TrackerRow): number {
-  return t.missing.filter((m) => m.media).length;
+/** Media files that are genuinely absent — partials (present at their download
+ *  path, still incomplete) and sidecars do not block a restore. */
+function blockingMediaCount(t: TrackerRow): number {
+  return t.missing.filter((m) => m.media && !m.partialPath).length;
+}
+
+function partialCount(t: TrackerRow): number {
+  return t.missing.filter((m) => m.partialPath).length;
+}
+
+/** Absent entirely (excludes partials). */
+function absentCount(t: TrackerRow): number {
+  return t.missing.filter((m) => !m.partialPath).length;
 }
 
 /** Which trees satisfy the plan's files — "1 download · 2 library". */
@@ -96,10 +112,16 @@ function statusOf(t: TrackerRow): { label: string; cls: string } {
     return { label: `Verifying ${Math.round((t.liveProgress || 0) * 100)}%`, cls: "tor-state-check" };
   }
   if (t.live && t.liveVerified) return { label: "In qBittorrent · complete", cls: "tor-state-up" };
-  if (t.live) return { label: t.liveState || "In qBittorrent", cls: "tor-state-muted" };
+  if (t.live) {
+    const st = (t.liveState || "").toLowerCase();
+    if ((st.includes("dl") || st.includes("downloading")) && t.liveProgress != null && t.liveProgress < 1) {
+      return { label: `Downloading ${Math.round(t.liveProgress * 100)}%`, cls: "tor-state-muted" };
+    }
+    return { label: t.liveState || "In qBittorrent", cls: "tor-state-muted" };
+  }
   if (t.complete) return { label: "Ready to restore", cls: "tor-state-up" };
-  const media = mediaMissingCount(t);
-  return { label: media > 0 ? `${media} media file(s) missing` : `${t.missing.length} file(s) missing`, cls: "tor-state-err" };
+  const media = blockingMediaCount(t);
+  return { label: media > 0 ? `${media} media file(s) missing` : `${absentCount(t)} file(s) missing`, cls: "tor-state-err" };
 }
 
 export default function TrackerRecoveryModal({ onClose }: { onClose: () => void }) {
@@ -308,17 +330,21 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   const st = statusOf(t);
                   const isBusy = busy === t.infoHash || busy === `link-${t.infoHash}`;
                   const stopped = t.live || busy !== null;
-                  const mediaCount = mediaMissingCount(t);
-                  const present = t.fileCount - t.missing.length;
+                  const blocking = blockingMediaCount(t);
+                  const partials = partialCount(t);
+                  const ready = t.fileCount - t.missing.length;
                   const treeSummary = matchTreeSummary(t);
+                  const sideMissing = absentCount(t) - blocking;
+                  const summaryParts: string[] = [];
+                  if (blocking > 0) summaryParts.push(`${blocking} media missing — restore blocked`);
+                  if (sideMissing > 0) summaryParts.push(`${sideMissing} sidecar missing — skipped on restore`);
+                  if (partials > 0) summaryParts.push(`${partials} partially downloaded`);
+                  const detailCls = blocking > 0 ? "blocking" : partials > 0 && sideMissing === 0 ? "partial" : "skippable";
                   return (
                     <div className={`tracker-item ${isBusy ? "tracker-item-busy" : ""}`} key={t.infoHash}>
                       <div className="tracker-item-head">
                         <span className={`tor-state ${st.cls}`}>{st.label}</span>
                         <div className="tracker-item-actions">
-                          {t.live && !t.liveVerified && (
-                            <span className="tracker-hint">verifying…</span>
-                          )}
                           {t.live && t.liveVerified && (
                             <button className="btn btn-small btn-primary" disabled={busy !== null} onClick={() => link(t)}>
                               Link to request
@@ -352,23 +378,27 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                           <option value="series">Series</option>
                         </select>
                         <span>{fmtMB(t.totalSize / 1024 / 1024)}</span>
-                        <span>{present}/{t.fileCount} present</span>
+                        <span>{partials > 0 ? `${ready}/${t.fileCount} ready · ${partials} partial` : `${ready}/${t.fileCount} present`}</span>
                         {treeSummary && <span className="tracker-trees">found: {treeSummary}</span>}
                         <span>{t.announce.length} tracker(s)</span>
                         {t.storedTracker && <span className="badge tracker-badge" title={STORED_HINT}>stored</span>}
                       </div>
                       {t.missing.length > 0 && (
-                        <details className={`tracker-missing-details ${mediaCount > 0 ? "blocking" : "skippable"}`}>
-                          <summary>
-                            {mediaCount > 0
-                              ? `${mediaCount} media missing — restore blocked`
-                              : `${t.missing.length} sidecar missing — skipped on restore`}
-                          </summary>
+                        <details className={`tracker-missing-details ${detailCls}`}>
+                          <summary>{summaryParts.join(" · ")}</summary>
                           <ul>
                             {t.missing.map((m) => (
-                              <li key={m.torrentPath} className={m.media ? "miss-media" : "miss-side"} title={m.torrentPath}>
+                              <li
+                                key={m.torrentPath}
+                                className={m.partialPath ? "miss-partial" : m.media ? "miss-media" : "miss-side"}
+                                title={m.torrentPath}
+                              >
                                 <span className="miss-path">{m.torrentPath.split("/").pop()}</span>
-                                <span className="miss-size">{fmtBytes(m.length)}</span>
+                                <span className="miss-size">
+                                  {m.partialPath
+                                    ? `${fmtBytes(m.partialSize || 0)} / ${fmtBytes(m.length)}`
+                                    : fmtBytes(m.length)}
+                                </span>
                               </li>
                             ))}
                           </ul>
