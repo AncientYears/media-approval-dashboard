@@ -376,8 +376,14 @@ export interface StoredTracker {
   trackersJson: string;
 }
 
-/** Persist the recoverable tracker under TRACKERS_DIR/<infoHash>/ (the destroy-style shape). */
-export function storeTrackers(plan: TorrentPlan, sourceTorrentBytes: Buffer, roots: RecoveryRoots = defaultRecoveryRoots()): StoredTracker {
+/** Persist the recoverable tracker under TRACKERS_DIR/<infoHash>/ (the destroy-style shape).
+ *  Takes the narrow metadata shape so any caller that identified a saved tracker
+ *  can persist it without building a full match plan. */
+export function storeTrackers(
+  plan: Pick<TorrentPlan, "infoHash" | "name" | "announce" | "totalSize">,
+  sourceTorrentBytes: Buffer,
+  roots: RecoveryRoots = defaultRecoveryRoots(),
+): StoredTracker {
   const dir = path.join(roots.trackersDir || TRACKERS_DIR, plan.infoHash);
   fs.mkdirSync(dir, { recursive: true });
   const torrentFile = path.join(dir, `${sanitizeName(plan.name) || plan.infoHash}.torrent`);

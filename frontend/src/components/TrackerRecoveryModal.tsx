@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans } from "../api";
 import { useToast } from "./Toast";
 
@@ -39,6 +39,7 @@ interface ScanData {
   orphans: OrphanRow[];
   duplicates: { infoHash: string; sourcePath: string }[];
   parseErrors: { file: string; error: string }[];
+  healed?: { request_id: number; title: string }[];
 }
 
 function fmtMB(v: number): string {
@@ -47,8 +48,19 @@ function fmtMB(v: number): string {
   return gb >= 1 ? `${gb.toFixed(2)} GB` : `${Math.round(v)} MB`;
 }
 
-function shortHash(h: string): string {
-  return h.slice(0, 12);
+const TYPE_HINT =
+  "A .torrent carries no movie/series label of its own. This picks the destination " +
+  "(Movies vs Series download folder) and which requests are matched when linking. " +
+  "Guessed from the release name — a S01E01 makes it a Series.";
+
+function statusOf(t: TrackerRow): { label: string; cls: string } {
+  if (t.live && t.liveChecking) {
+    return { label: `Verifying ${Math.round((t.liveProgress || 0) * 100)}%`, cls: "tor-state-check" };
+  }
+  if (t.live && t.liveVerified) return { label: "In qBittorrent · complete", cls: "tor-state-up" };
+  if (t.live) return { label: t.liveState || "In qBittorrent", cls: "tor-state-muted" };
+  if (t.complete) return { label: "Ready to restore", cls: "tor-state-up" };
+  return { label: `${t.missing.length} file(s) missing`, cls: "tor-state-err" };
 }
 
 export default function TrackerRecoveryModal({ onClose }: { onClose: () => void }) {
@@ -56,11 +68,17 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [tab, setTab] = useState<"trackers" | "orphans">("trackers");
   const [types, setTypes] = useState<Record<string, "movie" | "series">>({});
   const [orphanPicks, setOrphanPicks] = useState<Set<string>>(new Set());
+  const [healNote, setHealNote] = useState<string | null>(null);
   const { toast } = useToast();
-  const busyRef = useRef<string | null>(null);
-  busyRef.current = busy;
+
+  useEffect(() => {
+    if (!healNote) return;
+    toast(healNote, "success");
+    setHealNote(null);
+  }, [healNote, toast]);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -68,6 +86,13 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       const data = await scanTrackers();
       setScan(data);
       setError("");
+      if (data.healed?.length) {
+        setHealNote(
+          data.healed.length === 1
+            ? `#${data.healed[0].request_id} (${data.healed[0].title}) is already in the library — marked complete`
+            : `${data.healed.length} linked requests are already in the library — marked complete`,
+        );
+      }
       setTypes((prev) => {
         const next = { ...prev };
         for (const t of data.trackers as TrackerRow[]) {
@@ -91,8 +116,8 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     load();
   }, [load]);
 
-  // Poll while the window is open and any tracker is still verifying — the
-  // restore step adds torrents that recheck, and the UI must track them live.
+  // Poll while any tracker is still verifying — a restore adds torrents that
+  // recheck, and the UI must track them live.
   useEffect(() => {
     const hasChecking = !!scan?.trackers.some((t) => t.liveChecking);
     if (!hasChecking) return;
@@ -106,7 +131,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       const res = await restoreTrackers([{ infoHash: t.infoHash, type: types[t.infoHash] || t.typeGuess }]);
       const r = res.results?.[0];
       if (r?.ok) {
-        toast(`${t.name}: added to qBittorrent (verifying)`, "success");
+        toast(`${t.name}: added, verifying`, "success");
         await load(true);
       } else {
         toast(`${t.name}: ${r?.error || "failed"}`, "error");
@@ -123,7 +148,12 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     try {
       const res = await linkTrackerTorrent(t.infoHash, types[t.infoHash] || t.typeGuess);
       if (res.linked) {
-        toast(`${t.name}: linked to request #${res.linked.requestId}`, "success");
+        toast(
+          res.inLibrary
+            ? `${t.name}: linked to #${res.linked.requestId} — already in library, marked complete`
+            : `${t.name}: linked to request #${res.linked.requestId}`,
+          "success",
+        );
       } else {
         toast(`${t.name}: restored but no matching request found`, "error");
       }
@@ -163,6 +193,11 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     }
   }
 
+  const allTrackers = scan?.trackers || [];
+  const visible = allTrackers.filter((t) => !t.linkedRequest);
+  const linkedCount = allTrackers.length - visible.length;
+  const orphans = scan?.orphans || [];
+
   return (
     <div className="modal-overlay" onClick={() => !busy && onClose()}>
       <div className="modal-box tracker-modal" onClick={(e) => e.stopPropagation()}>
@@ -170,139 +205,140 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
           Restore saved trackers
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
+        <div className="tracker-tabs">
+          <button className={`tracker-tab ${tab === "trackers" ? "active" : ""}`} onClick={() => setTab("trackers")}>
+            Saved trackers <span className="tracker-tab-count">{visible.length}</span>
+          </button>
+          <button className={`tracker-tab ${tab === "orphans" ? "active" : ""}`} onClick={() => setTab("orphans")}>
+            Download orphans <span className="tracker-tab-count">{orphans.length}</span>
+          </button>
+        </div>
         <div className="modal-body">
           {error && <div className="tor-error">{error}</div>}
           {loading && <div className="tor-empty">Scanning trackers vs download/processed/library…</div>}
-          {!loading && scan && (
-            <>
-              <div className="tracker-section">
-                <div className="tracker-section-title">
-                  Saved trackers ({scan.trackers.length})
-                  {scan.duplicates.length > 0 && (
-                    <span className="tracker-note">{scan.duplicates.length} duplicate .torrent file(s) collapsed</span>
-                  )}
-                  {scan.parseErrors.length > 0 && (
-                    <span className="tracker-note tracker-note-err">{scan.parseErrors.length} unreadable file(s)</span>
-                  )}
+
+          {!loading && scan && tab === "trackers" && (
+            <div className="tracker-section">
+              <div className="tracker-section-title">
+                Restore puts the files back into the download folder and re-adds the torrent paused for verification.
+                {linkedCount > 0 && <span className="tracker-note">{linkedCount} linked, hidden</span>}
+                {scan.duplicates.length > 0 && <span className="tracker-note">{scan.duplicates.length} duplicate(s)</span>}
+                {scan.parseErrors.length > 0 && <span className="tracker-note tracker-note-err">{scan.parseErrors.length} unreadable</span>}
+              </div>
+
+              {visible.length === 0 && (
+                <div className="tor-empty">
+                  {allTrackers.length === 0 ? "No saved trackers found." : "Every saved tracker is linked — nothing left to restore."}
                 </div>
+              )}
 
-                {scan.trackers.length === 0 && <div className="tor-empty">No trackers in {scan.trackers.length === 0 && "the Trackers directory"}.</div>}
-
-                <div className="tracker-list">
-                  {scan.trackers.map((t) => (
-                    <div className={`tracker-item ${busy === t.infoHash || busy === `link-${t.infoHash}` ? "tracker-item-busy" : ""}`} key={t.infoHash}>
+              <div className="tracker-list">
+                {visible.map((t) => {
+                  const st = statusOf(t);
+                  const isBusy = busy === t.infoHash || busy === `link-${t.infoHash}`;
+                  const stopped = t.live || busy !== null;
+                  return (
+                    <div className={`tracker-item ${isBusy ? "tracker-item-busy" : ""}`} key={t.infoHash}>
                       <div className="tracker-item-head">
+                        <span className={`tor-state ${st.cls}`}>{st.label}</span>
                         <span className="tracker-name" title={t.name}>{t.name}</span>
-                        <span className="tor-hash" title={t.infoHash}>{shortHash(t.infoHash)}</span>
+                        <span className="tor-hash" title={t.infoHash}>{t.infoHash.slice(0, 12)}</span>
+                        <div className="tracker-item-actions">
+                          {t.live && !t.liveVerified && (
+                            <span className="tracker-hint">verifying…</span>
+                          )}
+                          {t.live && t.liveVerified && (
+                            <button className="btn btn-small btn-primary" disabled={busy !== null} onClick={() => link(t)}>
+                              Link to request
+                            </button>
+                          )}
+                          {!t.live && (
+                            <button
+                              className="btn btn-small btn-primary"
+                              disabled={!t.complete || busy !== null}
+                              onClick={() => restore(t)}
+                            >
+                              Restore
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <div className="tracker-item-sub">
                         <select
                           className="tracker-type"
+                          title={TYPE_HINT}
                           value={types[t.infoHash] || t.typeGuess}
-                          disabled={t.live || busy !== null}
+                          disabled={stopped}
                           onChange={(e) => setTypes((p) => ({ ...p, [t.infoHash]: e.target.value as "movie" | "series" }))}
                         >
                           <option value="movie">Movie</option>
                           <option value="series">Series</option>
                         </select>
+                        <span>{fmtMB(t.totalSize / 1024 / 1024)}</span>
                         <span>
                           {t.complete
-                            ? `complete · ${t.fileCount} file(s)`
-                            : `${t.fileCount - t.missing.length}/${t.fileCount} files · missing ${t.missing.length}`}
+                            ? `${t.fileCount} file(s)`
+                            : `${t.fileCount - t.missing.length}/${t.fileCount} present`}
                         </span>
-                        <span>{fmtMB(t.totalSize / 1024 / 1024)}</span>
                         {t.storedTracker && <span className="badge tracker-badge">stored</span>}
-                        {t.live && (
-                          <span className={`tor-state ${t.liveChecking ? "tor-state-check" : t.liveVerified ? "tor-state-up" : "tor-state-muted"}`}>
-                            {t.liveChecking ? `checking ${Math.round((t.liveProgress || 0) * 100)}%` : t.liveState}
-                          </span>
-                        )}
-                      </div>
-                      {!t.live && !t.complete && t.missing.length > 0 && (
-                        <div className="tracker-missing" title={t.missing.join("\n")}>
-                          missing: {t.missing.slice(0, 3).join(", ")}{t.missing.length > 3 ? ` +${t.missing.length - 3}` : ""}
-                        </div>
-                      )}
-                      <div className="tracker-item-actions">
-                        {t.live ? (
-                          <>
-                            {t.liveVerified && !t.linkedRequest && (
-                              <button
-                                className="btn btn-small btn-primary"
-                                disabled={busy !== null}
-                                onClick={() => link(t)}
-                              >
-                                Link to request
-                              </button>
-                            )}
-                            {t.linkedRequest && (
-                              <span className="tracker-linked">linked to request #{t.linkedRequest.request_id}</span>
-                            )}
-                          </>
-                        ) : (
-                          <button
-                            className="btn btn-small btn-primary"
-                            disabled={!t.complete || busy !== null}
-                            onClick={() => restore(t)}
-                          >
-                            Restore
-                          </button>
+                        {t.missing.length > 0 && (
+                          <details className="tracker-missing-details">
+                            <summary>{t.missing.length} missing</summary>
+                            <ul>
+                              {t.missing.map((m) => (
+                                <li key={m}>{m}</li>
+                              ))}
+                            </ul>
+                          </details>
                         )}
                       </div>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!loading && scan && tab === "orphans" && (
+            <div className="tracker-section">
+              <div className="tracker-section-title">
+                One-time catch-all: download files with no torrent and no saved tracker get moved into /Processed.
+              </div>
+              {orphans.length === 0 && <div className="tor-empty">No orphaned download files.</div>}
+              {orphans.length > 0 && (
+                <div className="tracker-list">
+                  {orphans.map((o) => (
+                    <label className="tracker-item tracker-orphan" key={o.path}>
+                      <input type="checkbox" checked={orphanPicks.has(o.path)} onChange={() => toggleOrphan(o.path)} />
+                      <div className="tracker-orphan-info">
+                        <div className="tracker-name" title={o.path}>
+                          {o.name}
+                          {o.isDir && " /"}
+                        </div>
+                        <div className="tracker-item-sub">
+                          <span>{o.type}</span>
+                          <span>{fmtMB(o.sizeMb)}</span>
+                          {o.existsInProcessed && <span className="badge tracker-badge">already in processed</span>}
+                          {o.matchedRequest && <span className="tracker-linked">→ request #{o.matchedRequest.id}</span>}
+                        </div>
+                      </div>
+                    </label>
                   ))}
                 </div>
-              </div>
-
-              <div className="tracker-section">
-                <div className="tracker-section-title">
-                  Download orphans — no torrent, no saved tracker ({scan.orphans.length})
-                  <span className="tracker-note">one-time catch-all: files whose tracker is lost get captured into /Processed</span>
-                </div>
-                {scan.orphans.length === 0 && <div className="tor-empty">No orphaned download files.</div>}
-                {scan.orphans.length > 0 && (
-                  <>
-                    <div className="tracker-list">
-                      {scan.orphans.map((o) => (
-                        <label className="tracker-item tracker-orphan" key={o.path}>
-                          <input
-                            type="checkbox"
-                            checked={orphanPicks.has(o.path)}
-                            onChange={() => toggleOrphan(o.path)}
-                          />
-                          <div className="tracker-orphan-info">
-                            <div className="tracker-name" title={o.path}>
-                              {o.name}
-                              {o.isDir && " /"}
-                            </div>
-                            <div className="tracker-item-sub">
-                              <span>{o.type}</span>
-                              <span>{fmtMB(o.sizeMb)}</span>
-                              {o.existsInProcessed && <span className="badge tracker-badge">already in processed</span>}
-                              {o.matchedRequest && (
-                                <span className="tracker-linked">→ request #{o.matchedRequest.id}</span>
-                              )}
-                            </div>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                    <div className="tracker-orphan-actions">
-                      <button
-                        className="btn btn-small btn-secondary"
-                        disabled={busy !== null || orphanPicks.size === 0}
-                        onClick={moveSelectedOrphans}
-                      >
-                        Move selected ({orphanPicks.size}) to Processed
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </>
+              )}
+            </div>
           )}
         </div>
         <div className="modal-actions">
+          {tab === "orphans" && (
+            <button
+              className="btn btn-secondary"
+              disabled={busy !== null || orphanPicks.size === 0}
+              onClick={moveSelectedOrphans}
+            >
+              Move selected ({orphanPicks.size}) to Processed
+            </button>
+          )}
           <button className="btn btn-secondary" onClick={() => load()}>Re-scan</button>
           <button className="btn btn-primary" onClick={onClose}>Done</button>
         </div>

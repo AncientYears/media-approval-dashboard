@@ -735,6 +735,131 @@ function linkTorrentToRequest(db: Database, torrent: any, entryName: string, typ
   return match;
 }
 
+function mediaInodesOf(root: string): Set<number> {
+  if (!root || !fs.existsSync(root)) return new Set<number>();
+  try {
+    const st = fs.statSync(root);
+    if (st.isFile()) return new Set([st.ino]);
+  } catch {
+    return new Set();
+  }
+  return collectVideoInodes(root);
+}
+
+interface MediaFileInfo {
+  size: number;
+  leaf: string;
+  ext: string;
+}
+
+function leafOf(p: string): string {
+  return path.basename(p).replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Every video file under `root` (file or tree) with size + basename identity. */
+function mediaFilesOf(root: string): MediaFileInfo[] {
+  const out: MediaFileInfo[] = [];
+  if (!root || !fs.existsSync(root)) return out;
+  try {
+    const st = fs.statSync(root);
+    if (st.isFile()) {
+      if (VIDEO_FILE_RE.test(root)) {
+        out.push({ size: st.size, leaf: leafOf(root), ext: path.extname(root).toLowerCase() });
+      }
+      return out;
+    }
+  } catch {
+    return out;
+  }
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (VIDEO_FILE_RE.test(e.name)) {
+        try {
+          const st = fs.statSync(full);
+          out.push({ size: st.size, leaf: leafOf(full), ext: path.extname(full).toLowerCase() });
+        } catch {}
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/** True when any file under `contentRoot` already exists inside the request's
+ *  library folder(s). Primary signal is the inode (a hardlink chain through
+ *  download → processed → library keeps one inode), with an exact
+ *  size + basename fallback for content that reached the library via a copy —
+ *  because a false negative here costs the user a duplicate library copy when
+ *  they press "Move to Library". A torrent restored from library content
+ *  therefore marks the request COMPLETED immediately instead of leaving a
+ *  DOWNLOADING row whose "Move to Library" button would only answer
+ *  "already exists". */
+function contentAlreadyInLibrary(db: Database, request: any, contentRoot: string): boolean {
+  if (!request || !request.id || !contentRoot || !fs.existsSync(contentRoot)) return false;
+  const own = mediaFilesOf(contentRoot);
+  if (own.length === 0) return false;
+
+  const libRoots: string[] = [];
+
+  if (request.type === "movie") {
+    // Returns the matching "<Title> (Year)/" folder(s), or [MEDIA_MOVIES] for
+    // the flat movie library — either way the whole tree is scanned.
+    libRoots.push(...nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key));
+  } else if (request.type === "series" && request.library_key) {
+    const baseTitle = (request.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+    const seasonNum = request.season || 1;
+    let showFolder = path.join(MEDIA_TV, baseTitle);
+    if (!fs.existsSync(showFolder)) {
+      const want = normalizeFolder(baseTitle);
+      try {
+        for (const d of fs.readdirSync(MEDIA_TV)) {
+          const norm = normalizeFolder(d);
+          if (!norm) continue;
+          if (norm === want || (want.length >= 6 && norm.includes(want)) || (norm.length >= 6 && want.includes(norm))) {
+            showFolder = path.join(MEDIA_TV, d);
+            break;
+          }
+        }
+      } catch {}
+    }
+    if (fs.existsSync(showFolder)) {
+      const seasonFolder = findExistingSeasonFolder(showFolder, seasonNum);
+      if (seasonFolder) libRoots.push(seasonFolder);
+    }
+  } else {
+    // Arr-managed rows defer to Radarr/Sonarr — no detection here.
+    return false;
+  }
+
+  if (libRoots.length === 0) return false;
+  const libFiles: MediaFileInfo[] = [];
+  for (const r of libRoots) libFiles.push(...mediaFilesOf(r));
+  if (libFiles.length === 0) return false;
+
+  const libInodes = new Set<number>();
+  for (const r of libRoots) for (const ino of mediaInodesOf(r)) libInodes.add(ino);
+  for (const ino of mediaInodesOf(contentRoot)) {
+    if (libInodes.has(ino)) return true;
+  }
+
+  // Fallback: exact size + basename. The recovery engine already treats an
+  // exact byte length as a match, so this agrees with how the file was placed.
+  for (const f of own) {
+    if (f.size <= 0) continue;
+    if (libFiles.some((l) => l.size === f.size && l.leaf === f.leaf && l.ext === f.ext)) return true;
+  }
+  return false;
+}
+
 // Locate the native movie's library folder(s) under MEDIA_MOVIES, tolerating
 // localized titles and year suffixes (e.g. "Moana 2" → "Vaiana 2 (2026)").
 // Returns exact matches if any, otherwise fuzzy candidates, else [MEDIA_MOVIES].
@@ -8194,10 +8319,10 @@ alreadyExtra = true;
 
       const linkedByHash = new Map<string, any>();
       for (const r of db.prepare(
-        "SELECT rc.torrent_hash, rc.request_id, mr.title FROM release_candidates rc " +
+        "SELECT rc.torrent_hash, rc.request_id, mr.title, mr.status FROM release_candidates rc " +
         "JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash != ''"
       ).all() as any[]) {
-        linkedByHash.set(r.torrent_hash, { request_id: r.request_id, title: r.title });
+        linkedByHash.set(r.torrent_hash, { request_id: r.request_id, title: r.title, status: r.status });
       }
 
       const trackerRows = plans.map((p) => {
@@ -8230,6 +8355,32 @@ alreadyExtra = true;
           storedTracker: fs.existsSync(path.join(TRACKERS_DIR, p.infoHash)),
         };
       });
+
+      // Reconcile linked rows whose content is already in the library: the link
+      // flow detects this at link time, but a row linked before that detection
+      // existed (or via another path) would sit DOWNLOADING with a "Move to
+      // Library" button for a file that never left the library. Only a scan (an
+      // explicit reconciliation action) flips it, and only DOWNLOADING/SEEDING.
+      const healed: { request_id: number; title: string }[] = [];
+      for (const row of trackerRows) {
+        if (!row.linkedRequest) continue;
+        if (row.linkedRequest.status !== "DOWNLOADING" && row.linkedRequest.status !== "SEEDING") continue;
+        const liveTorrent = row.live ? torrents.find((t: any) => t.hash === row.infoHash) : null;
+        if (!liveTorrent) continue;
+        let contentRoot = liveTorrent.content_path || "";
+        if (contentRoot && !fs.existsSync(contentRoot)) contentRoot = fromQBittorrentPath(contentRoot);
+        if (!contentRoot || !fs.existsSync(contentRoot)) continue;
+        const req = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(row.linkedRequest.request_id) as any;
+        if (!req) continue;
+        try {
+          if (contentAlreadyInLibrary(db, req, contentRoot)) {
+            db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.id);
+            row.linkedRequest.status = "COMPLETED";
+            healed.push({ request_id: req.id, title: req.title });
+            console.log(`[Trackers] Scan: request #${req.id} (${req.title}) already in library → COMPLETED`);
+          }
+        } catch {}
+      }
 
       // Download orphans: entries with no live torrent and not claimed as the
       // restore source of any plan. These are who "link trackers to them, or
@@ -8281,6 +8432,7 @@ alreadyExtra = true;
         orphans,
         duplicates: scan.duplicates.map((d) => ({ infoHash: d.infoHash, sourcePath: d.sourcePath })),
         parseErrors: scan.errors,
+        healed,
       });
     } catch (error: any) {
       console.error("Error scanning trackers:", error);
@@ -8367,6 +8519,21 @@ alreadyExtra = true;
           out.warn = `tracker store failed: ${err.message}`;
         }
 
+        // The .torrent has now been moved into TRACKERS_DIR/<hash>/ (the store
+        // copy above). The loose duplicate sitting in the Trackers root is
+        // consumed, so remove it — otherwise it lingers as a phantom "saved
+        // tracker" forever. Only the root file is touched; a store copy inside
+        // a <hash>/ folder (or a re-restore from one) is never deleted.
+        let sourceCleaned = false;
+        if (storedDir && tracker.sourcePath && path.resolve(path.dirname(tracker.sourcePath)) === path.resolve(TRACKERS_DIR)) {
+          try {
+            fs.unlinkSync(tracker.sourcePath);
+            sourceCleaned = true;
+          } catch (err: any) {
+            out.warn = `${out.warn ? out.warn + "; " : ""}could not remove consumed tracker: ${err.message}`;
+          }
+        }
+
         console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — verifying, then link via POST /trackers/link`);
         results.push({
           ...out,
@@ -8376,6 +8543,7 @@ alreadyExtra = true;
           progress: added.progress,
           hash,
           storedTracker: storedDir,
+          sourceCleaned,
           placeResults: placeResults.map((r) => ({ dest: r.dest, status: r.status, detail: r.detail })),
         });
       }
@@ -8405,13 +8573,64 @@ alreadyExtra = true;
       }
       const root = type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
       const existing = db.prepare("SELECT rc.request_id, mr.title FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id WHERE rc.torrent_hash = ?").get(hash) as any;
+      let requestId: number = 0;
       if (existing) {
-        return res.json({ success: true, linked: { requestId: existing.request_id, title: existing.title, existing: true } });
+        requestId = existing.request_id;
+      } else {
+        const linked = linkTorrentToRequest(db, torrent, torrent.name, type, root);
+        if (!linked) {
+          return res.json({ success: true, linked: null, inLibrary: false });
+        }
+        requestId = linked.id;
       }
-      const linked = linkTorrentToRequest(db, torrent, torrent.name, type, root);
+
+      // The tracker is dealt with now: keep a durable copy in TRACKERS_DIR/<hash>/
+      // and consume the loose root .torrent it came from (if any), so the root
+      // drains as trackers are restored/linked instead of leaving duplicates.
+      let trackerStored = false;
+      try {
+        const saved = listSavedTrackers().trackers.find((t) => t.infoHash === hash);
+        if (saved && path.resolve(path.dirname(saved.sourcePath)) === path.resolve(TRACKERS_DIR)) {
+          const bytes = fs.readFileSync(saved.sourcePath);
+          storeTrackers(
+            { infoHash: saved.infoHash, name: saved.name, announce: saved.announce, totalSize: saved.parsed.totalSize },
+            bytes,
+          );
+          fs.unlinkSync(saved.sourcePath);
+          trackerStored = true;
+        }
+      } catch (err: any) {
+        console.warn(`[Trackers] Could not tidy tracker for ${hash}: ${err.message}`);
+      }
+
+      // A restored torrent often shares its inodes with the library it was
+      // recovered from, so "content already in library" is checked here rather
+      // than left for the user to discover via a "Move to Library" button that
+      // would only report back "already exists".
+      let inLibrary = false;
+      let requestRow: any = null;
+      try {
+        requestRow = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(requestId);
+        let contentRoot = torrent.content_path || root;
+        if (!fs.existsSync(contentRoot)) contentRoot = fromQBittorrentPath(contentRoot);
+        if (requestRow && contentAlreadyInLibrary(db, requestRow, contentRoot)) {
+          inLibrary = true;
+          if (requestRow.status === "DOWNLOADING" || requestRow.status === "SEEDING") {
+            db.prepare("UPDATE media_requests SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(requestId);
+            requestRow.status = "COMPLETED";
+          }
+        }
+      } catch {}
+
       res.json({
         success: true,
-        linked: linked ? { requestId: linked.id, title: linked.title, existing: !!linked.existing } : null,
+        linked: {
+          requestId,
+          title: requestRow?.title || existing?.title || null,
+          existing: !!existing,
+        },
+        inLibrary,
+        trackerStored,
       });
     } catch (error: any) {
       console.error("Error linking torrent:", error);

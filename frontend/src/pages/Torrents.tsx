@@ -67,6 +67,7 @@ export default function Torrents() {
   const [confirmDelete, setConfirmDelete] = useState<{ name: string; hash: string } | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
+  const [pending, setPending] = useState<Record<string, string>>({});
   const { toast } = useToast();
   const [anyChecking, setAnyChecking] = useState(false);
 
@@ -95,13 +96,38 @@ export default function Torrents() {
     return () => clearInterval(t);
   }, [load, anyChecking]);
 
+  const isStopped = (state: string) => {
+    const s = (state || "").toLowerCase();
+    return s.startsWith("stopped") || s.startsWith("paused");
+  };
+
   async function act(hash: string, name: string, action: "start" | "stop" | "recheck") {
+    setPending((p) => ({ ...p, [hash]: action }));
     try {
       await torrentAction(hash, action);
+      // React on the row immediately — the buttons must disable without
+      // waiting for the refresh round-trip to land.
+      setRows((prev) =>
+        prev.map((r) =>
+          r.hash === hash
+            ? {
+                ...r,
+                state: action === "stop" ? "stoppedDL" : action === "start" ? "downloading" : r.state,
+                checking: action === "recheck" ? true : r.checking,
+              }
+            : r,
+        ),
+      );
       toast(`${name}: ${action}`, "success");
       load(true);
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
+    } finally {
+      setPending((p) => {
+        const next = { ...p };
+        delete next[hash];
+        return next;
+      });
     }
   }
 
@@ -222,16 +248,16 @@ export default function Torrents() {
                     Request #{t.linkedRequest.request_id}
                   </Link>
                 )}
-                <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "start")} disabled={t.state.startsWith("uploading")}>
+                <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "start")} disabled={!!pending[t.hash] || t.checking || !isStopped(t.state)}>
                   Start
                 </button>
-                <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "stop")} disabled={t.state.startsWith("stopped") || t.state.startsWith("paused")}>
+                <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "stop")} disabled={!!pending[t.hash] || t.checking || isStopped(t.state)}>
                   Stop
                 </button>
-                <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "recheck")} disabled={t.checking}>
+                <button className="btn btn-small btn-secondary" onClick={() => act(t.hash, t.name, "recheck")} disabled={!!pending[t.hash] || t.checking}>
                   Recheck
                 </button>
-                <button className="btn btn-small btn-danger" onClick={() => { setDeleteFiles(false); setConfirmDelete({ name: t.name, hash: t.hash }); }}>
+                <button className="btn btn-small btn-danger" disabled={!!pending[t.hash]} onClick={() => { setDeleteFiles(false); setConfirmDelete({ name: t.name, hash: t.hash }); }}>
                   Delete
                 </button>
               </div>
