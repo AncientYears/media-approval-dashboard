@@ -211,6 +211,19 @@ export class QBittorrentService {
     await this.post("/api/v2/torrents/recheck", `hashes=${encodeURIComponent(hash)}`);
   }
 
+  /** Set the download priority of specific file indexes (0 = skip). qBittorrent
+   *  counts only *wanted* files toward 100%, so a restore that legitimately
+   *  lacks sidecar files (nfo/txt/jpg) can still recheck to verified by
+   *  dropping them out of the wanted set. `fileIndexes` are the 0-based
+   *  positions in the torrent's file list. */
+  async setFilePrio(hash: string, fileIndexes: number[], prio: number): Promise<void> {
+    if (fileIndexes.length === 0) return;
+    await this.post(
+      "/api/v2/torrents/filePrio",
+      `hash=${encodeURIComponent(hash)}&id=${fileIndexes.join(",")}&prio=${prio}`,
+    );
+  }
+
   async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
       await this.login();

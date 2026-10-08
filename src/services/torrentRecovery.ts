@@ -166,6 +166,8 @@ export interface TorrentMatch {
   tree: VideoEntry["tree"] | "zero";
   type: VideoEntry["type"] | null;
   unique: boolean;
+  /** 0-based index in the torrent's file list (the id qBittorrent's filePrio takes). */
+  fileIndex: number;
 }
 
 export interface TorrentPlan {
@@ -179,6 +181,9 @@ export interface TorrentPlan {
   matches: TorrentMatch[];
   missing: TorrentMatch[];
   coveredBytes: number;
+  /** True when no MEDIA file is missing. Missing sidecars (nfo/txt/jpg/…)
+   *  do not block a restore: they are skipped in qBittorrent (filePrio 0) so
+   *  the recheck can still reach 100% — the release seeds without them. */
   complete: boolean;
   /** Best-effort kind from the torrent name. The route lets the user override. */
   typeGuess: "movie" | "series";
@@ -186,6 +191,16 @@ export interface TorrentPlan {
 
 function guessType(name: string): "movie" | "series" {
   return /\bS\d{1,2}(?:E\d|\b)|Se(zon)?\s*\d|(^|[.\-_ ])S\d{2}[.\-_ ]/i.test(name) ? "series" : "movie";
+}
+
+const MEDIA_EXT_RE = /\.(mkv|mp4|avi|mov|ts|wmv|m2ts|mk3d|m4v|mpg|mpeg|vob|flv|webm|ogm|divx)$/i;
+
+/** Is this torrent-internal path a video file? Only a missing MEDIA file makes
+ *  a plan unrestorable — sidecars (.nfo/.txt/.srt/.jpg/…) are metadata the
+ *  release cannot be verified without, but seeding never needs them, so their
+ *  absence is reported (and skipped in qBittorrent) rather than blocking. */
+export function isMediaTorrentPath(p: string): boolean {
+  return MEDIA_EXT_RE.test(p);
 }
 
 function leaf(s: string): string {
@@ -220,15 +235,16 @@ export function planMatches(
     const missing: TorrentMatch[] = [];
     let coveredBytes = 0;
 
-    for (const f of t.parsed.files) {
+    for (let fileIdx = 0; fileIdx < t.parsed.files.length; fileIdx++) {
+      const f = t.parsed.files[fileIdx];
       const torrentPath = t.parsed.layout === "folder" ? `${t.parsed.name}/${f.path}` : f.path;
       if (f.length === 0) {
-        matches.push({ torrentPath, length: 0, sourcePath: null, tree: "zero", type: null, unique: true });
+        matches.push({ torrentPath, length: 0, sourcePath: null, tree: "zero", type: null, unique: true, fileIndex: fileIdx });
         continue;
       }
       const candidates = (bySize.get(f.length) || []).filter((v) => !used.has(`${v.dev}:${v.ino}`));
       if (candidates.length === 0) {
-        missing.push({ torrentPath, length: f.length, sourcePath: null, tree: "download", type: null, unique: false });
+        missing.push({ torrentPath, length: f.length, sourcePath: null, tree: "download", type: null, unique: false, fileIndex: fileIdx });
         continue;
       }
       const ranked = [...candidates].sort((a, b) => {
@@ -250,6 +266,7 @@ export function planMatches(
         tree: pick.tree,
         type: pick.type,
         unique: candidates.length === 1,
+        fileIndex: fileIdx,
       });
       coveredBytes += f.length;
     }
@@ -265,7 +282,7 @@ export function planMatches(
       matches,
       missing,
       coveredBytes,
-      complete: missing.length === 0 && coveredBytes >= t.parsed.totalSize,
+      complete: missing.every((m) => !isMediaTorrentPath(m.torrentPath)),
       typeGuess: guessType(t.name),
     };
   });

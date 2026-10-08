@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans } from "../api";
+import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans, removeDuplicateTrackers } from "../api";
 import { useToast } from "./Toast";
+
+interface MissingFile {
+  torrentPath: string;
+  length: number;
+  /** Video file — its absence blocks a restore. Sidecars (nfo/txt/jpg/…) are skipped instead. */
+  media: boolean;
+  fileIndex: number;
+}
 
 interface TrackerRow {
   infoHash: string;
@@ -13,7 +21,8 @@ interface TrackerRow {
   complete: boolean;
   coveredBytes: number;
   fileCount: number;
-  missing: string[];
+  missing: MissingFile[];
+  matches: { torrentPath: string; length: number; sourcePath: string | null; tree: string; unique: boolean }[];
   live: boolean;
   liveState: string | null;
   liveProgress: number | null;
@@ -48,10 +57,39 @@ function fmtMB(v: number): string {
   return gb >= 1 ? `${gb.toFixed(2)} GB` : `${Math.round(v)} MB`;
 }
 
+function fmtBytes(v: number): string {
+  if (v <= 0) return "0 B";
+  if (v >= 1024 * 1024 * 1024) return `${(v / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(1)} MB`;
+  if (v >= 1024) return `${Math.round(v / 1024)} KB`;
+  return `${v} B`;
+}
+
+function mediaMissingCount(t: TrackerRow): number {
+  return t.missing.filter((m) => m.media).length;
+}
+
+/** Which trees satisfy the plan's files — "1 download · 2 library". */
+function matchTreeSummary(t: TrackerRow): string {
+  const counts: Record<string, number> = {};
+  for (const m of t.matches || []) {
+    if (!m.sourcePath) continue;
+    counts[m.tree] = (counts[m.tree] || 0) + 1;
+  }
+  return ["download", "processed", "library"]
+    .filter((tree) => counts[tree])
+    .map((tree) => `${counts[tree]} ${tree}`)
+    .join(" · ");
+}
+
 const TYPE_HINT =
   "A .torrent carries no movie/series label of its own. This picks the destination " +
   "(Movies vs Series download folder) and which requests are matched when linking. " +
   "Guessed from the release name — a S01E01 makes it a Series.";
+
+const STORED_HINT =
+  "Tracker metadata is archived in Trackers/<hash>/ (.torrent + trackers.json). " +
+  "Restore still (re)creates any missing hardlinks — files already in place are left untouched.";
 
 function statusOf(t: TrackerRow): { label: string; cls: string } {
   if (t.live && t.liveChecking) {
@@ -60,7 +98,8 @@ function statusOf(t: TrackerRow): { label: string; cls: string } {
   if (t.live && t.liveVerified) return { label: "In qBittorrent · complete", cls: "tor-state-up" };
   if (t.live) return { label: t.liveState || "In qBittorrent", cls: "tor-state-muted" };
   if (t.complete) return { label: "Ready to restore", cls: "tor-state-up" };
-  return { label: `${t.missing.length} file(s) missing`, cls: "tor-state-err" };
+  const media = mediaMissingCount(t);
+  return { label: media > 0 ? `${media} media file(s) missing` : `${t.missing.length} file(s) missing`, cls: "tor-state-err" };
 }
 
 export default function TrackerRecoveryModal({ onClose }: { onClose: () => void }) {
@@ -131,7 +170,11 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       const res = await restoreTrackers([{ infoHash: t.infoHash, type: types[t.infoHash] || t.typeGuess }]);
       const r = res.results?.[0];
       if (r?.ok) {
-        toast(`${t.name}: added, verifying`, "success");
+        toast(
+          `${t.name}: added, verifying${r.skippedFiles ? ` (skipping ${r.skippedFiles} missing sidecar file(s))` : ""}`,
+          "success",
+        );
+        if (r.warn) toast(`${t.name}: ${r.warn}`, "error");
         await load(true);
       } else {
         toast(`${t.name}: ${r?.error || "failed"}`, "error");
@@ -193,9 +236,29 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     }
   }
 
+  // Same-hash .torrent copies beyond the surviving one: delete them so the
+  // saved-trackers list stops showing phantom duplicates. One copy per hash
+  // always remains (the keeper is never in the duplicates list).
+  async function removeDuplicates() {
+    if (!scan || scan.duplicates.length === 0) return;
+    setBusy("dupes");
+    try {
+      const res = await removeDuplicateTrackers();
+      const count = res.removed?.length || 0;
+      toast(
+        `Removed ${count} duplicate .torrent file(s)${res.errors?.length ? `, ${res.errors.length} failed` : ""}`,
+        res.errors?.length ? "error" : "success",
+      );
+      await load(true);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || err.message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const allTrackers = scan?.trackers || [];
   const visible = allTrackers.filter((t) => !t.linkedRequest);
-  const linkedCount = allTrackers.length - visible.length;
   const orphans = scan?.orphans || [];
 
   return (
@@ -221,8 +284,16 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
             <div className="tracker-section">
               <div className="tracker-section-title">
                 Restore puts the files back into the download folder and re-adds the torrent paused for verification.
-                {linkedCount > 0 && <span className="tracker-note">{linkedCount} linked, hidden</span>}
-                {scan.duplicates.length > 0 && <span className="tracker-note">{scan.duplicates.length} duplicate(s)</span>}
+                {scan.duplicates.length > 0 && (
+                  <button
+                    className="tracker-note tracker-note-btn"
+                    title="Same info hash saved more than once (.torrent duplicates). Deleting the extras keeps exactly one copy per torrent."
+                    disabled={busy !== null}
+                    onClick={removeDuplicates}
+                  >
+                    {scan.duplicates.length} duplicate(s) — remove
+                  </button>
+                )}
                 {scan.parseErrors.length > 0 && <span className="tracker-note tracker-note-err">{scan.parseErrors.length} unreadable</span>}
               </div>
 
@@ -237,12 +308,13 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   const st = statusOf(t);
                   const isBusy = busy === t.infoHash || busy === `link-${t.infoHash}`;
                   const stopped = t.live || busy !== null;
+                  const mediaCount = mediaMissingCount(t);
+                  const present = t.fileCount - t.missing.length;
+                  const treeSummary = matchTreeSummary(t);
                   return (
                     <div className={`tracker-item ${isBusy ? "tracker-item-busy" : ""}`} key={t.infoHash}>
                       <div className="tracker-item-head">
                         <span className={`tor-state ${st.cls}`}>{st.label}</span>
-                        <span className="tracker-name" title={t.name}>{t.name}</span>
-                        <span className="tor-hash" title={t.infoHash}>{t.infoHash.slice(0, 12)}</span>
                         <div className="tracker-item-actions">
                           {t.live && !t.liveVerified && (
                             <span className="tracker-hint">verifying…</span>
@@ -256,12 +328,17 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                             <button
                               className="btn btn-small btn-primary"
                               disabled={!t.complete || busy !== null}
+                              title={t.complete ? undefined : "Video files are missing on disk — see the missing list below"}
                               onClick={() => restore(t)}
                             >
                               Restore
                             </button>
                           )}
                         </div>
+                      </div>
+                      <div className="tracker-name-row">
+                        <span className="tracker-name" title={t.name}>{t.name}</span>
+                        <span className="tor-hash" title={t.infoHash}>{t.infoHash.slice(0, 12)}</span>
                       </div>
                       <div className="tracker-item-sub">
                         <select
@@ -275,23 +352,28 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                           <option value="series">Series</option>
                         </select>
                         <span>{fmtMB(t.totalSize / 1024 / 1024)}</span>
-                        <span>
-                          {t.complete
-                            ? `${t.fileCount} file(s)`
-                            : `${t.fileCount - t.missing.length}/${t.fileCount} present`}
-                        </span>
-                        {t.storedTracker && <span className="badge tracker-badge">stored</span>}
-                        {t.missing.length > 0 && (
-                          <details className="tracker-missing-details">
-                            <summary>{t.missing.length} missing</summary>
-                            <ul>
-                              {t.missing.map((m) => (
-                                <li key={m}>{m}</li>
-                              ))}
-                            </ul>
-                          </details>
-                        )}
+                        <span>{present}/{t.fileCount} present</span>
+                        {treeSummary && <span className="tracker-trees">found: {treeSummary}</span>}
+                        <span>{t.announce.length} tracker(s)</span>
+                        {t.storedTracker && <span className="badge tracker-badge" title={STORED_HINT}>stored</span>}
                       </div>
+                      {t.missing.length > 0 && (
+                        <details className={`tracker-missing-details ${mediaCount > 0 ? "blocking" : "skippable"}`}>
+                          <summary>
+                            {mediaCount > 0
+                              ? `${mediaCount} media missing — restore blocked`
+                              : `${t.missing.length} sidecar missing — skipped on restore`}
+                          </summary>
+                          <ul>
+                            {t.missing.map((m) => (
+                              <li key={m.torrentPath} className={m.media ? "miss-media" : "miss-side"} title={m.torrentPath}>
+                                <span className="miss-path">{m.torrentPath.split("/").pop()}</span>
+                                <span className="miss-size">{fmtBytes(m.length)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                     </div>
                   );
                 })}

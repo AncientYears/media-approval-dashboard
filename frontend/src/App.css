@@ -3091,6 +3091,26 @@ body {
   color: #64748b;
 }
 
+.tracker-note-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: #93c5fd;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tracker-note-btn:hover:not(:disabled) {
+  color: #bfdbfe;
+}
+
+.tracker-note-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .tracker-note-err {
   color: #fca5a5;
 }
@@ -3127,15 +3147,26 @@ body {
   flex-shrink: 0;
 }
 
+.tracker-name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
 .tracker-name {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   min-width: 0;
   flex: 1;
+}
+
+.tracker-trees {
+  color: #64748b;
 }
 
 .tracker-item-sub {
@@ -3190,7 +3221,14 @@ body {
 
 .tracker-missing-details > summary {
   cursor: pointer;
-  color: #fca5a5;
+}
+
+.tracker-missing-details.blocking > summary {
+  color: #fbbf24;
+}
+
+.tracker-missing-details.skippable > summary {
+  color: #94a3b8;
 }
 
 .tracker-missing-details[open] > summary {
@@ -3205,12 +3243,39 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .tracker-missing-details li {
-  color: #fca5a5;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  word-break: break-all;
+}
+
+.tracker-missing-details li .miss-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.tracker-missing-details li .miss-size {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+}
+
+.tracker-missing-details li.miss-media .miss-path,
+.tracker-missing-details li.miss-media .miss-size {
+  color: #fbbf24;
+}
+
+.tracker-missing-details li.miss-side .miss-path,
+.tracker-missing-details li.miss-side .miss-size {
+  color: #94a3b8;
 }
 
 .tracker-orphan {

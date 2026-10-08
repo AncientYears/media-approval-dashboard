@@ -537,3 +537,9 @@ export async function moveOrphans(items: { path: string; type: "movie" | "series
   const response = await api.post("/requests/trackers/orphans/move", { items });
   return response.data;
 }
+
+/** Delete the redundant same-hash .torrent copies the scan reports (one copy per hash always survives). */
+export async function removeDuplicateTrackers() {
+  const response = await api.post("/requests/trackers/duplicates/remove");
+  return response.data;
+}
