@@ -2949,15 +2949,10 @@ body {
   font-size: 0.75rem;
 }
 
-.tor-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
-}
-
 .tor-progress-track {
-  flex: 1;
+  flex: 1 1 140px;
+  min-width: 110px;
+  max-width: 480px;
   height: 6px;
   background: #0f172a;
   border-radius: 999px;

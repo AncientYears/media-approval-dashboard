@@ -273,7 +273,11 @@ export default function Torrents() {
         <div className="tor-empty">No torrents {rows.length === 0 ? "— qBittorrent is empty" : "match the filter"}.</div>
       ) : (
         <div className="tor-list">
-          {filtered.map((t) => (
+          {filtered.map((t) => {
+            // Floor to one decimal — a 99.9% torrent must never read 100%.
+            const pct = Math.floor((t.progress || 0) * 1000) / 10;
+            const pctText = pct >= 100 ? "100" : Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
+            return (
             <div className="tor-row" key={t.hash}>
               <div className="tor-main">
                 <div className="tor-title">
@@ -300,16 +304,14 @@ export default function Torrents() {
                   </span>
                   <span>{fmtAge(t.added_on)} ago</span>
                   <span className="tor-hash" title={t.hash}>{t.hash.slice(0, 12)}</span>
-                </div>
-                <div className="tor-progress">
                   <div className="tor-progress-track">
                     <div
                       className={`tor-progress-fill ${t.checking ? "tor-progress-check" : ""}`}
-                      style={{ width: `${Math.round((t.progress || 0) * 100)}%` }}
+                      style={{ width: `${pct}%` }}
                     />
                   </div>
                   <span className="tor-progress-label">
-                    {t.checking ? `checking… ${Math.round((t.progress || 0) * 100)}%` : `${Math.round((t.progress || 0) * 100)}%`}
+                    {t.checking ? `checking… ${pctText}%` : `${pctText}%`}
                   </span>
                 </div>
               </div>
@@ -338,7 +340,8 @@ export default function Torrents() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

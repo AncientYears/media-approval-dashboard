@@ -5591,7 +5591,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           hash: torrent.hash,
           name: torrent.name,
           state: torrent.state,
-          progress: Math.round(torrent.progress * 100),
+          progress: Math.floor(torrent.progress * 1000) / 10,
           dlspeed: torrent.dlspeed,
           upspeed: torrent.upspeed,
           uploaded: torrent.uploaded,
@@ -8629,19 +8629,35 @@ alreadyExtra = true;
 
         let sawChecking = false;
         let finalT: any = null;
-        for (let i = 0; i < 8; i++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          const t2 = await qbittorrent.getTorrentByHash(hash);
-          if (!t2) break;
-          finalT = t2;
-          if (torrentIsChecking(t2.state || "")) {
-            sawChecking = true;
-            continue;
+        const pollRecheck = async () => {
+          let seen = false;
+          for (let i = 0; i < 8; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const t2 = await qbittorrent.getTorrentByHash(hash);
+            if (!t2) break;
+            finalT = t2;
+            if (torrentIsChecking(t2.state || "")) {
+              seen = true;
+              continue;
+            }
+            if (seen || t2.progress === 1) break;
           }
-          if (sawChecking || t2.progress === 1) break;
+          return seen;
+        };
+        sawChecking = await pollRecheck();
+        // A fresh-add recheck occasionally wedges in qBittorrent: state stuck
+        // in checking at 0% forever (observed on a 3.4 GB single-file restore).
+        // One stop + recheck clears it — without this the restore returns
+        // silently while the torrent checks indefinitely.
+        if (finalT && torrentIsChecking(finalT.state || "")) {
+          sawChecking = true;
+          try { await qbittorrent.pauseTorrent(hash); } catch {}
+          await new Promise((r) => setTimeout(r, 1500));
+          try { await qbittorrent.recheck(hash); } catch {}
+          await pollRecheck();
         }
         if (finalT && !torrentIsChecking(finalT.state || "")) {
-          const pct = Math.round((finalT.progress || 0) * 100);
+          const pct = Math.floor((finalT.progress || 0) * 1000) / 10;
           if (finalT.progress === 1) {
             out.verified = true;
           } else if (sawChecking) {
@@ -8649,9 +8665,11 @@ alreadyExtra = true;
           } else {
             out.warn = `${out.warn ? out.warn + "; " : ""}recheck not observed (progress ${pct}%, state ${finalT.state}) — inspect the torrent in qBittorrent`;
           }
+        } else if (finalT) {
+          out.warn = `${out.warn ? out.warn + "; " : ""}recheck still stuck after a stop+retry — stop and recheck the torrent manually`;
         }
 
-        console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — ${out.verified ? "verified" : `state ${finalT?.state ?? added.state}, ${Math.round((finalT?.progress ?? added.progress ?? 0) * 100)}%`}, then link via POST /trackers/link`);
+        console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — ${out.verified ? "verified" : `state ${finalT?.state ?? added.state}, ${Math.floor((finalT?.progress ?? added.progress ?? 0) * 1000) / 10}%`}, then link via POST /trackers/link`);
         results.push({
           ...out,
           ok: true,
@@ -10021,7 +10039,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
         hash: torrent.hash,
         name: torrent.name,
         state: torrent.state,
-        progress: Math.round(torrent.progress * 100),
+        progress: Math.floor(torrent.progress * 1000) / 10,
         dlspeed: torrent.dlspeed,
         upspeed: torrent.upspeed,
         uploaded: torrent.uploaded,
@@ -10182,7 +10200,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
           hash: torrent.hash,
           name: torrent.name,
           state: torrent.state,
-          progress: Math.round(torrent.progress * 100),
+          progress: Math.floor(torrent.progress * 1000) / 10,
           dlspeed: torrent.dlspeed,
           upspeed: torrent.upspeed,
           uploaded: torrent.uploaded,
