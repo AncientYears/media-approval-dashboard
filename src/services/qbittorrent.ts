@@ -179,7 +179,7 @@ export class QBittorrentService {
     buffer: Buffer,
     filename: string,
     savePath?: string,
-    opts?: { paused?: boolean; skipCheck?: boolean; category?: string },
+    opts?: { paused?: boolean; skipCheck?: boolean; category?: string; rename?: string },
   ): Promise<void> {
     await this.ensureAuth();
     const form = new FormData();
@@ -187,6 +187,7 @@ export class QBittorrentService {
     if (savePath) form.append("savepath", savePath);
     if (opts?.category) form.append("category", opts.category);
     if (opts?.paused) form.append("paused", "true");
+    if (opts?.rename) form.append("rename", opts.rename);
     // skipCheck defaults to false = qBittorrent verifies the placed files.
     if (opts?.skipCheck) form.append("skip_checking", "true");
     try {

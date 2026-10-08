@@ -674,6 +674,7 @@ function findBestRequestForDownload(db: Database, name: string, type: string, se
     if (season != null && r.season != null && r.season !== season) continue;
     const mine = wantImdb ? requestImdbId(db, r) : null;
     if (wantImdb && mine && wantImdb !== mine) continue;
+    if (nameContradictsRequest(db, r, name)) continue;
     const rn = normalizeTitleForMatch(r.title);
     if (!rn || !titlesMatch(rn, want)) continue;
     let score = 0;
@@ -8530,16 +8531,29 @@ alreadyExtra = true;
         const saveRoot = type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
         const placeResults = placeFilesIntoDownload(plan, saveRoot);
         const failures = placeResults.filter((r) => r.status === "error" || r.status === "collision");
-        if (failures.length > 0) {
-          out.error = `Placement: ${failures.map((r) => `${r.dest} (${r.detail || r.status})`).join("; ")}`;
+        const mediaFailures = failures.filter((r) => isMediaTorrentPath(r.torrentPath));
+        const sideFailures = failures.filter((r) => !isMediaTorrentPath(r.torrentPath));
+        if (mediaFailures.length > 0) {
+          const permHint = mediaFailures.some((r) => /EACCES|EPERM/.test(r.detail || ""))
+            ? " — the app user needs write access to the destination directory"
+            : "";
+          out.error = `Placement: ${mediaFailures.map((r) => `${r.dest} (${r.detail || r.status})`).join("; ")}${permHint}`;
           out.placeResults = placeResults;
           results.push(out);
           continue;
         }
+        const placeSkipIdx: number[] = [];
+        if (sideFailures.length > 0) {
+          for (const r of sideFailures) {
+            const idx = plan.matches.find((m) => m.torrentPath === r.torrentPath)?.fileIndex;
+            if (idx != null && !placeSkipIdx.includes(idx)) placeSkipIdx.push(idx);
+          }
+          out.warn = `${out.warn ? out.warn + "; " : ""}${sideFailures.length} sidecar file(s) could not be placed (${sideFailures.map((r) => r.detail || r.status).join(", ")}) — skipping them in qBittorrent`;
+        }
 
         const bytes = fs.readFileSync(tracker.sourcePath);
         try {
-          await qbittorrent.addTorrentFile(bytes, path.basename(tracker.sourcePath), toQBittorrentPath(saveRoot), { paused: true });
+          await qbittorrent.addTorrentFile(bytes, path.basename(tracker.sourcePath), toQBittorrentPath(saveRoot), { paused: true, rename: plan.name });
         } catch (err: any) {
           out.error = `qBittorrent add failed: ${err.message}`;
           results.push(out);
@@ -8557,14 +8571,23 @@ alreadyExtra = true;
           continue;
         }
 
+        const expectedContent = path.join(toQBittorrentPath(saveRoot), plan.name);
+        const actualContent = String(added.content_path || "");
+        if (actualContent && path.resolve(actualContent) !== path.resolve(expectedContent)) {
+          out.warn = `${out.warn ? out.warn + "; " : ""}qBittorrent expects "${actualContent}" but content was placed at "${expectedContent}" — rename the torrent in qBittorrent to "${plan.name}", otherwise the recheck will verify the wrong file`;
+        }
+
         // Missing sidecar files (nfo/txt/jpg…) cannot be fabricated — the piece
         // hashes would never match — but they also never matter for seeding.
         // Drop them from qBittorrent's wanted set BEFORE the recheck: only
         // wanted files count toward 100%, so a release held "media only" still
         // rechecks to verified and can be linked.
-        const skipIdx = plan.missing
-          .filter((m) => m.length > 0 && !isMediaTorrentPath(m.torrentPath))
-          .map((m) => m.fileIndex);
+        const skipIdx = Array.from(new Set([
+          ...plan.missing
+            .filter((m) => m.length > 0 && !isMediaTorrentPath(m.torrentPath))
+            .map((m) => m.fileIndex),
+          ...placeSkipIdx,
+        ]));
         if (skipIdx.length > 0) {
           out.skippedFiles = skipIdx.length;
           try {
@@ -8598,13 +8621,37 @@ alreadyExtra = true;
           }
         }
 
-        console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — verifying, then link via POST /trackers/link`);
+        let sawChecking = false;
+        let finalT: any = null;
+        for (let i = 0; i < 8; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const t2 = await qbittorrent.getTorrentByHash(hash);
+          if (!t2) break;
+          finalT = t2;
+          if (torrentIsChecking(t2.state || "")) {
+            sawChecking = true;
+            continue;
+          }
+          if (sawChecking || t2.progress === 1) break;
+        }
+        if (finalT && !torrentIsChecking(finalT.state || "")) {
+          const pct = Math.round((finalT.progress || 0) * 100);
+          if (finalT.progress === 1) {
+            out.verified = true;
+          } else if (sawChecking) {
+            out.warn = `${out.warn ? out.warn + "; " : ""}recheck stopped at ${pct}% (${finalT.state}) — content did not verify`;
+          } else {
+            out.warn = `${out.warn ? out.warn + "; " : ""}recheck not observed (progress ${pct}%, state ${finalT.state}) — inspect the torrent in qBittorrent`;
+          }
+        }
+
+        console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — ${out.verified ? "verified" : `state ${finalT?.state ?? added.state}, ${Math.round((finalT?.progress ?? added.progress ?? 0) * 100)}%`}, then link via POST /trackers/link`);
         results.push({
           ...out,
           ok: true,
           added: true,
-          state: added.state,
-          progress: added.progress,
+          state: finalT?.state ?? added.state,
+          progress: finalT?.progress ?? added.progress,
           hash,
           storedTracker: storedDir,
           sourceCleaned,

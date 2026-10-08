@@ -193,7 +193,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       const r = res.results?.[0];
       if (r?.ok) {
         toast(
-          `${t.name}: added, verifying${r.skippedFiles ? ` (skipping ${r.skippedFiles} missing sidecar file(s))` : ""}`,
+          `${t.name}: ${r.verified ? "added, verified" : "added, verifying"}${r.skippedFiles ? ` (skipping ${r.skippedFiles} missing sidecar file(s))` : ""}`,
           "success",
         );
         if (r.warn) toast(`${t.name}: ${r.warn}`, "error");

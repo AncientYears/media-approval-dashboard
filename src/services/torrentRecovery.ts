@@ -435,9 +435,30 @@ export function storeTrackers(
 ): StoredTracker {
   const dir = path.join(roots.trackersDir || TRACKERS_DIR, plan.infoHash);
   fs.mkdirSync(dir, { recursive: true });
-  const torrentFile = path.join(dir, `${sanitizeName(plan.name) || plan.infoHash}.torrent`);
-  const trackersJson = path.join(dir, "trackers.json");
+  let held: string[] = [];
+  try {
+    held = fs.readdirSync(dir)
+      .filter((e) => /\.torrent$/i.test(e))
+      .map((e) => path.join(dir, e));
+  } catch {}
+  let torrentFile = "";
+  for (const f of held) {
+    try {
+      if (parseTorrentFile(fs.readFileSync(f)).infoHash === plan.infoHash) {
+        torrentFile = f;
+        break;
+      }
+    } catch {}
+  }
+  if (!torrentFile) torrentFile = path.join(dir, `${sanitizeName(plan.name) || plan.infoHash}.torrent`);
   fs.writeFileSync(torrentFile, sourceTorrentBytes);
+  for (const f of held) {
+    if (f === torrentFile) continue;
+    try {
+      if (parseTorrentFile(fs.readFileSync(f)).infoHash === plan.infoHash) fs.unlinkSync(f);
+    } catch {}
+  }
+  const trackersJson = path.join(dir, "trackers.json");
   fs.writeFileSync(
     trackersJson,
     JSON.stringify(
