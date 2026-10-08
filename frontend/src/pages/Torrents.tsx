@@ -69,7 +69,6 @@ export default function Torrents() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [pending, setPending] = useState<Record<string, string>>({});
   const { toast } = useToast();
-  const [anyChecking, setAnyChecking] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -77,7 +76,6 @@ export default function Torrents() {
       const data = await fetchTorrents();
       setRows(data.torrents || []);
       setError("");
-      setAnyChecking((data.torrents || []).some((t: TorrentRow) => t.checking));
     } catch (err: any) {
       setError(err?.response?.data?.error || err.message);
     } finally {
@@ -89,12 +87,14 @@ export default function Torrents() {
     load();
   }, [load]);
 
-  // Poll while any torrent is verifying so rechecks resolve live.
+  // Poll continuously: qBittorrent transitions (start/stop, the restore flow's
+  // add → verify → stopped) outlast a single fetch, and with no poll the
+  // buttons and labels stayed wrong until a manual Refresh. Covers live
+  // recheck progress too.
   useEffect(() => {
-    if (!anyChecking) return;
-    const t = setInterval(() => load(true), 4000);
+    const t = setInterval(() => load(true), 3000);
     return () => clearInterval(t);
-  }, [load, anyChecking]);
+  }, [load]);
 
   const isStopped = (state: string) => {
     const s = (state || "").toLowerCase();
@@ -155,7 +155,6 @@ export default function Torrents() {
         return;
       }
       setRows(list);
-      setAnyChecking(list.some((t) => t.checking));
       const t = list.find((r) => r.hash === hash);
       if (!t || wanted(t)) return;
     }
@@ -268,7 +267,15 @@ export default function Torrents() {
                   {t.upspeed > 0 && <span>↑ {fmtSpeed(t.upspeed)}</span>}
                   {t.num_seeds > 0 && <span>{t.num_seeds} seeds</span>}
                   {t.num_leechs > 0 && <span>{t.num_leechs} peers</span>}
-                  <span>{t.num_seeds === 0 && t.num_leechs === 0 ? (t.verified ? "seeding" : "—") : ""}</span>
+                  <span>
+                    {t.num_seeds === 0 && t.num_leechs === 0
+                      ? isStopped(t.state)
+                        ? "stopped"
+                        : t.verified
+                          ? "seeding"
+                          : "—"
+                      : ""}
+                  </span>
                   <span>{fmtAge(t.added_on)} ago</span>
                 </div>
               </div>
