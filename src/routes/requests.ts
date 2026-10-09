@@ -10019,9 +10019,13 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       let inProcessed = false;
       let processedPath = "";
       try {
-        const baseProcTitle = (request?.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
+        // Resolve the processed season folder by identity, not by a naive title
+        // trim: a polluted row title ("Tajemnica Sagali 264-AL3X") fails the
+        // title fuzzy-match while the library side already resolved via the
+        // library_key's tvdb id - so in_processed stayed false and the panel
+        // offered "Move to Processed" for content already in the library.
         const procDir = request?.type === "series"
-          ? findSeasonFolder(baseProcTitle, request?.season || 1, libraryKeyYear(request?.library_key))
+          ? seasonFolderForLibraryKey(db, request?.library_key, cleanFranchiseTitle(request?.title || ""), request?.season || 1)
           : PROCESSED_MOVIES;
         if (procDir && fs.existsSync(procDir)) {
           for (const en of fs.readdirSync(procDir, { withFileTypes: true })) {
@@ -10133,9 +10137,8 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
         }
       } catch {}
 
-      const baseProcTitle = (request?.title || "").replace(/ S\d+$/, "").replace(/ Season \d+$/, "");
       const processedDirForReq = request?.type === "series"
-        ? findSeasonFolder(baseProcTitle, request?.season || 1, libraryKeyYear(request?.library_key))
+        ? seasonFolderForLibraryKey(db, request?.library_key, cleanFranchiseTitle(request?.title || ""), request?.season || 1)
         : PROCESSED_MOVIES;
 
       const results: any[] = [];
