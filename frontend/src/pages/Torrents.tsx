@@ -22,6 +22,7 @@ interface TorrentRow {
   content_path: string;
   verified: boolean;
   checking: boolean;
+  tracker?: string | null;
   hasStoredTracker: boolean;
   linkedRequest: { rc_id: number; title: string; request_id: number; status: string } | null;
 }
@@ -284,6 +285,7 @@ export default function Torrents() {
                   {t.name}
                   {t.verified && <span className="badge badge-in-library">verified</span>}
                   {t.hasStoredTracker && <span className="badge tor-badge-tracker">tracker</span>}
+                  {t.tracker && <span className="badge tor-badge-tracker" title="Announce source">{t.tracker}</span>}
                 </div>
                 <div className="tor-meta">
                   <span className={`tor-state ${stateTone(t.state)}`}>{t.state || "—"}</span>

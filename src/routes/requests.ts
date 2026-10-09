@@ -663,7 +663,7 @@ function processedDestForEntry(entryPath: string, type: string): { destDir: stri
 const TORRENT_DOWNLOADING_STATES = ["downloading", "forceddl", "queueddl", "pauseddl"];
 const TORRENT_SEEDING_STATES = ["uploading", "stalledup", "forcedup", "queuedup", "pausedup"];
 
-function findBestRequestForDownload(db: Database, name: string, type: string, season?: number | null): any | null {
+async function findBestRequestForDownload(db: Database, name: string, type: string, season?: number | null): Promise<any | null> {
   const want = normalizeTitleForMatch(name || "");
   if (!want) return null;
   const rows = db.prepare(
@@ -691,16 +691,43 @@ function findBestRequestForDownload(db: Database, name: string, type: string, se
       best = r;
     }
   }
+  // No word-overlap match, and the release name is often in a different
+  // language than the stored request title ("Asterix.et.Obelix.LEmpire.du.
+  // Milieu.2023 ..." vs the stored "Asterix & Obelix: The Middle Kingdom").
+  // Resolve the release name on TMDB and match by the resolved id against the
+  // offline tmdb_external_ids mapping. Movies only — a series' season rows
+  // share the show's title across releases, so the word matcher already covers
+  // that space, and TMDB union-search adds ambiguity without evidence.
+  if (!best && type === "movie") {
+    try {
+      const searchable = cleanFranchiseTitle(name.replace(/[_]/g, " ").replace(/\./g, " ")) || name;
+      const hits = (await searchTMDB(searchable, "movie")) || [];
+      for (const hit of hits) {
+        const idRow = db.prepare(
+          "SELECT library_key FROM tmdb_external_ids WHERE tmdb_id = ? AND media_type = 'movie' LIMIT 1"
+        ).get(hit.id) as any;
+        if (!idRow) continue;
+        const owned = rows.find((r) => r.library_key === idRow.library_key);
+        if (owned) {
+          best = owned;
+          bestScore = Number.MAX_SAFE_INTEGER;
+          break;
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[Link] TMDB fallback match failed for "${name}": ${err.message}`);
+    }
+  }
   return best;
 }
 
 // Link a torrent (already in qBittorrent) to the best-matching request by
 // creating a release_candidate + approval_history row, so the torrent panel and
 // version counts pick it up. Returns the linked request, or null when no match.
-function linkTorrentToRequest(db: Database, torrent: any, entryName: string, type: string, downloadRoot: string): any | null {
+async function linkTorrentToRequest(db: Database, torrent: any, entryName: string, type: string, downloadRoot: string): Promise<any | null> {
   const parsed = parseTorrentName((torrent && torrent.name) || entryName);
   const season = type === "series" ? (parsed.season != null ? parsed.season : null) : null;
-  const match = findBestRequestForDownload(db, (torrent && torrent.name) || entryName, type, season);
+  const match = await findBestRequestForDownload(db, (torrent && torrent.name) || entryName, type, season);
   if (!match) return null;
 
   const hash = torrent?.hash || "";
@@ -6452,7 +6479,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
 
       const items: any[] = [];
 
-      const scanRoot = (root: string, type: string) => {
+      const scanRoot = async (root: string, type: string) => {
         if (!fs.existsSync(root)) return;
         const procInodes = type === "movie" ? movieProcInodes : seriesProcInodes;
         for (const e of fs.readdirSync(root, { withFileTypes: true })) {
@@ -6494,7 +6521,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
 
           const parsed = parseTorrentName(e.name);
-          const matchedReq = findBestRequestForDownload(
+          const matchedReq = await findBestRequestForDownload(
             db,
             e.name,
             type,
@@ -6526,8 +6553,8 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         }
       };
 
-      scanRoot(DOWNLOADS_MOVIES, "movie");
-      scanRoot(DOWNLOADS_TV, "series");
+      await scanRoot(DOWNLOADS_MOVIES, "movie");
+      await scanRoot(DOWNLOADS_TV, "series");
 
       items.sort(
         (a, b) =>
@@ -6607,7 +6634,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const entryName = path.basename(entryPath);
             let linked: any = null;
             if (newTorrent) {
-              linked = linkTorrentToRequest(db, newTorrent, entryName, type, root);
+              linked = await linkTorrentToRequest(db, newTorrent, entryName, type, root);
             }
 
             results.push({
@@ -6633,7 +6660,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
               results.push({ path: entryPath, action, ok: false, error: "No live torrent found for this entry" });
               continue;
             }
-            const linked = linkTorrentToRequest(db, theTorrent, path.basename(entryPath), type, root);
+            const linked = await linkTorrentToRequest(db, theTorrent, path.basename(entryPath), type, root);
             results.push({
               path: entryPath,
               action,
@@ -8278,6 +8305,12 @@ alreadyExtra = true;
       ).all() as any[]) {
         linked.set(r.torrent_hash, { rc_id: r.rc_id, title: r.title, request_id: r.request_id, request_title: r.rc_title, status: r.status });
       }
+      const trackerLabels = new Map<string, string | null>();
+      await Promise.all(
+        torrents.map((t) =>
+          t.hash ? qbitTrackerLabel(t.hash).then((l) => trackerLabels.set(t.hash, l)) : Promise.resolve()
+        )
+      );
       const out = torrents.map((t) => ({
         hash: t.hash,
         name: t.name,
@@ -8297,6 +8330,7 @@ alreadyExtra = true;
         content_path: fromQBittorrentPath(t.content_path),
         verified: torrentIsVerified(t),
         checking: torrentIsChecking(t.state || ""),
+        tracker: t.hash ? trackerLabels.get(t.hash) ?? null : null,
         hasStoredTracker: t.hash ? fs.existsSync(path.join(TRACKERS_DIR, t.hash)) : false,
         linkedRequest: linked.get(t.hash) || null,
       }));
@@ -8433,7 +8467,7 @@ alreadyExtra = true;
       // restore source of any plan. These are who "link trackers to them, or
       // move to processed when no tracker exists" applies to.
       const orphans: any[] = [];
-      const scanOrphans = (root: string, rootType: string) => {
+      const scanOrphans = async (root: string, rootType: string) => {
         if (!fs.existsSync(root)) return;
         const relevantProc = rootType === "movie" ? PROCESSED_MOVIES : PROCESSED_TV;
         const procInodes = fs.existsSync(relevantProc) ? collectVideoInodes(relevantProc) : new Set<number>();
@@ -8452,7 +8486,7 @@ alreadyExtra = true;
           const inodes = collectVideoInodes(full);
           const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
           const parsed = parseTorrentName(e.name);
-          const matched = findBestRequestForDownload(
+          const matched = await findBestRequestForDownload(
             db,
             e.name,
             rootType,
@@ -8470,8 +8504,8 @@ alreadyExtra = true;
           });
         }
       };
-      scanOrphans(DOWNLOADS_MOVIES, "movie");
-      scanOrphans(DOWNLOADS_TV, "series");
+      await scanOrphans(DOWNLOADS_MOVIES, "movie");
+      await scanOrphans(DOWNLOADS_TV, "series");
       orphans.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
 
       res.json({
@@ -8807,7 +8841,7 @@ alreadyExtra = true;
         if (wrong.length > 0) {
           const pn = parseTorrentName(torrent.name || "");
           const season = type === "series" && pn.season != null ? pn.season : null;
-          const best = findBestRequestForDownload(db, torrent.name || "", type, season);
+          const best = await findBestRequestForDownload(db, torrent.name || "", type, season);
           if (best) {
             const alreadyOnBest = existingRows.some((r) => r.request_id === best.id);
             for (const r of wrong) {
@@ -8832,7 +8866,7 @@ alreadyExtra = true;
           requestId = existingRows[0].request_id;
         }
       } else {
-        const linked = linkTorrentToRequest(db, torrent, torrent.name, type, root);
+        const linked = await linkTorrentToRequest(db, torrent, torrent.name, type, root);
         if (!linked) {
           return res.json({ success: true, linked: null, inLibrary: false });
         }
@@ -10150,6 +10184,59 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
     }
   });
 
+  // Known private tracker hostnames -> friendly source labels. Unknown hosts
+  // fall back to their registrable-ish domain so any tracker still reads as a
+  // name. Used only for display, never for matching.
+  const TRACKER_LABELS: Array<[RegExp, string]> = [
+    [/digitalcore/i, "DigitalCore"],
+    [/yuscene|yus\.me|yus\.club|yus\.to/i, "YuScene"],
+    [/polish/i, "PolishTorrent"],
+    [/seedpool/i, "SeedPool"],
+    [/bajeczki/i, "Bajeczki"],
+    [/beyond[-_]?hd/i, "BeyondHD"],
+    [/blutopia/i, "Blutopia"],
+    [/torrentleech/i, "TorrentLeech"],
+    [/iptorrents/i, "IPTorrents"],
+    [/ncore/i, "NCore"],
+    [/hdtorrents/i, "HDTorrents"],
+  ];
+
+  function trackerSourceLabel(urls: Array<{ url: string; status?: string }> | undefined | null): string | null {
+    if (!urls || urls.length === 0) return null;
+    const labels = new Set<string>();
+    for (const t of urls) {
+      if (!t.url) continue;
+      let host = "";
+      try {
+        host = new URL(t.url).hostname.replace(/^www\./, "");
+      } catch {
+        host = t.url;
+      }
+      let matched: string | null = null;
+      for (const [re, label] of TRACKER_LABELS) {
+        if (re.test(host) || re.test(t.url)) {
+          matched = label;
+          break;
+        }
+      }
+      if (!matched) {
+        const parts = host.toLowerCase().split(".");
+        matched = parts.length >= 2 ? parts.slice(-2).join(".") : host;
+      }
+      labels.add(matched);
+    }
+    if (labels.size === 0) return null;
+    return [...labels].slice(0, 2).join(" + ");
+  }
+
+  async function qbitTrackerLabel(hash: string): Promise<string | null> {
+    try {
+      return trackerSourceLabel(await qbittorrent.getTrackers(hash));
+    } catch {
+      return null;
+    }
+  }
+
   // GET /api/requests/:id/torrent-statuses - Get live torrent status for ALL approved releases
   router.get("/:id/torrent-statuses", async (req: Request, res: Response) => {
     try {
@@ -10199,6 +10286,15 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
         : PROCESSED_MOVIES;
 
       const results: any[] = [];
+
+      // Resolve tracker source labels once per unique hash (parallel), so the
+      // per-release loop below never serialises N tracker API calls.
+      const trackerLabels = new Map<string, string | null>();
+      await Promise.all(
+        Array.from(new Set(releases.map((r) => r.torrent_hash).filter(Boolean))).map(async (hash) => {
+          trackerLabels.set(hash, await qbitTrackerLabel(hash));
+        })
+      );
 
       for (const release of releases) {
         if (!release.torrent_hash) {
@@ -10302,6 +10398,7 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
           num_leechs: torrent.num_leechs,
           added_on: torrent.added_on,
           completion_on: torrent.completion_on,
+          tracker: trackerLabels.get(release.torrent_hash) ?? null,
           _debug,
         });
       }

@@ -137,6 +137,14 @@ export default function TorrentPanel({
     }
   })() : null;
 
+  // "In Library" / "Move to Library" describe a single processed media file. For
+  // a release that is not a single video (a season pack, a BDMV disc, an
+  // archives set) the library state of ONE file says nothing about the rest, so
+  // those concepts are hidden and the tile stays processed-only until the user
+  // breaks it down there. Null contentInfo keeps the previous behaviour until
+  // the scan reports.
+  const processedOnly = !!contentInfo && contentInfo.type !== "video";
+
   return (
     <>
     <div className="torrent-panel">
@@ -192,6 +200,12 @@ export default function TorrentPanel({
               <span className="ts-label">Peers</span>
               <span className="ts-value"><span className="ts-seed">{ts.num_seeds}</span>/<span className="ts-leech">{ts.num_leechs + ts.num_seeds}</span></span>
             </div>
+            {ts.tracker && (
+              <div className="ts-item">
+                <span className="ts-label">Tracker</span>
+                <span className="ts-value" title="Announce source of this release">{ts.tracker}</span>
+              </div>
+            )}
             {ts.completion_on > 0 && (ts.state === "uploading" || ts.state === "stalledUP" || ts.state === "forcedUP" || ts.state === "queuedUP" || ts.state === "pausedUP") && (
               <div className="ts-item">
                 <span className="ts-label">Seeding</span>
@@ -219,7 +233,7 @@ export default function TorrentPanel({
                   {ts.content_path}
                 </span>
               </div>
-              {ts.in_library && (
+              {ts.in_library && !processedOnly && (
                 <div className="torrent-path-row">
                   <span className="path-label">Library:</span>
                   <span className="torrent-path path-exists" title="Click to copy" onClick={() => onCopyPath(ts.library_path)}>
@@ -283,7 +297,7 @@ export default function TorrentPanel({
                         {isMoving ? "Moving..." : "Move to Processed"}
                       </button>
                     )}
-                    {!ts?.in_library && (
+                    {!ts?.in_library && !processedOnly && (
                       <button className="btn btn-primary btn-tiny" onClick={() => onMoveToLibrary(ar.id)} disabled={isMoving}>
                         {isMoving ? "Moving..." : "Move to Library"}
                       </button>
