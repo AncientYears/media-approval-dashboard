@@ -12066,7 +12066,24 @@ const type = request.type === "series" ? "series" : "movie";
             if (found) showFolder = path.join(MEDIA_TV, found);
           }
           if (!fs.existsSync(showFolder)) {
-            return res.status(500).json({ error: "Could not locate library folder for this series" });
+            // Library show folder does not exist yet (a native show whose library
+            // was never populated). Create it instead of failing: the title match
+            // above already scanned MEDIA_TV and found nothing, so a fresh folder
+            // is the right outcome. Canonical name preferred so the library tree
+            // tracks the processed tree visually — resolveLibraryShowFolder finds
+            // it afterwards by the [tvdbid-####] embedded in the name.
+            let newShowDir = baseTitle;
+            try {
+              const packed = await fixNamesPieces(db, request, []);
+              const canonical = packed.pieces ? canonicalSeriesDir(loadNamingConf(db), packed.pieces) : null;
+              if (canonical) newShowDir = canonical;
+            } catch {}
+            showFolder = path.join(MEDIA_TV, newShowDir);
+            try {
+              fs.mkdirSync(showFolder, { recursive: true });
+            } catch (err: any) {
+              return res.status(500).json({ error: `Could not create library folder: ${err.message}` });
+            }
           }
           const seasonNum = request.season || 1;
           destFolder = findExistingSeasonFolder(showFolder, seasonNum) || path.join(showFolder, `S${String(seasonNum).padStart(2, "0")}`);
