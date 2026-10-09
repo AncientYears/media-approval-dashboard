@@ -2906,13 +2906,8 @@ body {
   padding: 8px 12px;
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
-  /* Height is content-driven today: a row whose meta line or action buttons
-     wrap (an active torrent carrying ↓/↑ speeds, seeders and the extra
-     Link/Request buttons) grows taller than an idle one, so the list looks
-     uneven. Give every card the same floor and center the content in it. */
-  min-height: 80px;
 }
 
 .tor-main {
@@ -2928,6 +2923,11 @@ body {
   gap: 8px;
   flex-wrap: wrap;
   word-break: break-word;
+  /* A long release name wraps to two lines while a short one stays on one, so
+     otherwise-identical cards came out different heights. Reserve two lines so
+     every card lines up; the single-line ones just carry slack below. */
+  line-height: 1.35;
+  min-height: 2.7em;
 }
 
 .tor-meta {
