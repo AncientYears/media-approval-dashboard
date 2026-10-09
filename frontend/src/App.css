@@ -3000,7 +3000,16 @@ body {
   gap: 4px;
   flex-wrap: wrap;
   justify-content: flex-end;
-  min-width: 120px;
+  /* Fixed width so the progress bar is identical on every row: buttons differ
+     per row (verified + linked rows carry Link/Request buttons), and a
+     content-width actions column shrank .tor-main (and the bar) for the ones
+     that had MORE buttons. A long name never had anything to do with it. */
+  flex: 0 0 320px;
+}
+
+@media (max-width: 820px) {
+  .tor-row { flex-wrap: wrap; }
+  .tor-actions { flex: 1 1 100%; justify-content: flex-start; }
 }
 
 .tor-delete-files {

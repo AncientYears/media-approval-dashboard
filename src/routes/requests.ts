@@ -8922,7 +8922,8 @@ alreadyExtra = true;
       // Get all approved releases
       const approvedRows = db.prepare(
         "SELECT rc.* FROM release_candidates rc " +
-        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? ORDER BY ah.approved_at DESC"
+        "JOIN approval_history ah ON ah.release_id = rc.id WHERE ah.request_id = ? " +
+        "GROUP BY rc.id ORDER BY MAX(ah.approved_at) DESC"
       ).all(id) as any[];
       const approved_releases = approvedRows.length > 0 ? parseReleases(approvedRows) : [];
       const approvedIds = new Set(approved_releases.map((r: any) => r.id));
@@ -12616,10 +12617,19 @@ const type = request.type === "series" ? "series" : "movie";
         });
       }
 
-      db.prepare(`
-        INSERT INTO approval_history (request_id, release_id, approved_by, approval_reason)
-        VALUES (?, ?, ?, ?)
-      `).run(id, releaseId, "web-user", reason || "");
+      // Re-approving an already-approved release (e.g. to retry a grab that
+      // never landed) must NOT add a second approval_history row. The read path
+      // joins approval_history -> release_candidates, so a duplicate made the
+      // release render twice and double-counted its size in the Dashboard.
+      const alreadyApproved = db.prepare(
+        "SELECT id FROM approval_history WHERE request_id = ? AND release_id = ? LIMIT 1"
+      ).get(id, releaseId) as any;
+      if (!alreadyApproved) {
+        db.prepare(`
+          INSERT INTO approval_history (request_id, release_id, approved_by, approval_reason)
+          VALUES (?, ?, ?, ?)
+        `).run(id, releaseId, "web-user", reason || "");
+      }
 
       const updateStmt = db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
       updateStmt.run("DOWNLOADING", id);

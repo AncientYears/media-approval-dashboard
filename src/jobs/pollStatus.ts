@@ -32,14 +32,14 @@ function extractSeasonFromTitle(title: string): number | null {
   return match ? parseInt(match[1], 10) : null;
 }
 
-function torrentMatchesTitle(torrentName: string, requestTitle: string): boolean {
+function torrentMatchesTitle(torrentName: string, requestTitle: string, requestSeason?: number | null): boolean {
   const tn = normalizeTitle(torrentName);
   const normTitle = normalizeTitle(requestTitle);
   if (tn === normTitle) return true;
 
   const torrentSeason = extractSeasonFromTitle(torrentName);
-  const requestSeason = extractSeasonFromTitle(requestTitle);
-  if (torrentSeason !== null && requestSeason !== null && torrentSeason !== requestSeason) {
+  const knownRequestSeason = requestSeason ?? extractSeasonFromTitle(requestTitle);
+  if (torrentSeason !== null && knownRequestSeason !== null && torrentSeason !== knownRequestSeason) {
     return false;
   }
 
@@ -96,7 +96,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
 
     try {
       const requests = db.prepare(
-        "SELECT id, title, status, type, updated_at FROM media_requests " +
+        "SELECT id, title, status, type, season, updated_at FROM media_requests " +
         "WHERE status IN ('DOWNLOADING', 'SEEDING', 'AWAITING_APPROVAL', 'SEARCHING')"
       ).all() as any[];
 
@@ -166,7 +166,7 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         }
 
         if (!requestsWithHashes.has(req.id) && torrents.length > 0) {
-          const match = torrents.find((t) => torrentMatchesTitle(t.name, req.title));
+          const match = torrents.find((t) => torrentMatchesTitle(t.name, req.title, req.season));
 
           if (match) {
             anyFound = true;

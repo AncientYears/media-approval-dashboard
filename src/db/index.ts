@@ -525,6 +525,70 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       } catch {}
     }
 
+    // Collapse duplicate approval_history rows for the same (request_id,
+    // release_id). Reads join approval_history -> release_candidates, so a
+    // release approved twice (re-approve after a grab that never landed) listed
+    // twice and its size was double-counted. Keep the earliest row per pair;
+    // release_id NULL is left alone — several null rows are legitimate.
+    try {
+      const dup = db.prepare(`
+        DELETE FROM approval_history
+        WHERE release_id IS NOT NULL
+          AND id NOT IN (
+            SELECT MIN(id) FROM approval_history
+            WHERE release_id IS NOT NULL
+            GROUP BY request_id, release_id
+          )
+      `).run();
+      if (dup.changes > 0) {
+        console.log(`[DB] Removed ${dup.changes} duplicate approval_history row(s)`);
+      }
+    } catch (err: any) {
+      console.error(`[DB] Could not dedupe approval_history rows: ${err.message}`);
+    }
+
+    // Drop cross-season auto-detected torrents. The status poller used to match
+    // a torrent to a request by TITLE only, and a bare show title ("Chicago
+    // P.D.") carries no season, so an S11 torrent was linked to the S12 request
+    // of the same franchise (the request that happened to have no torrent yet).
+    // A detected row whose parsed season contradicts its request's season column
+    // is a misdetection — remove it alongside its approval. Only fires when BOTH
+    // seasons are known and differ, so seasonless pack names are never touched.
+    try {
+      const detectedRows = db.prepare(
+        "SELECT rc.id, rc.request_id, rc.title FROM release_candidates rc " +
+        "INNER JOIN media_requests mr ON mr.id = rc.request_id " +
+        "WHERE rc.indexer = 'detected' AND mr.season IS NOT NULL"
+      ).all() as any[];
+      const seasonFromTitle = (t: string): number | null => {
+        const norm = (t || "")
+          .toLowerCase()
+          .replace(/[&]/g, "and")
+          .replace(/[:']/g, " ")
+          .replace(/[.\-_\[\]()]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const m = norm.match(/\bs(\d{1,2})(?:e\d|\b)/);
+        return m ? parseInt(m[1], 10) : null;
+      };
+      const wrong: number[] = [];
+      for (const rc of detectedRows) {
+        const reqSeason = db.prepare("SELECT season FROM media_requests WHERE id = ?").get(rc.request_id) as any;
+        const torrentSeason = seasonFromTitle(rc.title);
+        if (torrentSeason !== null && reqSeason?.season != null && torrentSeason !== reqSeason.season) {
+          wrong.push(rc.id);
+        }
+      }
+      if (wrong.length > 0) {
+        const held = wrong.map(() => "?").join(",");
+        db.prepare(`DELETE FROM approval_history WHERE release_id IN (${held})`).run(...wrong);
+        const del = db.prepare(`DELETE FROM release_candidates WHERE id IN (${held})`).run(...wrong);
+        console.log(`[DB] Removed ${del.changes} cross-season detected release_candidate row(s)`);
+      }
+    } catch (err: any) {
+      console.error(`[DB] Could not drop cross-season detected rows: ${err.message}`);
+    }
+
     // Drop season-cache rows written under an episode order BEFORE the
     // order-reconciliation existed: they still list an order-relocated special
     // under S00 (P&F's "The O.W.C.A. Files", which the Disney+ order files in
