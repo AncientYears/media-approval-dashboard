@@ -14,6 +14,7 @@ import {
   parseDirName,
 } from "../services/libraryScan";
 import { executeAdoption, planAdoption } from "../services/adopt";
+import { mergeDottedAbbreviations } from "../utils/dottedAbbrev";
 import { planLibraryImport, executeLibraryImport } from "../services/libraryImport";
 import { registerVideoTree, identifyByPath, autodetectIdentity, deriveIdentityFromFilename, embeddedIdContradicts, episodeNumsFromFilename } from "../services/identity";
 import { fetchTMDBSeason, fetchTMDBTVSeasons, cachedShowIdForKey, resolveShowIdentity,
@@ -93,13 +94,14 @@ function parseSeasonNumber(dirName: string): number | null {
 }
 
 function normalizeTitleForMatch(s: string): string {
-  return s.toLowerCase()
+  return mergeDottedAbbreviations(s.toLowerCase()
     .replace(/[&]/g, "and")
-    .replace(/[:']/g, " ")
+    .replace(/[:']/g, " "))
     // Dotted abbreviations ("P.D." -> "pd") must merge BEFORE the punctuation
     // sweep, or "Chicago P.D." normalizes to "chicago p d" — two single-letter
-    // words that never match a torrent's "Chicago PD".
-    .replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2")
+    // words that never match a torrent's "Chicago PD". Only isolated single
+    // letters are merged; a blanket merge collapses "Moana.2.2024" into a
+    // single token and stops "Moana 2" from matching its own release.
     .replace(/[.\-_\[\](){}!@#$%^+=|;<>?/\\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -2000,7 +2002,7 @@ function libraryFolderContradicts(db: Database, request: any, libraryPath: strin
  *
  *  Unknown on any signal returns false, so this can only ever exclude a file,
  *  never admit one. */
-function nameContradictsRequest(db: Database, request: any, base: string): boolean {
+export function nameContradictsRequest(db: Database, request: any, base: string): boolean {
   const mine = nameImdbId(base);
   // Scoped by role: an unnumbered special may legitimately carry another film's
   // id, so only a movie or a NUMBERED episode treats it as a contradiction.

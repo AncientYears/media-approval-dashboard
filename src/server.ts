@@ -5,7 +5,7 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import path from "path";
 import { initializeDatabase } from "./db/index";
-import { createRequestRoutes, titlesMatch, reconcileNativeKeys } from "./routes/requests";
+import { createRequestRoutes, reconcileNativeKeys, nameContradictsRequest } from "./routes/requests";
 import { RadarrService } from "./services/radarr";
 import { SonarrService } from "./services/sonarr";
 import { QBittorrentService } from "./services/qbittorrent";
@@ -116,9 +116,19 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
       if (fixed > 0) console.log(`[Startup] Fixed ${fixed} stale DOWNLOADING movies`);
     }
 
-    // Clean up stale release_candidates where hash doesn't match title
-        const withHashes = db.prepare(
-      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.title as req_title, mr.season as req_season, mr.sonarr_id, mr.radarr_id, rc.size_mb " +
+    // Clean up stale release_candidates. A hash the app itself recorded from a
+    // torrent that STILL EXISTS in qBittorrent is first-hand evidence of the
+    // link, so it is never deleted on fuzzy title evidence: request titles are
+    // short ("Moana 2") while release names are long
+    // ("Moana.2.2024.UHD.BluRay.2160p.TrueHD.Atmos.7.1.DV.HDR10P..."), so a
+    // word-overlap check misfired on perfectly valid grabs and wiped the RCs
+    // (and their approval_history rows) on every boot — the movies showed up
+    // "unlinked" on the Torrents page. The RCs removed here are only those
+    // whose torrent is GONE from qBittorrent, whose NAME contradicts the
+    // request's identity (embedded id / year veto), or which state a season
+    // the request does not seek.
+    const withHashes = db.prepare(
+      "SELECT rc.id as rc_id, rc.torrent_hash, rc.title as rc_title, mr.id as req_id, mr.title as req_title, mr.type as req_type, mr.season as req_season, mr.library_key as req_library_key, mr.sonarr_id, mr.radarr_id, rc.size_mb " +
       "FROM release_candidates rc JOIN media_requests mr ON mr.id = rc.request_id " +
       "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
     ).all() as any[];
@@ -126,29 +136,41 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
     if (withHashes.length > 0) {
       const torrents = await qbittorrent.getTorrents();
       const staleRcIds: { id: number; reason: string }[] = [];
-      for (const rc of withHashes) {
-        const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
-        if (!t) continue;
-        // Skip title check if linked to Sonarr/Radarr series — ID match is more reliable than string matching
-        if (rc.sonarr_id || rc.radarr_id) continue;
-        const tnRaw = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2").replace(/[.\-_\[\]()]/g, " ").trim();
-        const tn = tnRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
-        const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2").replace(/[.\-_\[\]()]/g, " ").trim();
-        const req = reqRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
-        const isMatch = titlesMatch(req, tn);
-        let reason = "";
-        if (!isMatch) {
-          reason = `title mismatch (is "${t.name}")`;
-        } else if (rc.req_season != null) {
-          const seasonStr = `S${String(rc.req_season).padStart(2, "0")}`;
-          const seasonRegex = new RegExp(`\\b${seasonStr}\\b`, 'i');
-          const anySeasonRegex = /\bS\d{1,2}\b/i;
-          if (anySeasonRegex.test(t.name) && !seasonRegex.test(t.name)) {
-            reason = `season mismatch (torrent lacks ${seasonStr})`;
+      // Only clean when qBittorrent actually reported torrents: an empty list
+      // means it is not up yet, not that every torrent vanished.
+      if (torrents.length > 0) {
+        for (const rc of withHashes) {
+          const t = torrents.find((x: any) => x.hash === rc.torrent_hash);
+          if (!t) {
+            // Search-time infoHashes (Prowlarr/Sonarr/Radarr results) that were
+            // never actually grabbed have no torrent here; neither do torrents
+            // the user removed from qBittorrent. Either way the link is dead.
+            // Cleaned at startup exactly as documented: "Removes RCs where
+            // torrent is gone from qBittorrent".
+            staleRcIds.push({ id: rc.rc_id, reason: "torrent gone from qBittorrent" });
+            continue;
           }
-        }
-        if (reason) {
-          staleRcIds.push({ id: rc.rc_id, reason });
+          // Skip identity check if linked to Sonarr/Radarr series — ID match is more reliable than string matching
+          if (rc.sonarr_id || rc.radarr_id) continue;
+          const requestRow = {
+            id: rc.req_id,
+            type: rc.req_type,
+            title: rc.req_title,
+            library_key: rc.req_library_key,
+            season: rc.req_season,
+          };
+          if (rc.req_type && nameContradictsRequest(db, requestRow, t.name || "")) {
+            staleRcIds.push({ id: rc.rc_id, reason: `name contradicts request identity (is "${t.name}")` });
+            continue;
+          }
+          if (rc.req_season != null) {
+            const seasonStr = `S${String(rc.req_season).padStart(2, "0")}`;
+            const seasonRegex = new RegExp(`\\b${seasonStr}\\b`, 'i');
+            const anySeasonRegex = /\bS\d{1,2}\b/i;
+            if (anySeasonRegex.test(t.name) && !seasonRegex.test(t.name)) {
+              staleRcIds.push({ id: rc.rc_id, reason: `season mismatch (torrent lacks ${seasonStr})` });
+            }
+          }
         }
       }
       if (staleRcIds.length > 0) {

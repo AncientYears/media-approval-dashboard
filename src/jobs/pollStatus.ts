@@ -1,20 +1,22 @@
 import { Database } from "better-sqlite3";
 import { QBittorrentService } from "../services/qbittorrent";
 import { parseQualityFromName } from "../utils/torrentParser";
+import { mergeDottedAbbreviations } from "../utils/dottedAbbrev";
 import { errorSummary } from "../utils/errorSummary";
 
 const DOWNLOADING_STATES = ["downloading", "forcedDL", "queuedDL", "pausedDL"];
 const SEEDING_STATES = ["uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP"];
 
 function normalizeTitle(s: string): string {
-  return s.toLowerCase()
+  return mergeDottedAbbreviations(s.toLowerCase()
     .replace(/[&]/g, "and")
-    .replace(/[:']/g, " ")
+    .replace(/[:']/g, " "))
     // Merge dotted abbreviations ("P.D." -> "pd") BEFORE the punctuation sweep,
     // or the letters become two length-1 words and "Chicago P.D." never matches
-    // the release's "Chicago PD". Both sides get the same treatment, so 5.1 and
-    // H.264 also collapse identically on either side of a compare.
-    .replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2")
+    // the release's "Chicago PD". Only isolated single letters are merged — a
+    // blanket merge would collapse "Moana.2.2024" / "The.Hobbit.The.Battle..."
+    // and break every dotted release name. Both sides get the same treatment,
+    // so 5.1 and H.264 collapse identically on either side of a compare.
     .replace(/[.\-_\[\]()]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
