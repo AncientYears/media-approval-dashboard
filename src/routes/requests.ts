@@ -4679,7 +4679,15 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
    *  "The Adventures of Puss in Boots", whose files were placed by hand while a
    *  panic wiped its request rows) must surface as a managed card instead of
    *  staying invisible in the pending list. Returns without touching the disk
-   *  as soon as SQL or identity settles it. */
+   *  as soon as SQL or identity settles it.
+   *
+   *  A bare COMPLETED status is NOT content. ensure-season ("Open Releases" on a
+   *  season pill) writes a dormant COMPLETED row with a NULL episode_count and no
+   *  files, so treating COMPLETED as evidence pinned a content-less franchise to
+   *  Managed forever (Chicago P.D. S1/S2, all 0/N). Genuine completions still
+   *  qualify through their torrent RC, processed_files bookkeeping, identity
+   *  rows or on-disk season folder below — DOWNLOADING/SEEDING stay because they
+   *  are in-flight and may briefly lack a hash. */
   function nativeSeriesHasContent(db: Database, libraryKey: string, franchiseTitle: string, extraShowDir?: string | null): boolean {
     if (
       db
@@ -4687,7 +4695,7 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           `SELECT 1 FROM media_requests
            WHERE type = 'series' AND library_key = ?
            AND (
-             status IN ('DOWNLOADING', 'SEEDING', 'COMPLETED')
+             status IN ('DOWNLOADING', 'SEEDING')
              OR EXISTS (
                SELECT 1 FROM release_candidates rc JOIN approval_history ah ON ah.release_id = rc.id
                WHERE ah.request_id = media_requests.id AND rc.torrent_hash != ''
