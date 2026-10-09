@@ -8612,11 +8612,33 @@ alreadyExtra = true;
         const expectedContent = path.join(toQBittorrentPath(saveRoot), plan.name);
         const actualContent = String(added.content_path || "");
         if (actualContent && path.resolve(actualContent) !== path.resolve(expectedContent)) {
-          const aligned = alignQbitContentPath(plan, expectedContent, actualContent);
-          if (aligned.aligned) {
-            if (aligned.linked > 0) out.contentAligned = aligned.linked;
-          } else {
-            out.warn = `${out.warn ? out.warn + "; " : ""}qBittorrent looks for content at "${actualContent}" but it was placed at "${expectedContent}"${aligned.detail ? ` — ${aligned.detail}` : ""} — the recheck will not see the file`;
+          // qBittorrent sometimes reports content_path as the media FILE inside
+          // the release folder (saveRoot/<name>/<file>) rather than the folder
+          // root we compare against (saveRoot/<name>). If the reported path is
+          // one of the destinations placeFilesIntoDownload just populated — or a
+          // folder that contains every one of them — qBittorrent already points
+          // at our bytes and the restore is correctly placed. Without this, a
+          // healthy restore trips the comparison and the folder branch of
+          // alignQbitContentPath mis-nests the file (…/<file>/<file>) and warns
+          // EEXIST even though the recheck sees everything fine.
+          const servedDests = placeResults
+            .filter((r) => r.status === "linked" || r.status === "same-inode" || r.status === "created")
+            .map((r) => path.resolve(toQBittorrentPath(r.dest)));
+          const acResolved = path.resolve(actualContent);
+          let serves = false;
+          try {
+            const acStat = fs.statSync(acResolved);
+            serves = acStat.isFile()
+              ? servedDests.includes(acResolved)
+              : acStat.isDirectory() && servedDests.length > 0 && servedDests.every((d) => d.startsWith(acResolved + path.sep));
+          } catch { serves = false; }
+          if (!serves) {
+            const aligned = alignQbitContentPath(plan, expectedContent, actualContent);
+            if (aligned.aligned) {
+              if (aligned.linked > 0) out.contentAligned = aligned.linked;
+            } else {
+              out.warn = `${out.warn ? out.warn + "; " : ""}qBittorrent looks for content at "${actualContent}" but it was placed at "${expectedContent}"${aligned.detail ? ` — ${aligned.detail}` : ""} — the recheck will not see the file`;
+            }
           }
         }
 
@@ -8685,13 +8707,34 @@ alreadyExtra = true;
           return seen;
         };
         sawChecking = await pollRecheck();
-        // Never re-issue recheck here. qBittorrent serialises rechecks per
-        // torrent, and calling recheck on one that is ALREADY actively hashing
-        // errors / restarts the run. The restore no longer needs to: the recovery
-        // modal polls the torrent's checking state live (3s), so a torrent still
-        // checking when this POST returns just needs more time, not a stop+retry.
-        // The in-band window is kept short (~8s, not ~50s), so one restore never
-        // holds the request open long enough to look like a hang.
+        // A fresh-add recheck occasionally wedges: state stays "checking" at 0%
+        // forever (qBittorrent hashing nothing), so the modal polls "infinite
+        // checking 0%". Recover it — but NEVER by calling recheck on a torrent
+        // that is still actively hashing (qBittorrent serialises rechecks per
+        // torrent and errors / restarts the run). Pause first, wait for the
+        // state to leave "checking", THEN recheck once. Gated on progress === 0
+        // so a large file legitimately hashing (which advances progress) is left
+        // alone rather than interrupted mid-check.
+        if (finalT && torrentIsChecking(finalT.state || "") && (finalT.progress || 0) === 0) {
+          try { await qbittorrent.pauseTorrent(hash); } catch {}
+          for (let i = 0; i < 12; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+            const pausedT = await qbittorrent.getTorrentByHash(hash);
+            if (!pausedT) break;
+            finalT = pausedT;
+            if (!torrentIsChecking(pausedT.state || "")) break;
+          }
+          if (finalT && !torrentIsChecking(finalT.state || "")) {
+            try { await qbittorrent.recheck(hash); } catch {}
+            sawChecking = (await pollRecheck()) || sawChecking;
+          }
+        }
+        // Never re-issue recheck outside the wedge recovery above. Calling
+        // recheck on one that is ALREADY actively hashing errors / restarts the
+        // run. The recovery modal polls the torrent's checking state live (3s),
+        // so a torrent still checking when this POST returns just needs more
+        // time, not a stop+retry. The in-band window is kept short (~8s), so one
+        // restore never holds the request open long enough to look like a hang.
         if (finalT && !torrentIsChecking(finalT.state || "")) {
           const pct = Math.floor((finalT.progress || 0) * 1000) / 10;
           if (finalT.progress === 1) {
