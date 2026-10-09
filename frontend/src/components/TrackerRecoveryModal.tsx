@@ -24,6 +24,9 @@ interface TrackerRow {
   typeGuess: "movie" | "series";
   totalSize: number;
   complete: boolean;
+  /** False for a RAR/archive release with no video file of its own — there,
+   *  every absent file blocks (the archive is the content). */
+  hasMedia: boolean;
   coveredBytes: number;
   fileCount: number;
   missing: MissingFile[];
@@ -70,6 +73,12 @@ function fmtBytes(v: number): string {
   return `${v} B`;
 }
 
+/** Floor to one decimal — a 99.9% torrent must never read 100%. */
+function fmtPct(p: number): string {
+  const pct = Math.floor((p || 0) * 1000) / 10;
+  return pct >= 100 ? "100" : Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
+}
+
 /** Media files that are genuinely absent — partials (present at their download
  *  path, still incomplete) and sidecars do not block a restore. */
 function blockingMediaCount(t: TrackerRow): number {
@@ -109,13 +118,13 @@ const STORED_HINT =
 
 function statusOf(t: TrackerRow): { label: string; cls: string } {
   if (t.live && t.liveChecking) {
-    return { label: `Verifying ${Math.round((t.liveProgress || 0) * 100)}%`, cls: "tor-state-check" };
+    return { label: `Verifying ${fmtPct(t.liveProgress || 0)}%`, cls: "tor-state-check" };
   }
   if (t.live && t.liveVerified) return { label: "In qBittorrent · complete", cls: "tor-state-up" };
   if (t.live) {
     const st = (t.liveState || "").toLowerCase();
     if ((st.includes("dl") || st.includes("downloading")) && t.liveProgress != null && t.liveProgress < 1) {
-      return { label: `Downloading ${Math.round(t.liveProgress * 100)}%`, cls: "tor-state-muted" };
+      return { label: `Downloading ${fmtPct(t.liveProgress)}%`, cls: "tor-state-muted" };
     }
     return { label: t.liveState || "In qBittorrent", cls: "tor-state-muted" };
   }
@@ -344,12 +353,16 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   const partials = partialCount(t);
                   const ready = t.fileCount - t.missing.length;
                   const treeSummary = matchTreeSummary(t);
-                  const sideMissing = absentCount(t) - blocking;
+                  const sideMissing = t.hasMedia ? absentCount(t) - blocking : 0;
                   const summaryParts: string[] = [];
                   if (blocking > 0) summaryParts.push(`${blocking} media missing — restore blocked`);
-                  if (sideMissing > 0) summaryParts.push(`${sideMissing} sidecar missing — skipped on restore`);
+                  if (!t.hasMedia && absentCount(t) > 0) {
+                    summaryParts.push(`${absentCount(t)} file(s) missing — no video in this release, all required`);
+                  } else if (sideMissing > 0) {
+                    summaryParts.push(`${sideMissing} sidecar missing — skipped on restore`);
+                  }
                   if (partials > 0) summaryParts.push(`${partials} partially downloaded`);
-                  const detailCls = blocking > 0 ? "blocking" : partials > 0 && sideMissing === 0 ? "partial" : "skippable";
+                  const detailCls = blocking > 0 || (!t.hasMedia && absentCount(t) > 0) ? "blocking" : partials > 0 && sideMissing === 0 ? "partial" : "skippable";
                   return (
                     <div className={`tracker-item ${isBusy ? "tracker-item-busy" : ""}`} key={t.infoHash}>
                       <div className="tracker-item-head">
@@ -400,7 +413,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                             {t.missing.map((m) => (
                               <li
                                 key={m.torrentPath}
-                                className={m.partialPath ? "miss-partial" : m.media ? "miss-media" : "miss-side"}
+                                className={m.partialPath ? "miss-partial" : m.media || !t.hasMedia ? "miss-media" : "miss-side"}
                                 title={m.torrentPath}
                               >
                                 <span className="miss-path">{m.torrentPath.split("/").pop()}</span>

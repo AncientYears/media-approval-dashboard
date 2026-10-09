@@ -194,11 +194,18 @@ export interface TorrentPlan {
   matches: TorrentMatch[];
   missing: TorrentMatch[];
   coveredBytes: number;
+  /** True when the torrent holds at least one video file. When false (scene
+   *  RAR-archive releases: .rar/.r00/.sfv/.nfo and no video), the media-only
+   *  "sidecars never block" rule does not apply — the archive IS the content,
+   *  so every absent file blocks. Skipping them all would leave qBittorrent
+   *  with nothing wanted and nothing on disk. */
+  hasMedia: boolean;
   /** True when no MEDIA file is genuinely missing. Missing sidecars (nfo/txt/jpg/…)
    *  do not block a restore: they are skipped in qBittorrent (filePrio 0) so
    *  the recheck can still reach 100% — the release seeds without them. A
    *  partial file at its download path also does not block: qBittorrent
-   *  resumes it. */
+   *  resumes it. Only meaningful alongside `hasMedia`; a no-video release
+   *  blocks on any absent file. */
   complete: boolean;
   /** Best-effort kind from the torrent name. The route lets the user override. */
   typeGuess: "movie" | "series";
@@ -264,6 +271,7 @@ export function planMatches(
     const matches: TorrentMatch[] = [];
     const missing: TorrentMatch[] = [];
     let coveredBytes = 0;
+    const hasMedia = t.parsed.files.some((f) => isMediaTorrentPath(f.path));
 
     for (let fileIdx = 0; fileIdx < t.parsed.files.length; fileIdx++) {
       const f = t.parsed.files[fileIdx];
@@ -324,7 +332,10 @@ export function planMatches(
       matches,
       missing,
       coveredBytes,
-      complete: missing.every((m) => m.partialPath || !isMediaTorrentPath(m.torrentPath)),
+      hasMedia,
+      complete: hasMedia
+        ? missing.every((m) => m.partialPath || !isMediaTorrentPath(m.torrentPath))
+        : missing.every((m) => m.partialPath),
       typeGuess: guessType(t.name),
     };
   });

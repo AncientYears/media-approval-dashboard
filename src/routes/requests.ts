@@ -1211,10 +1211,27 @@ function showDirByStructure(requestSeasons: number[], baseTitle?: string | null)
     });
     if (titled.length) return titled[0];
   }
-  // ...and when names cannot decide, structure has to be UNIQUE to count at all.
-  // It usually is not, and "no disk seasons" is the honest answer — the real
-  // folder is found by processedShowDirFromFiles whenever the request owns files.
-  return hits.length === 1 ? hits[0] : null;
+  // ...and when names cannot decide, a structural hit is only credible when the
+  // folder is FULLY explained by this request. A season number identifies no
+  // franchise: a long-running show (Death in Paradise, S00–S15) is the only
+  // folder holding some other show's S11–S14, so "unique hit" alone handed a
+  // request for exactly those seasons its neighbor's ENTIRE disk — eleven
+  // phantom pills of 8/8. Accept the single hit only when every season it holds
+  // (S00 excepted) was asked for; otherwise "no disk seasons" is the honest
+  // answer and the real folder is found by processedShowDirFromFiles.
+  if (hits.length !== 1) return null;
+  const candidate = hits[0];
+  let ownSeasons: number[] = [];
+  try {
+    ownSeasons = fs
+      .readdirSync(path.join(PROCESSED_TV, candidate), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => parseSeasonNumber(e.name))
+      .filter((sn): sn is number => sn != null);
+  } catch {
+    return null;
+  }
+  return ownSeasons.every((sn) => sn === 0 || want.has(sn)) ? candidate : null;
 }
 
 /** The season folder backing a native library_key + season: title-matched
@@ -8339,6 +8356,7 @@ alreadyExtra = true;
           typeGuess: p.typeGuess,
           totalSize: p.totalSize,
           complete: p.complete,
+          hasMedia: p.hasMedia,
           coveredBytes: p.coveredBytes,
           fileCount: p.files.length,
           matches: p.matches.map((m) => ({
@@ -8523,8 +8541,10 @@ alreadyExtra = true;
           continue;
         }
         if (!plan.complete) {
-          const mediaMissing = plan.missing.filter((m) => !m.partialPath && isMediaTorrentPath(m.torrentPath)).length;
-          out.error = `Incomplete match — ${mediaMissing} media file(s) missing (sidecars like nfo/txt/jpg are skipped on restore; video files must exist)`;
+          const absent = plan.missing.filter((m) => !m.partialPath).length;
+          out.error = plan.hasMedia
+            ? `Incomplete match — ${plan.missing.filter((m) => !m.partialPath && isMediaTorrentPath(m.torrentPath)).length} media file(s) missing (sidecars like nfo/txt/jpg are skipped on restore; video files must exist)`
+            : `Incomplete match — ${absent} file(s) missing (this release has no video files of its own — a RAR/archive set — so every file is required)`;
           results.push(out);
           continue;
         }
@@ -8587,11 +8607,14 @@ alreadyExtra = true;
         // hashes would never match — but they also never matter for seeding.
         // Drop them from qBittorrent's wanted set BEFORE the recheck: only
         // wanted files count toward 100%, so a release held "media only" still
-        // rechecks to verified and can be linked.
+        // rechecks to verified and can be linked. A release with NO video of its
+        // own (a RAR set) is different: there the archive files ARE the content,
+        // and skipping them would leave qBittorrent with nothing to fetch.
+        const missingSidecars = plan.hasMedia
+          ? plan.missing.filter((m) => m.length > 0 && !isMediaTorrentPath(m.torrentPath))
+          : [];
         const skipIdx = Array.from(new Set([
-          ...plan.missing
-            .filter((m) => m.length > 0 && !isMediaTorrentPath(m.torrentPath))
-            .map((m) => m.fileIndex),
+          ...missingSidecars.map((m) => m.fileIndex),
           ...placeSkipIdx,
         ]));
         if (skipIdx.length > 0) {

@@ -2067,6 +2067,13 @@ body {
   white-space: nowrap;
 }
 
+/* `.badge` sets a dark default color and sits later in the sheet, so it was
+   overriding `.badge-in-library`'s green on identical specificity — the
+   "verified" pill rendered dark text on its green tint. Win on specificity. */
+.badge.badge-in-library {
+  color: var(--success);
+}
+
 .download-dirs-modal {
   max-width: 780px;
 }
