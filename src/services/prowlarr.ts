@@ -21,8 +21,10 @@ export interface ProwlarrRelease {
 
 export class ProwlarrService {
   private client: AxiosInstance;
+  private apiKey: string;
 
   constructor(baseURL: string, apiKey: string) {
+    this.apiKey = apiKey;
     this.client = axios.create({
       baseURL,
       timeout: 45000,
@@ -31,6 +33,19 @@ export class ProwlarrService {
         "Content-Type": "application/json",
       },
     });
+  }
+
+  /** Fetch the .torrent bytes behind a Prowlarr `downloadUrl` (the proxy URL
+   *  Prowlarr hands back for indexers that publish no magnet/infoHash, e.g.
+   *  private trackers). The URL is absolute and already carries the apikey. */
+  async downloadTorrent(url: string): Promise<Buffer> {
+    const response = await axios.get<ArrayBuffer>(url, {
+      responseType: "arraybuffer",
+      timeout: 45000,
+      maxRedirects: 5,
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    return Buffer.from(response.data);
   }
 
   async search(query: string, categories?: number[], type: string = "search"): Promise<ProwlarrRelease[]> {

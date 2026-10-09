@@ -78,4 +78,5 @@ export interface RadarrSearchResult {
   ageMinutes?: number;
   magnetUrl?: string;
   infoHash?: string;
+  downloadUrl?: string;
 }

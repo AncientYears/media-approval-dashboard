@@ -3620,6 +3620,7 @@ function mapProwlarrToRadarrResult(r: ProwlarrRelease): RadarrSearchResult {
     infoUrl: infoOrMagnet,
     magnetUrl: r.magnetUri || "",
     infoHash: r.infoHash || "",
+    downloadUrl: r.downloadUrl || "",
     publishDate: r.publishDate || "",
   };
 }
@@ -7908,14 +7909,15 @@ alreadyExtra = true;
 
           const insertStmt = db.prepare(`
             INSERT INTO release_candidates
-            (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash, download_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
               title = excluded.title, indexer = excluded.indexer, size_mb = excluded.size_mb,
               radarr_quality = excluded.radarr_quality, app_score = excluded.app_score,
               seeders = excluded.seeders, leechers = excluded.leechers,
               torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END,
-              info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END
+              info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END,
+              download_url = CASE WHEN excluded.download_url != '' THEN excluded.download_url ELSE release_candidates.download_url END
           `);
 
           for (let i = 0; i < mapped.length; i++) {
@@ -7923,7 +7925,7 @@ alreadyExtra = true;
             const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
             const qualityName = r.quality?.quality?.name || "Unknown";
             const cfNames = r.customFormats?.map((f: any) => f.name) || [];
-            insertStmt.run(season.id, r.guid, r.title, r.indexer, sizeMb, qualityName, JSON.stringify(cfNames), computeAppScore(qualityName, cfNames, sizeMb, i + 1), i + 1, r.languages?.map((l: any) => l.name).join(", ") || "", r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "");
+            insertStmt.run(season.id, r.guid, r.title, r.indexer, sizeMb, qualityName, JSON.stringify(cfNames), computeAppScore(qualityName, cfNames, sizeMb, i + 1), i + 1, r.languages?.map((l: any) => l.name).join(", ") || "", r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "", r.downloadUrl || "");
           }
 
           if (!preserveStatus) {
@@ -8041,14 +8043,15 @@ alreadyExtra = true;
 
           const insertStmt = db.prepare(`
             INSERT INTO release_candidates
-            (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash, download_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
               title = excluded.title, indexer = excluded.indexer, size_mb = excluded.size_mb,
               radarr_quality = excluded.radarr_quality, app_score = excluded.app_score,
               seeders = excluded.seeders, leechers = excluded.leechers,
               torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END,
-              info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END
+              info_url = CASE WHEN excluded.info_url != '' THEN excluded.info_url ELSE release_candidates.info_url END,
+              download_url = CASE WHEN excluded.download_url != '' THEN excluded.download_url ELSE release_candidates.download_url END
           `);
 
           for (let i = 0; i < mapped.length; i++) {
@@ -8056,7 +8059,7 @@ alreadyExtra = true;
             const sizeMb = Math.round((r.size || 0) / (1024 * 1024));
             const qualityName = r.quality?.quality?.name || "Unknown";
             const cfNames = r.customFormats?.map((f: any) => f.name) || [];
-            insertStmt.run(movie.id, r.guid, r.title, r.indexer, sizeMb, qualityName, JSON.stringify(cfNames), computeAppScore(qualityName, cfNames, sizeMb, i + 1), i + 1, r.languages?.map((l: any) => l.name).join(", ") || "", r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "");
+            insertStmt.run(movie.id, r.guid, r.title, r.indexer, sizeMb, qualityName, JSON.stringify(cfNames), computeAppScore(qualityName, cfNames, sizeMb, i + 1), i + 1, r.languages?.map((l: any) => l.name).join(", ") || "", r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "", r.downloadUrl || "");
           }
 
           if (!preserveStatus) {
@@ -12333,8 +12336,8 @@ const type = request.type === "series" ? "series" : "movie";
 
       const insertStmt = db.prepare(`
         INSERT INTO release_candidates
-        (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (request_id, radarr_release_id, title, indexer, size_mb, radarr_quality, radarr_custom_formats, app_score, radarr_rank, language, info_url, seeders, leechers, release_group, edition, protocol, publish_date, radarr_indexer_id, torrent_hash, download_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(request_id, radarr_release_id) DO UPDATE SET
           title = excluded.title,
           indexer = excluded.indexer,
@@ -12352,7 +12355,8 @@ const type = request.type === "series" ? "series" : "movie";
           protocol = CASE WHEN excluded.protocol != '' THEN excluded.protocol ELSE release_candidates.protocol END,
           publish_date = CASE WHEN excluded.publish_date != '' THEN excluded.publish_date ELSE release_candidates.publish_date END,
           radarr_indexer_id = CASE WHEN excluded.radarr_indexer_id != 0 THEN excluded.radarr_indexer_id ELSE release_candidates.radarr_indexer_id END,
-          torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END
+          torrent_hash = CASE WHEN excluded.torrent_hash != '' THEN excluded.torrent_hash ELSE release_candidates.torrent_hash END,
+          download_url = CASE WHEN excluded.download_url != '' THEN excluded.download_url ELSE release_candidates.download_url END
       `);
 
       for (let i = 0; i < releases.length; i++) {
@@ -12364,7 +12368,7 @@ const type = request.type === "series" ? "series" : "movie";
         const appScore = computeAppScore(qualityName, cfNames, sizeMb, i + 1);
         const language = r.languages?.map((l: any) => l.name).join(", ") || r.language?.name || "";
 
-        insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "");
+        insertStmt.run(id, r.guid, r.title, r.indexer, sizeMb, qualityName, customFormats, appScore, i + 1, language, r.infoUrl || "", r.seeders ?? null, r.leechers ?? null, r.releaseGroup || "", r.edition || "", r.protocol || "", r.publishDate || "", (r as any).indexerId ?? 0, r.infoHash || "", r.downloadUrl || "");
 
         if ((i + 1) % 10 === 0 || i === releases.length - 1) {
           send("progress", { step: "indexing", message: `Indexed ${i + 1}/${releases.length}`, current: i + 1, total: releases.length });
@@ -12401,33 +12405,68 @@ const type = request.type === "series" ? "series" : "movie";
         return res.status(404).json({ error: "Request not found" });
       }
 
-      const stmt = db.prepare(`
-        INSERT INTO approval_history (request_id, release_id, approved_by, approval_reason)
-        VALUES (?, ?, ?, ?)
-      `);
-      stmt.run(id, releaseId, "web-user", reason || "");
-
+      // Grab FIRST, then record the approval. There is no Sonarr/Radarr in the
+      // arr-free deployment to fall back on, so a release the app cannot hand
+      // to qBittorrent must FAIL loudly — reporting success would move the
+      // request to DOWNLOADING with nothing ever downloaded.
+      const magnetUrl = release.info_url?.includes("magnet") ? release.info_url : "";
+      // Prowlarr's proxy download URL — the only way to grab a private-tracker
+      // release, which publishes neither a magnet nor an infoHash.
+      const downloadUrl = !magnetUrl && release.protocol === "torrent" && release.download_url
+        ? release.download_url
+        : "";
       const hasProwlarrHash = release.torrent_hash && release.torrent_hash.length === 40;
+      // Downloads must land in the immutable Download tree, never in the
+      // Jellyfin library. Seeding from the library breaks as soon as
+      // Sonarr/Radarr import renames or moves the file, and it skips the
+      // Download -> Processed -> Library hardlink flow entirely.
+      const savePath = request.type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
+      const qbitSavePath = toQBittorrentPath(savePath);
 
-      if (hasProwlarrHash) {
-        const magnetUrl = release.info_url?.includes("magnet") ? release.info_url : "";
-        if (magnetUrl) {
+      const detectNewTorrent = (preHashes: Set<string>, label: string) => {
+        const detect = async (attempt: number) => {
           try {
-            // Downloads must land in the immutable Download tree, never in the
-            // Jellyfin library. Seeding from the library breaks as soon as
-            // Sonarr/Radarr import renames or moves the file, and it skips the
-            // Download -> Processed -> Library hardlink flow entirely.
-            const savePath = request.type === "movie"
-              ? DOWNLOADS_MOVIES
-              : DOWNLOADS_TV;
-            await qbittorrent.addTorrent(magnetUrl, toQBittorrentPath(savePath));
-            console.log(`[Grab] Added torrent via magnet for ${request.title}: ${release.title}`);
-          } catch (grabErr: any) {
-            console.error(`[Grab] Failed to add torrent for ${request.title}:`, grabErr.message);
-            return res.status(500).json({ error: "Failed to add torrent to qBittorrent", details: String(grabErr) });
+            const postTorrents = await qbittorrent.getTorrents();
+            const newTorrent = postTorrents.find((t) => !preHashes.has(t.hash));
+            if (newTorrent) {
+              db.prepare("UPDATE release_candidates SET torrent_hash = ?, save_path = ? WHERE id = ?")
+                .run(newTorrent.hash, newTorrent.save_path, release.id);
+              console.log(`[${label}] Detected new torrent: ${newTorrent.name} hash=${newTorrent.hash}`);
+              return;
+            }
+          } catch {
+            // retry
           }
-        } else {
-          console.log(`[Grab] Prowlarr release has infoHash=${release.torrent_hash} but no magnet URL — torrent must be added manually`);
+          if (attempt < 10) setTimeout(() => detect(attempt + 1), 3000);
+          else console.log(`[${label}] Could not detect new torrent for ${request.title} after 30s`);
+        };
+        setTimeout(() => detect(0), 3000);
+      };
+
+      let grabbed = false;
+
+      if (magnetUrl) {
+        try {
+          await qbittorrent.addTorrent(magnetUrl, qbitSavePath);
+          console.log(`[Grab] Added torrent via magnet for ${request.title}: ${release.title}`);
+          grabbed = true;
+        } catch (grabErr: any) {
+          console.error(`[Grab] Failed to add torrent for ${request.title}:`, grabErr.message);
+          return res.status(500).json({ error: "Failed to add torrent to qBittorrent", details: String(grabErr) });
+        }
+      } else if (downloadUrl) {
+        try {
+          const preTorrents = await qbittorrent.getTorrents().catch(() => []);
+          const preHashes = new Set(preTorrents.map((t) => t.hash));
+          const buf = await prowlarr.downloadTorrent(downloadUrl);
+          const filename = `${(release.title || "release").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180)}.torrent`;
+          await qbittorrent.addTorrentFile(buf, filename, qbitSavePath);
+          console.log(`[Grab] Added torrent file for ${request.title}: ${release.title}`);
+          detectNewTorrent(preHashes, "Grab");
+          grabbed = true;
+        } catch (grabErr: any) {
+          console.error(`[Grab] Failed to fetch/add torrent for ${request.title}:`, grabErr?.message || grabErr);
+          return res.status(500).json({ error: "Failed to grab torrent from Prowlarr", details: String(grabErr?.message || grabErr) });
         }
       } else if (request.radarr_id && release.radarr_release_id) {
         try {
@@ -12482,9 +12521,11 @@ const type = request.type === "series" ? "series" : "movie";
             }
           };
           setTimeout(() => detectTorrent(0), 3000);
+          grabbed = true;
         } catch (grabErr: any) {
           if (grabErr?.response?.status === 409) {
             console.log(`[Radarr] Release already grabbed for ${request.title}`);
+            grabbed = true;
           } else if (grabErr?.response?.status === 404) {
             console.error(`[Radarr] Release expired from cache for ${request.title}, needs re-search`);
             return res.status(500).json({
@@ -12548,9 +12589,11 @@ const type = request.type === "series" ? "series" : "movie";
             }
           };
           setTimeout(() => detectTorrent(0), 3000);
+          grabbed = true;
         } catch (grabErr: any) {
           if (grabErr?.response?.status === 409) {
             console.log(`[Sonarr] Release already grabbed for ${request.title}`);
+            grabbed = true;
           } else if (grabErr?.response?.status === 404) {
             console.error(`[Sonarr] Release expired from cache for ${request.title}, needs re-search`);
             return res.status(500).json({
@@ -12562,7 +12605,21 @@ const type = request.type === "series" ? "series" : "movie";
             return res.status(500).json({ error: "Failed to grab release from Sonarr", details: String(grabErr) });
           }
         }
+      } else if (hasProwlarrHash) {
+        return res.status(500).json({ error: "Release has an infoHash but no magnet or download URL — cannot hand it to qBittorrent" });
       }
+
+      if (!grabbed) {
+        return res.status(500).json({
+          error: "Release cannot be grabbed",
+          details: "No magnet, Prowlarr download URL, or Radarr/Sonarr link is available for this release.",
+        });
+      }
+
+      db.prepare(`
+        INSERT INTO approval_history (request_id, release_id, approved_by, approval_reason)
+        VALUES (?, ?, ?, ?)
+      `).run(id, releaseId, "web-user", reason || "");
 
       const updateStmt = db.prepare("UPDATE media_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
       updateStmt.run("DOWNLOADING", id);

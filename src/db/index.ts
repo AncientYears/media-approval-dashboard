@@ -212,6 +212,7 @@ export function initializeDatabase(dbPath: string): DBInstance {
       radarr_indexer_id INTEGER DEFAULT 0,
       torrent_hash TEXT DEFAULT '',
       save_path TEXT DEFAULT '',
+      download_url TEXT DEFAULT '',
       app_score INTEGER DEFAULT 0,
       positive_attrs TEXT DEFAULT '[]',
       negative_attrs TEXT DEFAULT '[]',
@@ -389,6 +390,7 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       ["radarr_indexer_id", "INTEGER DEFAULT 0"],
       ["torrent_hash", "TEXT DEFAULT ''"],
       ["save_path", "TEXT DEFAULT ''"],
+      ["download_url", "TEXT DEFAULT ''"],
     ] as [string, string][]) {
       if (!colNames.includes(name)) {
         db.exec(`ALTER TABLE release_candidates ADD COLUMN ${name} ${type}`);

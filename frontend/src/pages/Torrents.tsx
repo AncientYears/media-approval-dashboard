@@ -304,6 +304,8 @@ export default function Torrents() {
                   </span>
                   <span>{fmtAge(t.added_on)} ago</span>
                   <span className="tor-hash" title={t.hash}>{t.hash.slice(0, 12)}</span>
+                </div>
+                <div className="tor-progress-row">
                   <div className="tor-progress-track">
                     <div
                       className={`tor-progress-fill ${t.checking ? "tor-progress-check" : ""}`}
