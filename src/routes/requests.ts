@@ -6521,12 +6521,33 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
           }
 
           const parsed = parseTorrentName(e.name);
-          const matchedReq = await findBestRequestForDownload(
+          let matchedReq = await findBestRequestForDownload(
             db,
             e.name,
             type,
             type === "series" && parsed.season != null ? parsed.season : null
           );
+          if (!matchedReq && e.isDirectory()) {
+            try {
+              const candNames: string[] = [];
+              for (const f of fs.readdirSync(full)) {
+                if (!/\.(mkv|mp4|avi|mov|ts|wmv|m2ts|iso)$/i.test(f)) continue;
+                candNames.push(f);
+                if (candNames.length >= 3) break;
+              }
+              for (const cn of candNames) {
+                matchedReq = await findBestRequestForDownload(
+                  db,
+                  cn,
+                  type,
+                  type === "series" && parsed.season != null ? parsed.season : null
+                );
+                if (matchedReq) break;
+              }
+            } catch {}
+          } else if (!matchedReq && fs.existsSync(full) && !e.isDirectory()) {
+            // single file already — try its basename explicitly
+          }
 
           // A torrent that is already wired to a release_candidate (e.g. via
           // attach/import/detect) counts as linked; the torrent panel shows.
