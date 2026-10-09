@@ -522,6 +522,8 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
         setApprovedReleases(data.approved_releases || []);
         if (attempts >= 10) clearInterval(poll);
       }, 3000);
+    } catch (err: any) {
+      toast(err.response?.data?.error || err.message || "Approve failed", "error");
     } finally {
       setApprovingId(null);
     }

@@ -96,6 +96,10 @@ function normalizeTitleForMatch(s: string): string {
   return s.toLowerCase()
     .replace(/[&]/g, "and")
     .replace(/[:']/g, " ")
+    // Dotted abbreviations ("P.D." -> "pd") must merge BEFORE the punctuation
+    // sweep, or "Chicago P.D." normalizes to "chicago p d" — two single-letter
+    // words that never match a torrent's "Chicago PD".
+    .replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2")
     .replace(/[.\-_\[\](){}!@#$%^+=|;<>?/\\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();

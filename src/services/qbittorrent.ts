@@ -118,10 +118,10 @@ export class QBittorrentService {
 
   async findTorrentByTitle(title: string): Promise<TorrentInfo | null> {
     const torrents = await this.getTorrents();
-    const normalized = title.toLowerCase().replace(/[.\-_\[\]]/g, " ");
+    const normalized = title.toLowerCase().replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2").replace(/[.\-_\[\]]/g, " ");
     return (
       torrents.find((t) => {
-        const tn = t.name.toLowerCase().replace(/[.\-_\[\]]/g, " ");
+        const tn = t.name.toLowerCase().replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2").replace(/[.\-_\[\]]/g, " ");
         return tn.includes(normalized) || normalized.includes(tn);
       }) || null
     );

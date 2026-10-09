@@ -131,9 +131,9 @@ const statusPoller = createStatusPoller(db, qbittorrent, statusPollInterval);
         if (!t) continue;
         // Skip title check if linked to Sonarr/Radarr series — ID match is more reliable than string matching
         if (rc.sonarr_id || rc.radarr_id) continue;
-        const tnRaw = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
+        const tnRaw = t.name.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2").replace(/[.\-_\[\]()]/g, " ").trim();
         const tn = tnRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
-        const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/[.\-_\[\]()]/g, " ").trim();
+        const reqRaw = rc.req_title.toLowerCase().replace(/[&]/g, "and").replace(/[:']/g, " ").replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2").replace(/[.\-_\[\]()]/g, " ").trim();
         const req = reqRaw.replace(/\bS\d{1,2}E\d{1,3}\b/gi, "").replace(/\bS\d{1,2}\b/gi, "").replace(/\s+/g, " ").trim();
         const isMatch = titlesMatch(req, tn);
         let reason = "";

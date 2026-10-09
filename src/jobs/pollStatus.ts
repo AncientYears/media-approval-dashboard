@@ -10,6 +10,11 @@ function normalizeTitle(s: string): string {
   return s.toLowerCase()
     .replace(/[&]/g, "and")
     .replace(/[:']/g, " ")
+    // Merge dotted abbreviations ("P.D." -> "pd") BEFORE the punctuation sweep,
+    // or the letters become two length-1 words and "Chicago P.D." never matches
+    // the release's "Chicago PD". Both sides get the same treatment, so 5.1 and
+    // H.264 also collapse identically on either side of a compare.
+    .replace(/([a-z0-9])\.([a-z0-9])/gi, "$1$2")
     .replace(/[.\-_\[\]()]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -109,13 +114,10 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
         "WHERE rc.torrent_hash != '' AND rc.torrent_hash IS NOT NULL"
       ).all() as any[];
 
-      const requestsWithHashes = new Set(releaseHashes.map((r: any) => r.request_id));
-
       for (const req of requests) {
         let anyFound = false;
         let anyDownloading = false;
         let allSeeding = true;
-        const staleHashIds: number[] = [];
 
         const hashes = releaseHashes.filter((r: any) => r.request_id === req.id);
         for (const h of hashes) {
@@ -157,15 +159,12 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
           }
         }
 
-        for (const rid of staleHashIds) {
-          db.prepare("DELETE FROM approval_history WHERE release_id = ?").run(rid);
-          db.prepare("DELETE FROM release_candidates WHERE id = ?").run(rid);
-        }
-        if (staleHashIds.length > 0) {
-          requestsWithHashes.delete(req.id);
-        }
-
-        if (!requestsWithHashes.has(req.id) && torrents.length > 0) {
+        // Detection runs whenever the request currently has NO live torrent:
+        // a hash-RC whose torrent is gone, or a search-time infoHash ("The
+        // Pirate Bay") that was never actually grabbed, must not count as
+        // "tracked" — otherwise the real torrent sits in qBittorrent forever
+        // with no release_candidate pointing at it.
+        if (!anyFound && torrents.length > 0) {
           const match = torrents.find((t) => torrentMatchesTitle(t.name, req.title, req.season));
 
           if (match) {
@@ -182,7 +181,6 @@ export function createStatusPoller(db: Database, qbittorrent: QBittorrentService
             const rcResult = insertRcStmt.run(req.id, `detected-${match.hash.slice(0, 12)}`, match.name, Math.round((match.size || 0) / (1024 * 1024)), match.hash, match.save_path, parseQualityFromName(match.name));
             insertAhStmt.run(req.id, rcResult.lastInsertRowid);
             console.log(`[Status] Detected torrent for ${req.title}: ${match.name} (hash=${match.hash})`);
-            requestsWithHashes.add(req.id);
           }
         }
 
