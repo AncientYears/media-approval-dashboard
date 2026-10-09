@@ -95,7 +95,12 @@ export function getDownloadDir(type: "movie" | "series"): string {
   return type === "movie" ? DOWNLOADS_MOVIES : DOWNLOADS_TV;
 }
 
-export function moveToProcessedSync(sourcePath: string, type: "movie" | "series", destFileName?: string): { success: boolean; destination?: string; error?: string } {
+export function moveToProcessedSync(
+  sourcePath: string,
+  type: "movie" | "series",
+  destFileName?: string,
+  seriesLayout?: { showDir: string; seasonDir: string },
+): { success: boolean; destination?: string; error?: string } {
   const destDir = getProcessedDir(type);
   fs.mkdirSync(destDir, { recursive: true });
 
@@ -114,6 +119,26 @@ export function moveToProcessedSync(sourcePath: string, type: "movie" | "series"
       }
       if (linked === 0) return { success: false, error: "No video files found in directory" };
       return { success: true, destination: destDir };
+    }
+    // Series directory: when the caller resolved a canonical show/season layout
+    // ("Title (YYYY) [tvdbid-####]/S01/"), hardlink the video files flat INTO that
+    // season dir — the processed-panel scan only reads <Show>/Sxx/ structure, so
+    // the default keep-the-release-folder shape would leave them invisible. A
+    // folder holding Sxx subdirs (a multi-season pack) is never destructured.
+    if (seriesLayout) {
+      const target = path.join(destDir, seriesLayout.showDir, seriesLayout.seasonDir);
+      fs.mkdirSync(target, { recursive: true });
+      let linked = 0;
+      for (const entry of fs.readdirSync(sourcePath)) {
+        if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
+        const srcFile = path.join(sourcePath, entry);
+        const dest = path.join(target, entry);
+        if (!fs.existsSync(dest)) {
+          try { hardlinkFile(srcFile, dest); linked++; } catch {}
+        } else { linked++; }
+      }
+      if (linked === 0) return { success: false, error: "No video files found in directory" };
+      return { success: true, destination: target };
     }
     const dest = path.join(destDir, path.basename(sourcePath));
     hardlinkDirRecursive(sourcePath, dest);

@@ -8671,7 +8671,7 @@ alreadyExtra = true;
         let finalT: any = null;
         const pollRecheck = async () => {
           let seen = false;
-          for (let i = 0; i < 8; i++) {
+          for (let i = 0; i < 4; i++) {
             await new Promise((r) => setTimeout(r, 2000));
             const t2 = await qbittorrent.getTorrentByHash(hash);
             if (!t2) break;
@@ -8685,17 +8685,13 @@ alreadyExtra = true;
           return seen;
         };
         sawChecking = await pollRecheck();
-        // A fresh-add recheck occasionally wedges in qBittorrent: state stuck
-        // in checking at 0% forever (observed on a 3.4 GB single-file restore).
-        // One stop + recheck clears it — without this the restore returns
-        // silently while the torrent checks indefinitely.
-        if (finalT && torrentIsChecking(finalT.state || "")) {
-          sawChecking = true;
-          try { await qbittorrent.pauseTorrent(hash); } catch {}
-          await new Promise((r) => setTimeout(r, 1500));
-          try { await qbittorrent.recheck(hash); } catch {}
-          await pollRecheck();
-        }
+        // Never re-issue recheck here. qBittorrent serialises rechecks per
+        // torrent, and calling recheck on one that is ALREADY actively hashing
+        // errors / restarts the run. The restore no longer needs to: the recovery
+        // modal polls the torrent's checking state live (3s), so a torrent still
+        // checking when this POST returns just needs more time, not a stop+retry.
+        // The in-band window is kept short (~8s, not ~50s), so one restore never
+        // holds the request open long enough to look like a hang.
         if (finalT && !torrentIsChecking(finalT.state || "")) {
           const pct = Math.floor((finalT.progress || 0) * 1000) / 10;
           if (finalT.progress === 1) {
@@ -8706,7 +8702,7 @@ alreadyExtra = true;
             out.warn = `${out.warn ? out.warn + "; " : ""}recheck not observed (progress ${pct}%, state ${finalT.state}) — inspect the torrent in qBittorrent`;
           }
         } else if (finalT) {
-          out.warn = `${out.warn ? out.warn + "; " : ""}recheck still stuck after a stop+retry — stop and recheck the torrent manually`;
+          out.verifying = true;
         }
 
         console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — ${out.verified ? "verified" : `state ${finalT?.state ?? added.state}, ${Math.floor((finalT?.progress ?? added.progress ?? 0) * 1000) / 10}%`}, then link via POST /trackers/link`);
@@ -10723,17 +10719,36 @@ const type = request.type === "series" ? "series" : "movie";
       const type = request.type === "series" ? "series" : "movie";
 
       // P1 canonical naming for NEW processed files: single-file torrents get
-      // the naming-template name; folder torrents keep their structure intact.
+      // the naming-template name; a series folder whose episodes sit DIRECTLY in
+      // it (no Sxx subdirs) is destructured into the canonical <Show>/<Sxx/>
+      // layout, because the processed-panel scan only reads that shape. Multi-
+      // season packs (Sxx subdirs present) keep their structure intact.
       let canonicalName: string | null = null;
+      let seriesLayout: { showDir: string; seasonDir: string } | null = null;
       try {
         const contentStat = fs.statSync(contentPath);
         if (request.library_key && contentStat.isFile()) {
           const probe = await probeVideoFile(contentPath);
           canonicalName = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV, probe);
+        } else if (request.library_key && type === "series" && contentStat.isDirectory()) {
+          const withDirEnts = fs.readdirSync(contentPath, { withFileTypes: true });
+          const hasSeasonSubdirs = withDirEnts.some((e) => e.isDirectory() && parseSeasonNumber(e.name) !== null);
+          const hasDirectVideos = withDirEnts.some((e) => e.isFile() && /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e.name));
+          if (!hasSeasonSubdirs && hasDirectVideos) {
+            const conf = loadNamingConf(db);
+            const packed = await fixNamesPieces(db, request, []);
+            const seasonNum = request.season ?? parseSeasonNumber(path.basename(contentPath)) ?? 1;
+            const showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
+              || cleanFranchiseTitle(request.title || "");
+            if (showDir) {
+              const seasonDir = canonicalSeasonDir(conf, seasonNum) || `S${String(seasonNum).padStart(2, "0")}`;
+              seriesLayout = { showDir, seasonDir };
+            }
+          }
         }
       } catch {}
 
-      const result = moveToProcessedSync(contentPath, type, canonicalName || undefined);
+      const result = moveToProcessedSync(contentPath, type, canonicalName || undefined, seriesLayout || undefined);
       if (!result.success) return res.status(500).json({ error: result.error });
 
       // Register identity for the processed inodes (same inode as the download
@@ -10781,7 +10796,7 @@ const type = request.type === "series" ? "series" : "movie";
       console.log(`[MoveToProcessed] existingInodes=${[...existingInodes].join(",")}`);
 
       if (srcStat?.isDirectory()) {
-        const prefix = type === "series" ? path.basename(contentPath) : "";
+        const prefix = seriesLayout ? path.join(seriesLayout.showDir, seriesLayout.seasonDir) : type === "series" ? path.basename(contentPath) : "";
         for (const entry of fs.readdirSync(contentPath)) {
           if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(entry)) continue;
           const destPath = path.join(processedDir, prefix, entry);

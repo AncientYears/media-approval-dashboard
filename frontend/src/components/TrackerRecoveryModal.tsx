@@ -137,12 +137,26 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const [scan, setScan] = useState<ScanData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<"trackers" | "orphans">("trackers");
   const [types, setTypes] = useState<Record<string, "movie" | "series">>({});
   const [orphanPicks, setOrphanPicks] = useState<Set<string>>(new Set());
   const [healNote, setHealNote] = useState<string | null>(null);
   const { toast } = useToast();
+
+  // Busy is PER-ROW, so restoring/linking one tracker keeps every other row's
+  // buttons live — a single global flag made the whole list appear disabled
+  // until the modal was closed and reopened. Global operations (orphan move,
+  // duplicate cleanup) still disable everything while they run.
+  const markBusy = (key: string) => setBusy((prev) => new Set(prev).add(key));
+  const clearBusy = (key: string) =>
+    setBusy((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  const globalBusy = busy.has("move-orphans") || busy.has("dupes");
+  const rowBusyOf = (hash: string) => busy.has(hash) || busy.has(`link-${hash}`);
 
   useEffect(() => {
     if (!healNote) return;
@@ -196,15 +210,17 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   }, [load, scan?.trackers]);
 
   async function restore(t: TrackerRow) {
-    setBusy(t.infoHash);
+    markBusy(t.infoHash);
     try {
       const res = await restoreTrackers([{ infoHash: t.infoHash, type: types[t.infoHash] || t.typeGuess }]);
       const r = res.results?.[0];
       if (r?.ok) {
         toast(
-          `${t.name}: ${r.verified ? "added, verified" : "added, verifying"}${r.skippedFiles ? ` (skipping ${r.skippedFiles} missing sidecar file(s))` : ""}${r.contentAligned ? ` (linked ${r.contentAligned} file(s) to qBittorrent's path)` : ""}`,
+          `${t.name}: ${r.verified ? "added, verified" : r.verifying ? "added, verifying" : "added"}`,
           "success",
         );
+        if (r.skippedFiles) toast(`${t.name}: skipping ${r.skippedFiles} missing sidecar file(s)`, "success");
+        if (r.contentAligned) toast(`${t.name}: linked ${r.contentAligned} file(s) to qBittorrent's path`, "success");
         if (r.warn) toast(`${t.name}: ${r.warn}`, "error");
         await load(true);
       } else {
@@ -213,12 +229,12 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
     } finally {
-      setBusy(null);
+      clearBusy(t.infoHash);
     }
   }
 
   async function link(t: TrackerRow) {
-    setBusy(`link-${t.infoHash}`);
+    markBusy(`link-${t.infoHash}`);
     try {
       const res = await linkTrackerTorrent(t.infoHash, types[t.infoHash] || t.typeGuess);
       if (res.linked) {
@@ -243,7 +259,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
     } finally {
-      setBusy(null);
+      clearBusy(`link-${t.infoHash}`);
     }
   }
 
@@ -260,7 +276,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     if (!scan) return;
     const selected = scan.orphans.filter((o) => orphanPicks.has(o.path));
     if (selected.length === 0) return;
-    setBusy("move-orphans");
+    markBusy("move-orphans");
     try {
       const res = await moveOrphans(selected.map((o) => ({ path: o.path, type: o.type })));
       const ok = res.results?.filter((r: any) => r.ok).length || 0;
@@ -271,7 +287,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
     } finally {
-      setBusy(null);
+      clearBusy("move-orphans");
     }
   }
 
@@ -280,7 +296,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   // always remains (the keeper is never in the duplicates list).
   async function removeDuplicates() {
     if (!scan || scan.duplicates.length === 0) return;
-    setBusy("dupes");
+    markBusy("dupes");
     try {
       const res = await removeDuplicateTrackers();
       const count = res.removed?.length || 0;
@@ -292,7 +308,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     } catch (err: any) {
       toast(err?.response?.data?.error || err.message, "error");
     } finally {
-      setBusy(null);
+      clearBusy("dupes");
     }
   }
 
@@ -303,7 +319,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const orphans = scan?.orphans || [];
 
   return (
-    <div className="modal-overlay" onClick={() => !busy && onClose()}>
+    <div className="modal-overlay" onClick={() => !busy.size && onClose()}>
       <div className="modal-box tracker-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">
           Restore saved trackers
@@ -329,7 +345,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   <button
                     className="tracker-note tracker-note-btn"
                     title="Same info hash saved more than once (.torrent duplicates). Deleting the extras keeps exactly one copy per torrent."
-                    disabled={busy !== null}
+                    disabled={busy.size > 0}
                     onClick={removeDuplicates}
                   >
                     {scan.duplicates.length} duplicate(s) — remove
@@ -347,8 +363,8 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
               <div className="tracker-list">
                 {visible.map((t) => {
                   const st = statusOf(t);
-                  const isBusy = busy === t.infoHash || busy === `link-${t.infoHash}`;
-                  const stopped = t.live || busy !== null;
+                  const isBusy = rowBusyOf(t.infoHash);
+                  const stopped = t.live || rowBusyOf(t.infoHash) || globalBusy;
                   const blocking = blockingMediaCount(t);
                   const partials = partialCount(t);
                   const ready = t.fileCount - t.missing.length;
@@ -369,14 +385,14 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                         <span className={`tor-state ${st.cls}`}>{st.label}</span>
                         <div className="tracker-item-actions">
                           {t.live && t.liveVerified && (
-                            <button className="btn btn-small btn-primary" disabled={busy !== null} onClick={() => link(t)}>
+                            <button className="btn btn-small btn-primary" disabled={globalBusy || rowBusyOf(t.infoHash)} onClick={() => link(t)}>
                               Link to request
                             </button>
                           )}
                           {!t.live && (
                             <button
                               className="btn btn-small btn-primary"
-                              disabled={!t.complete || busy !== null}
+                              disabled={!t.complete || globalBusy || rowBusyOf(t.infoHash)}
                               title={t.complete ? undefined : "Video files are missing on disk — see the missing list below"}
                               onClick={() => restore(t)}
                             >
@@ -468,7 +484,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
           {tab === "orphans" && (
             <button
               className="btn btn-secondary"
-              disabled={busy !== null || orphanPicks.size === 0}
+              disabled={busy.size > 0 || orphanPicks.size === 0}
               onClick={moveSelectedOrphans}
             >
               Move selected ({orphanPicks.size}) to Processed
