@@ -465,7 +465,10 @@ Download (100% complete)
            → select existing workspace or create new (name, notes, scripts)
            → hardlink Download/* to workspace/inputs/
            → user processes files manually (mux/merge)
-           → "Complete & Import" deletes inputs, MOVEs outputs to /Processed/
+           → "Complete & Import" deletes inputs, MOVEs outputs into the
+             canonical <Show>/<Sxx>/ layout under /Processed/ (same layout
+             move-to-processed produces, so the per-season scan finds them;
+             filenames are kept — P2 "Fix Names" owns renaming)
            → file appears in processed panel as independent (different inode)
            → "To Library" button sends to Radarr/Sonarr
 ```
@@ -1076,6 +1079,10 @@ SEERR_API_KEY=
 - Processed files in /Processed are preserved by destroy either way
 - `--card-bg: #1e293b` CSS variable fixes transparent modals
 - **Import-library processed_files**: Always targets/creates `release_id IS NULL` AH rows (not torrent-linked rows). Skips adding files already in /processed by inode check (`alreadyImported`).
+- **Workspace "Complete & Import" drops outputs into the canonical `<Show>/<Sxx>/` tree, not the processed root.** `completeWorkspace(wsPath, type, seriesLayout?)` (`processor.ts`) accepts the same `{showDir, seasonDir}` the move-to-processed route builds (`fixNamesPieces` → `canonicalSeriesDir`/`canonicalSeasonDir`, falling back to `cleanFranchiseTitle`/`Sxx`), and the complete route passes it so the processed panel's per-season scan finds the files. Filenames are still kept verbatim — only the DIRECTORY is canonicalized (P2 "Fix Names" owns renaming). Because the layout is now nested, `approval_history.processed_files` stores **PROCESSED-root-relative** paths (`path.relative(getProcessedDir(type), p)`), not bare basenames: the old `path.basename` was only ever correct because the flat layout made them equal, and the panel joins these onto the root.
+- **The navbar Workspaces dropdown must route native series to `/native/:id`, not `/managed/:id`.** `/workspaces/active` now returns `sonarrId`; arr-linked series open `/managed/${sonarrId}`, native series open `/native/${requestId}`, movies `/requests/${requestId}` (matching Dashboard's `item.sonarr_id ? /managed : /native` rule). Sending an internal request id to `/managed/:id` made `FranchiseDetail` fetch it as a sonarr id and render "Failed to load franchise".
+- **A RAR archive set is its own content type, not "none".** `/:id/content-info` counts split-RAR parts (`.rar`/`.r00`/`.partN.rar`/`.NNN`) and reports `type: "archive"` (with `archiveParts`) when there is no video file, so the TorrentPanel badge says "RAR archive" instead of the misleading "No video files". `needsProcessing` is true for it too. **Extraction is deliberately NOT done in-app**: it belongs as a workspace SCRIPT (unrar/7z), chosen when the workspace is created — never a TorrentPanel button (a torrent panel is not a workspace, and `/download` is immutable). The scripts mechanism is currently a stub (`ScriptDropdown.SCRIPT_OPTIONS` is empty and nothing executes the stored `metadata.scripts`), so archive extraction is a planned addition to that feature, not something to bolt onto the torrent panel.
+
 - **A packed episode file moves the whole tail of the season.** When a release packs
   TMDB's double episode into one file it keeps only the FIRST number (DuckTales
   S01E51 "Magicas Magic Mirror Take Me Out of the Ballgame" is E51 AND E52), so
@@ -1267,10 +1274,13 @@ SEERR_API_KEY=
 - [ ] Move to Workspace hardlinks from Download to Workspace inputs/ (with output/ pre-created)
 - [ ] Move to Library hardlinks from Processed (not Download)
 - [ ] Workspace cleaned up after processing completes
+- [ ] Workspace "Complete & Import" places series outputs under the canonical `<Show>/<Sxx>/` tree (filenames kept) and stores PROCESSED-root-relative `processed_files` paths
+- [ ] Navbar Workspaces dropdown routes a native series to `/native/:id` (arr-linked to `/managed/:sonarrId`, movies to `/requests/:id`) — never an internal request id to `/managed/:id`
 - [ ] TorrentPanel checkbox toggles between "Move to Processed" and "Move to Workspace"
 - [ ] TorrentPanel shared component renders correctly in both RequestDetail and FranchiseDetail
-- [ ] TorrentPanel shows content info badge (video/bluray/multi/none) at 100%
-- [ ] Content-info endpoint scans content_path for video files and BDMV directories
+- [ ] TorrentPanel shows content info badge (video/bluray/multi/archive/none) at 100%
+- [ ] Content-info endpoint scans content_path for video files, BDMV directories, and split-RAR archive sets (reported as `type: "archive"` with `archiveParts`, never "No video files")
+- [ ] Sample/trailer/preview video files are excluded from the content-info scan
 - [ ] titlesMatch rejects sequel numbers (e.g. "moana 2" does NOT match "moana")
 - [ ] titlesMatch tolerates 1 missing word for 3+ word titles (e.g. "LEGO Ninjago" matches "Ninjago Dragons Rising")
 - [ ] Embedded `[imdbid-tt…]` veto: Mufasa's file is rejected under The Lion King (1994) and vice versa, in the processed panel, Fix Names, the scan picker and library folder resolution

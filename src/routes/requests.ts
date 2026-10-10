@@ -8228,7 +8228,7 @@ alreadyExtra = true;
   // GET /api/workspaces/active - List all active workspaces across all requests
   router.get("/workspaces/active", async (req: Request, res: Response) => {
     try {
-      const requests = db.prepare("SELECT id, title, type FROM media_requests").all() as any[];
+      const requests = db.prepare("SELECT id, title, type, sonarr_id, library_key FROM media_requests").all() as any[];
       const allWorkspaces: any[] = [];
       for (const req2 of requests) {
         const ws = listWorkspaces(req2.id, req2.title);
@@ -8238,6 +8238,7 @@ alreadyExtra = true;
             requestId: req2.id,
             mediaTitle: req2.title,
             mediaType: req2.type,
+            sonarrId: req2.sonarr_id ?? null,
           });
         }
       }
@@ -10534,8 +10535,14 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       }
 
       const VIDEO_EXTS = new Set([".mkv", ".mp4", ".avi", ".mov", ".ts", ".m2ts", ".wmv"]);
+      // Split-RAR archive parts: old scene naming (.rar/.r00/.r01…), the newer
+      // multi-volume form (.part1.rar) and the numbered form (.001/.002). A
+      // release shipped as an archive has NO video file until it is extracted,
+      // so reporting it as "none" hid what it actually is.
+      const ARCHIVE_PART_RE = /\.(?:rar|r\d{2,3}|part\d+\.rar|\d{3})$/i;
       const videoFiles: { name: string; size: number; path: string }[] = [];
       let hasBdmv = false;
+      let archiveParts = 0;
 
       function scanDir(dir: string, depth: number = 0) {
         if (depth > 3) return;
@@ -10555,6 +10562,8 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
               if (lower.includes("sample") || lower.includes("trailer") || lower.includes("preview")) continue;
               const stat = fs.statSync(fullPath);
               videoFiles.push({ name: entry.name, size: stat.size, path: fullPath });
+            } else if (ARCHIVE_PART_RE.test(entry.name)) {
+              archiveParts++;
             }
           }
         }
@@ -10571,20 +10580,24 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
             const stat = fs.statSync(contentPath);
             videoFiles.push({ name: path.basename(contentPath), size: stat.size, path: contentPath });
           }
+        } else if (ARCHIVE_PART_RE.test(path.basename(contentPath))) {
+          archiveParts++;
         }
       }
 
-      let type: "video" | "bluray" | "multi" | "none";
+      let type: "video" | "bluray" | "multi" | "archive" | "none";
       if (hasBdmv) type = "bluray";
       else if (videoFiles.length === 1) type = "video";
       else if (videoFiles.length > 1) type = "multi";
+      else if (archiveParts > 0) type = "archive";
       else type = "none";
 
       res.json({
         type,
         videoFiles: videoFiles.map((f) => ({ name: f.name, size: f.size })),
         hasBdmv,
-        needsProcessing: hasBdmv || videoFiles.length > 1,
+        archiveParts,
+        needsProcessing: hasBdmv || videoFiles.length > 1 || archiveParts > 0,
       });
     } catch (error: any) {
       console.error("Error scanning content info:", error);
@@ -12059,10 +12072,31 @@ const type = request.type === "series" ? "series" : "movie";
       if (!ws) return res.status(404).json({ error: "Workspace not found" });
 
       const type = request.type === "series" ? "series" : "movie";
-      const result = completeWorkspace(ws.path, type);
+      // Series outputs go into the same canonical <Show>/<Sxx>/ layout that
+      // move-to-processed produces, so the processed panel's per-season scan
+      // finds them. Without this they landed flat in the processed ROOT.
+      let seriesLayout: { showDir: string; seasonDir: string } | null = null;
+      if (type === "series" && request.library_key) {
+        try {
+          const conf = loadNamingConf(db);
+          const packed = await fixNamesPieces(db, request, []);
+          const seasonNum = request.season ?? 1;
+          const showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
+            || cleanFranchiseTitle(request.title || "");
+          if (showDir) {
+            const seasonDir = canonicalSeasonDir(conf, seasonNum) || `S${String(seasonNum).padStart(2, "0")}`;
+            seriesLayout = { showDir, seasonDir };
+          }
+        } catch {}
+      }
+      const result = completeWorkspace(ws.path, type, seriesLayout || undefined);
       if (!result.success) return res.status(400).json({ error: result.error });
 
-      const outputBasenames = result.processedPaths.map((p) => path.basename(p));
+      // approval_history.processed_files stores PROCESSED-root-relative paths
+      // (the panel joins them onto the root). With the flat layout that equals
+      // the basename, but nested series outputs would be misread as root files.
+      const processedDir = getProcessedDir(type);
+      const outputRels = result.processedPaths.map((p) => path.relative(processedDir, p));
 
       // Workspace outputs were MOVED (renameSync) — these are brand-new inodes,
       // so they MUST be registered here or identity is lost forever.
@@ -12079,11 +12113,10 @@ const type = request.type === "series" ? "series" : "movie";
       ).get(id) as any;
       if (approval) {
         const existing = JSON.parse((db.prepare("SELECT processed_files FROM approval_history WHERE id = ?").get(approval.id) as any)?.processed_files || "[]");
-        const merged = [...new Set([...existing, ...outputBasenames])];
+        const merged = [...new Set([...existing, ...outputRels])];
         db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(merged), approval.id);
       }
 
-      const processedDir = getProcessedDir(type);
       if (type === "movie" && request.radarr_id) {
         radarr.scanDownloadedMovie(processedDir, request.radarr_id).catch(() => {});
       } else if (type === "series" && request.sonarr_id) {

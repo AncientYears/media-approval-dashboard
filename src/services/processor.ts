@@ -556,10 +556,21 @@ export function deleteWorkspaceFile(wsPath: string, subDir: "inputs" | "output",
   }
 }
 
-export function completeWorkspace(wsPath: string, type: "movie" | "series"): { success: boolean; processedPaths: string[]; error?: string } {
+export function completeWorkspace(
+  wsPath: string,
+  type: "movie" | "series",
+  seriesLayout?: { showDir: string; seasonDir: string },
+): { success: boolean; processedPaths: string[]; error?: string } {
   const outputDir = path.join(wsPath, "output");
   const processedDir = getProcessedDir(type);
   fs.mkdirSync(processedDir, { recursive: true });
+
+  // Series outputs land in the canonical <Show>/<Sxx>/ layout the processed
+  // panel scans. Without it they sit flat in the processed ROOT, where the
+  // per-season scan never looks, so a completed workspace appeared to vanish.
+  const destRoot = type === "series" && seriesLayout
+    ? path.join(processedDir, seriesLayout.showDir, seriesLayout.seasonDir)
+    : processedDir;
 
   const processedPaths: string[] = [];
 
@@ -569,9 +580,10 @@ export function completeWorkspace(wsPath: string, type: "movie" | "series"): { s
       return { success: false, processedPaths: [], error: "No output files to process" };
     }
 
+    fs.mkdirSync(destRoot, { recursive: true });
     for (const entry of outputEntries) {
       const src = path.join(outputDir, entry.name);
-      const dest = path.join(processedDir, entry.name);
+      const dest = path.join(destRoot, entry.name);
       if (entry.isDirectory()) {
         if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true });
         fs.renameSync(src, dest);

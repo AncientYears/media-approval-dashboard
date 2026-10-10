@@ -49,7 +49,14 @@ export default function WorkspaceOverview() {
                   key={`${w.requestId}-${w.index}`}
                   className={`ws-overview-row ${isCompleted ? "ws-overview-row-completed" : ""}`}
                   onClick={() => {
-                    navigate(w.mediaType === "series" ? `/managed/${w.requestId}` : `/requests/${w.requestId}`);
+                    // A series workspace opens its franchise view: arr-linked
+                    // groups key off sonarr_id, native groups off the request id
+                    // (/native/:id). Sending a native request id to /managed/:id
+                    // made FranchiseDetail fetch it as a sonarr id and fail.
+                    const target = w.mediaType === "series"
+                      ? (w.sonarrId ? `/managed/${w.sonarrId}` : `/native/${w.requestId}`)
+                      : `/requests/${w.requestId}`;
+                    navigate(target);
                     setOpen(false);
                   }}
                 >

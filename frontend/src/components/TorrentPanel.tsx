@@ -132,6 +132,7 @@ export default function TorrentPanel({
       case "video": return <span className="rtag rtag-content-ok">Single video</span>;
       case "bluray": return <span className="rtag rtag-content-warn">Bluray disk</span>;
       case "multi": return <span className="rtag rtag-content-warn">{contentInfo.videoFiles.length} video files</span>;
+      case "archive": return <span className="rtag rtag-content-warn">RAR archive{(contentInfo.archiveParts || 0) > 1 ? ` (${contentInfo.archiveParts} parts)` : ""}</span>;
       case "none": return <span className="rtag rtag-content-err">No video files</span>;
       default: return null;
     }
