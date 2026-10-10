@@ -10551,6 +10551,8 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
           } else {
             const ext = path.extname(entry.name).toLowerCase();
             if (VIDEO_EXTS.has(ext)) {
+              const lower = entry.name.toLowerCase();
+              if (lower.includes("sample") || lower.includes("trailer") || lower.includes("preview")) continue;
               const stat = fs.statSync(fullPath);
               videoFiles.push({ name: entry.name, size: stat.size, path: fullPath });
             }
@@ -10564,7 +10566,11 @@ router.post("/:id/fix-identity", async (req: Request, res: Response) => {
       } else {
         const ext = path.extname(contentPath).toLowerCase();
         if (VIDEO_EXTS.has(ext)) {
-          videoFiles.push({ name: path.basename(contentPath), size: stat.size, path: contentPath });
+          const lower = contentPath.toLowerCase();
+          if (!lower.includes("sample") && !lower.includes("trailer") && !lower.includes("preview")) {
+            const stat = fs.statSync(contentPath);
+            videoFiles.push({ name: path.basename(contentPath), size: stat.size, path: contentPath });
+          }
         }
       }
 
