@@ -4,6 +4,7 @@ import { fetchRequests, fetchManaged, fetchFranchiseSeasons, cleanupStaleRequest
 import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 import DownloadDirsModal from "../components/DownloadDirsModal";
 import DiscoverModal from "../components/DiscoverModal";
+import NormalizeProcessedModal from "../components/NormalizeProcessedModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -92,6 +93,7 @@ export default function Dashboard() {
   const [pendingCleanup, setPendingCleanup] = useState<{ dryResult: any } | null>(null);
   const [downloadDirsOpen, setDownloadDirsOpen] = useState(false);
   const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [normalizeOpen, setNormalizeOpen] = useState(false);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
 
   const loadData = useCallback(async () => {
@@ -227,6 +229,7 @@ export default function Dashboard() {
       } : undefined} />}
       {downloadDirsOpen && <DownloadDirsModal onClose={() => { setDownloadDirsOpen(false); loadData(); }} />}
       {discoverOpen && <DiscoverModal onClose={() => setDiscoverOpen(false)} onRequested={(id) => navigate(`/requests/${id}`)} />}
+      {normalizeOpen && <NormalizeProcessedModal onClose={() => { setNormalizeOpen(false); loadData(); }} />}
       {confirmDelete && (
         <ConfirmModal
           message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
@@ -320,6 +323,7 @@ export default function Dashboard() {
             loadData();
           }}>Import Missing</button>
           <button className="btn btn-primary btn-tiny" onClick={() => setDiscoverOpen(true)}>Discover</button>
+          <button className="btn btn-primary btn-tiny" onClick={() => setNormalizeOpen(true)}>Normalize Processed</button>
           <button className="btn btn-primary btn-tiny" onClick={async () => {
             setModal({ title: "Scan Downloads", lines: ["Scanning qBittorrent..."] });
             const result = await scanDownloads();

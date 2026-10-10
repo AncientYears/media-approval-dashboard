@@ -232,6 +232,33 @@ export async function runWorkspaceScripts(requestId: number, workspaceIndex: num
   };
 }
 
+export async function previewNormalizeProcessed() {
+  const response = await api.get(`/requests/normalize-processed/preview`);
+  return response.data as {
+    processedDir: string;
+    items: {
+      file: string;
+      source: string;
+      destination: string;
+      ownerRequestId: number;
+      ownerTitle: string;
+      season: number;
+      evidence: "association" | "identity" | "name";
+      warning: string | null;
+    }[];
+    skips: { file: string; source: string; reason: string }[];
+  };
+}
+
+export async function applyNormalizeProcessed(files: string[]) {
+  const response = await api.post(`/requests/normalize-processed/apply`, { files });
+  return response.data as {
+    success: boolean;
+    moved: { file: string; destination: string }[];
+    failed: { file: string; error: string }[];
+  };
+}
+
 export async function completeWorkspace(requestId: number, workspaceIndex: number) {
   const response = await api.post(`/requests/${requestId}/workspaces/${workspaceIndex}/complete`);
   return response.data;

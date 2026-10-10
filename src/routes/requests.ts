@@ -1778,6 +1778,209 @@ async function canonicalFileBase(db: Database, request: any, sourceBase: string,
   });
 }
 
+// ---- Processed layout normalization (one-time series stray relocation) ----
+
+interface NormalizePlanItem {
+  file: string;
+  source: string;
+  destination: string;
+  ownerRequestId: number;
+  ownerTitle: string;
+  season: number;
+  evidence: "association" | "identity" | "name";
+  warning: string | null;
+}
+
+interface NormalizeSkip {
+  file: string;
+  source: string;
+  reason: string;
+}
+
+interface NormalizePlan {
+  processedDir: string;
+  items: NormalizePlanItem[];
+  skips: NormalizeSkip[];
+}
+
+/** Series processed files belong under PROCESSED_TV/<canonical show dir>/<Sxx>/.
+ *  A video sitting DIRECTLY in PROCESSED_TV is a legacy stray: before canonical
+ *  writes landed, "Complete & Import" dropped workspace outputs at the processed
+ *  root because no season folder existed. This plans an inode-preserving
+ *  relocation for each attributable stray and returns the plan only — it touches
+ *  nothing on disk, so the operator can review every move first.
+ *
+ *  Ownership is resolved identity-first (media_files keyed by inode), then from
+ *  the request's own approval_history bookkeeping, then from the filename.
+ *  Identity ALONE is reported with a warning rather than trusted blindly: a
+ *  stale/mis-attributed row is exactly the case that must be eyeballed before a
+ *  move ("Dragons: Gift of the Night Fury" registered against
+ *  "Avatar: Seven Havens"). */
+async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
+  const processedDir = PROCESSED_TV;
+  const plan: NormalizePlan = { processedDir, items: [], skips: [] };
+  if (!fs.existsSync(processedDir)) return plan;
+
+  const requests = db.prepare(
+    "SELECT id, title, type, season, library_key FROM media_requests WHERE type = 'series' AND library_key IS NOT NULL AND library_key != ''",
+  ).all() as Array<{ id: number; title: string; type: string; season: number | null; library_key: string }>;
+  const reqById = new Map(requests.map((r) => [r.id, r]));
+
+  // basename -> request ids whose approval_history explicitly lists it.
+  const assocByBase = new Map<string, number[]>();
+  for (const row of db.prepare(
+    "SELECT request_id, processed_files FROM approval_history WHERE processed_files IS NOT NULL AND processed_files != '[]'",
+  ).all() as Array<{ request_id: number; processed_files: string }>) {
+    let arr: string[] = [];
+    try { arr = JSON.parse(row.processed_files); } catch { continue; }
+    for (const p of arr) {
+      const base = path.basename(String(p));
+      const list = assocByBase.get(base) || [];
+      list.push(row.request_id);
+      assocByBase.set(base, list);
+    }
+  }
+
+  const showDirCache = new Map<number, string>();
+  const showDirFor = async (req: any): Promise<string> => {
+    const cached = showDirCache.get(req.id);
+    if (cached !== undefined) return cached;
+    let showDir = "";
+    try {
+      const conf = loadNamingConf(db);
+      const packed = await fixNamesPieces(db, req, []);
+      showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces)) || cleanFranchiseTitle(req.title || "") || "";
+    } catch {
+      showDir = cleanFranchiseTitle(req.title || "") || "";
+    }
+    showDirCache.set(req.id, showDir);
+    return showDir;
+  };
+
+  for (const entry of fs.readdirSync(processedDir, { withFileTypes: true })) {
+    if (entry.isDirectory() || entry.name.startsWith(".") || !VIDEO_FILE_RE.test(entry.name)) continue;
+    const source = path.join(processedDir, entry.name);
+    const identityRow = identifyByPath(db, source);
+
+    let owner: { id: number; title: string; season: number | null } | null = null;
+    let evidence: NormalizePlanItem["evidence"] = "name";
+    if (identityRow?.library_key) {
+      const matches = requests.filter((r) => r.library_key === identityRow.library_key);
+      owner = matches.find((r) => (r.season ?? 0) === (identityRow.season ?? 0)) || matches[0] || null;
+      if (owner) evidence = "identity";
+    }
+    if (!owner) {
+      const owners = (assocByBase.get(entry.name) || []).map((id) => reqById.get(id)).filter(Boolean) as any[];
+      if (owners.length) { owner = owners[0]; evidence = "association"; }
+    }
+    if (!owner) {
+      const norm = entry.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const hit = requests.find((r) => titlesMatch((r.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(), norm));
+      if (hit) { owner = hit; evidence = "name"; }
+    }
+    if (!owner) {
+      plan.skips.push({ file: entry.name, source, reason: "no owning request could be resolved" });
+      continue;
+    }
+
+    const season = identityRow?.season ?? owner.season ?? 1;
+    const showDir = await showDirFor(owner);
+    if (!showDir) {
+      plan.skips.push({ file: entry.name, source, reason: "could not compute a canonical series folder" });
+      continue;
+    }
+    const seasonDir = canonicalSeasonDir(loadNamingConf(db), season) || `S${String(season).padStart(2, "0")}`;
+    let ino = 0;
+    try { ino = fs.statSync(source).ino; } catch {}
+    const destination = uniqueDestPath(path.join(processedDir, showDir, seasonDir, entry.name), ino);
+    if (path.resolve(destination) === path.resolve(source)) {
+      plan.skips.push({ file: entry.name, source, reason: "already in the canonical location" });
+      continue;
+    }
+
+    let warning: string | null = null;
+    if (evidence === "identity") {
+      const norm = entry.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const ownerNorm = (owner.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (!titlesMatch(ownerNorm, norm)) {
+        warning = "identity-only match, and the filename does not match this request's title — verify before moving";
+      }
+    }
+
+    plan.items.push({
+      file: entry.name,
+      source,
+      destination,
+      ownerRequestId: owner.id,
+      ownerTitle: owner.title || "",
+      season,
+      evidence,
+      warning,
+    });
+  }
+
+  plan.items.sort((a, b) => a.file.localeCompare(b.file));
+  return plan;
+}
+
+interface NormalizeResult {
+  moved: Array<{ file: string; destination: string }>;
+  failed: Array<{ file: string; error: string }>;
+}
+
+/** Carry out (a subset of) the normalize plan. Renames are inode-verified and
+ *  the owning request's processed_files bookkeeping is rewritten to the new
+ *  PROCESSED-root-relative path so the panel keeps finding the file afterwards. */
+async function applyNormalizeProcessed(db: Database, files: string[] | undefined): Promise<NormalizeResult> {
+  const plan = await buildNormalizePlan(db);
+  const want = files && files.length ? new Set(files) : null;
+  const moved: NormalizeResult["moved"] = [];
+  const failed: NormalizeResult["failed"] = [];
+
+  for (const item of plan.items) {
+    if (want && !want.has(item.file) && !want.has(item.source)) continue;
+    try {
+      const pre = fs.statSync(item.source);
+      if (pre.isDirectory()) { failed.push({ file: item.file, error: "not a file" }); continue; }
+      fs.mkdirSync(path.dirname(item.destination), { recursive: true });
+      fs.renameSync(item.source, item.destination);
+      let post: fs.Stats | null = null;
+      try { post = fs.statSync(item.destination); } catch {}
+      if (!post || post.ino !== pre.ino) {
+        try { fs.renameSync(item.destination, item.source); } catch {}
+        failed.push({ file: item.file, error: "inode changed after the move — rolled back" });
+        continue;
+      }
+
+      const newRel = path.relative(getProcessedDir("series"), item.destination);
+      try {
+        const rows = db.prepare(
+          "SELECT id, processed_files FROM approval_history WHERE request_id = ? AND processed_files IS NOT NULL AND processed_files != '[]'",
+        ).all(item.ownerRequestId) as Array<{ id: number; processed_files: string }>;
+        for (const row of rows) {
+          let arr: string[] = [];
+          try { arr = JSON.parse(row.processed_files); } catch { continue; }
+          let changed = false;
+          const out = arr.map((p) => {
+            if (p === item.file || path.basename(String(p)) === item.file) { changed = true; return newRel; }
+            return p;
+          });
+          if (changed) db.prepare("UPDATE approval_history SET processed_files = ? WHERE id = ?").run(JSON.stringify(out), row.id);
+        }
+      } catch (e: any) {
+        console.error(`[Normalize] bookkeeping update failed for ${item.file}: ${e.message}`);
+      }
+
+      moved.push({ file: item.file, destination: item.destination });
+      console.log(`[Normalize] moved ${item.file} -> ${item.destination}`);
+    } catch (err: any) {
+      failed.push({ file: item.file, error: `${err.code || "ERR"}: ${err.message}` });
+    }
+  }
+
+  return { moved, failed };
+}
+
 // ---- P2: "Fix Names" — standardize existing trees (inode-verified renames) ----
 
 const VIDEO_FILE_RE = /\.(mkv|mp4|avi|mov|ts|wmv)$/i;
@@ -8255,6 +8458,29 @@ alreadyExtra = true;
     res.json({ scripts: WORKSPACE_SCRIPTS });
   });
 
+  // GET /api/requests/normalize-processed/preview - plan relocating series
+  // strays sitting directly in PROCESSED_TV into <Show>/<Sxx>/ (read-only).
+  // Registered before `GET /:id` so it is never parsed as a request id.
+  router.get("/normalize-processed/preview", async (_req: Request, res: Response) => {
+    try {
+      const plan = await buildNormalizePlan(db);
+      res.json(plan);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/normalize-processed/apply - carry out the selected moves.
+  router.post("/normalize-processed/apply", async (req: Request, res: Response) => {
+    try {
+      const { files } = req.body as { files?: string[] };
+      const result = await applyNormalizeProcessed(db, files);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // POST /api/requests/workspaces/scan - Scan all workspace dirs, report orphaned/empty
   router.post("/workspaces/scan", async (req: Request, res: Response) => {
     try {
@@ -11649,7 +11875,7 @@ const type = request.type === "series" ? "series" : "movie";
       const requestTitleNorm = (request.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
       // Collect all files from processedDir — flat or nested (series use SeriesName/S##/ structure)
-      type ProcessedEntry = { name: string; relPath: string; fullPath: string; isDir: boolean };
+      type ProcessedEntry = { name: string; relPath: string; fullPath: string; isDir: boolean; isRoot: boolean };
       const allEntries: ProcessedEntry[] = [];
       const targetSeason = request.type === "series" && request.season != null
         ? `S${String(request.season).padStart(2, "0")}` : null;
@@ -11665,11 +11891,11 @@ const type = request.type === "series" ? "series" : "movie";
             const seasonDir = path.join(fullPath, sub.name);
             for (const f of fs.readdirSync(seasonDir)) {
               if (!/\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(f)) continue;
-              allEntries.push({ name: f, relPath: path.join(entry.name, sub.name, f), fullPath: path.join(seasonDir, f), isDir: false });
+              allEntries.push({ name: f, relPath: path.join(entry.name, sub.name, f), fullPath: path.join(seasonDir, f), isDir: false, isRoot: false });
             }
           }
         } else {
-          allEntries.push({ name: entry.name, relPath: entry.name, fullPath, isDir: false });
+          allEntries.push({ name: entry.name, relPath: entry.name, fullPath, isDir: false, isRoot: true });
         }
       }
 
@@ -11725,7 +11951,15 @@ const type = request.type === "series" ? "series" : "movie";
           reassignFileByLibraryFolder(db, request, fullPath, libraryNameByInode.get(ino) || null);
           continue;
         }
-        if (matchedNames.has(e.name) || matchedNames.has(e.relPath) || linkedToLibrary || identityHit) {
+        const explicit = matchedNames.has(e.name) || matchedNames.has(e.relPath) || linkedToLibrary;
+        if (explicit || identityHit) {
+          // A series file sitting at the processed ROOT whose ONLY claim is a
+          // media_files row (no approval_history/torrent/workspace association,
+          // no library twin) is not part of the canonical <Show>/<Sxx>/ layout.
+          // Legacy strays are surfaced by the Normalize tool; the panel does not
+          // advertise an unowned file (the mis-attributed "Dragons" row, which
+          // carries no association but a stale identity).
+          if (request.type === "series" && e.isRoot && !explicit) continue;
           // Admitted with no identity row of its own (it matched approval_history by
           // name, or is a twin of one of our library files). Claim the inode here
           // for the same reason as the Fix Names scan: an unregistered inode cannot
