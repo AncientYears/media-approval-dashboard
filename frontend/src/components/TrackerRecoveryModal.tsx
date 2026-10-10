@@ -553,15 +553,19 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                           </div>
                           <ul>
                             {rows.map((r) => (
-                              <li key={r.key} className={FLAG_CLASS[r.status]}                                 title={r.source ? `${r.key}\n→ ${r.source}` : r.key}>
+                              <li key={r.key} className={FLAG_CLASS[r.status]} title={r.source ? `${r.key}\n→ ${r.source}` : r.key}>
                                 <span className="file-flag">{FLAG[r.status]}</span>
                                 <span className="miss-path">{r.name}</span>
                                 <span className="miss-size">
-                                  {r.status === "partial"
-                                    ? `${fmtBytes(r.partialSize || 0)} / ${fmtBytes(r.size)}`
-                                    : fmtBytes(r.size)}
-                                  {r.tree ? ` · ${r.tree}` : ""}
-                                  {r.source && parentDir(r.source) ? `/${parentDir(r.source)}` : ""}
+                                  <span className="ms-bytes">
+                                    {r.status === "partial"
+                                      ? `${fmtBytes(r.partialSize || 0)} / ${fmtBytes(r.size)}`
+                                      : fmtBytes(r.size)}
+                                  </span>
+                                  {r.tree && <span className="ms-tree"> · {r.tree}</span>}
+                                  {r.source && parentDir(r.source) && (
+                                    <span className="ms-src">/{parentDir(r.source)}</span>
+                                  )}
                                 </span>
                               </li>
                             ))}
