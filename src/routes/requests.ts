@@ -9084,7 +9084,21 @@ alreadyExtra = true;
             p.matches.some((m) => m.sourcePath && (m.sourcePath === full || m.sourcePath.startsWith(full + path.sep)))
           );
           if (isPlanSource) continue;
-          const inodes = collectVideoInodes(full);
+          // A single-file orphan (most movies/specials) is a FILE, not a dir:
+          // collectVideoInodes is a DIRECTORY walker, so calling it on a file
+          // made readdirSync throw and every single-file orphan came back with
+          // zero inodes — videoCount 0 and existsInProcessed always false even
+          // when the exact same inode sits in /Processed (a move-to-processed
+          // hardlink later renamed by Fix Names keeps its inode). Stat the file
+          // directly; directories keep the recursive walk.
+          let inodes = new Set<number>();
+          if (e.isDirectory()) {
+            inodes = collectVideoInodes(full);
+          } else if (VIDEO_FILE_RE.test(e.name)) {
+            try {
+              inodes.add(fs.statSync(full).ino);
+            } catch {}
+          }
           const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
           const parsed = parseTorrentName(e.name);
           const matched = await findBestRequestForDownload(
