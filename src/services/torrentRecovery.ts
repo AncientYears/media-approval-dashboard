@@ -289,6 +289,14 @@ export function planMatches(
 
     const consider = (fileIdx: number, torrentPath: string, length: number, scopeToMediaDirs: boolean) => {
       let candidates = (bySize.get(length) || []).filter((v) => !used.has(`${v.dev}:${v.ino}`));
+      // The download tree keeps every release name verbatim — nothing ever renames
+      // there — so a same-length file under a different name is a different
+      // release that merely shares the length (an unrelated episode, a sample),
+      // and hardlinking it in would be overwritten by qBittorrent's recheck.
+      // Processed/library copies ARE renamed by the app, so they stay size-only.
+      candidates = candidates.filter(
+        (v) => v.tree !== "download" || leaf(path.basename(v.path)) === leaf(path.basename(torrentPath)),
+      );
       if (scopeToMediaDirs) candidates = candidates.filter((v) => mediaDirs.has(path.dirname(v.path)));
       if (candidates.length === 0) {
         missing.push({
