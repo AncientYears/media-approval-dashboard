@@ -663,6 +663,65 @@ function processedDestForEntry(entryPath: string, type: string): { destDir: stri
 const TORRENT_DOWNLOADING_STATES = ["downloading", "forceddl", "queueddl", "pauseddl"];
 const TORRENT_SEEDING_STATES = ["uploading", "stalledup", "forcedup", "queuedup", "pausedup"];
 
+// Release-metadata tokens that are never part of a title when they sit at the
+// very end of a release name. `cleanFranchiseTitle` strips a tail it recognises,
+// but its patterns are anchored and stop at the first token they don't know:
+// "…2023 PLDUB DUAL 2160p UHD BluRay" lost BluRay and then stuck on "UHD", and
+// TMDB cannot index the remainder (0 results). The fallback peels this run, and
+// the film's trailing year — which TMDB also fails to ignore as a query word
+// ("… LEmpire du Milieu 2023" → 0, without the year → the film) — before it
+// searches. Deliberately excludes bare ambiguous words (hd/sd/dd/language codes)
+// so a genuine title ending cannot be eaten.
+const RELEASE_TAIL_TOKEN = /^(?:[48]k|uhd|fhd|web-?dl|web-?rip|blu-?ray|bd-?rip|br-?rip|bdremux|remux|dvd-?rip|dvd|hd-?tv|hd-?rip|h\.?26[45]|x\.?26[45]|hevc|avc|xvid|divx|mpeg-?2|av1|vp9|\d{1,2}bit|hi10p|hdr10\+?|hdr|sdr|hlg|dolby\.?vision|aac(?:[0-9.]+)?|ac-?3|e-?ac-?3|dd\+|ddp|dts(?:-?hd)?(?:\.?ma)?|dtsx|true-?hd|atmos|flac|opus|[257]\.[01]|multi|dual(?:-?audio)?|pldub|lektor|dubbing|napisy|subs|proper|repack|rerip|reenc|mkv|mp4|avi|\d{3,4}p)$/i;
+
+/** Turn a raw release name into a TMDB search query + the film's year, peeling
+ *  the trailing release-tag run and the year so TMDB can actually index it. */
+function releaseNameSearchQuery(name: string): { query: string; year: number | null } {
+  const dotted = (name || "").replace(/_/g, " ").replace(/\./g, " ");
+  const t = (cleanFranchiseTitle(dotted) || dotted).trim();
+  const toks = t.split(/\s+/).filter(Boolean);
+  while (toks.length > 2 && RELEASE_TAIL_TOKEN.test(toks[toks.length - 1])) toks.pop();
+  let year: number | null = null;
+  if (toks.length > 2 && /^(?:19|20)\d{2}$/.test(toks[toks.length - 1])) {
+    year = parseInt(toks.pop() as string, 10);
+  }
+  return { query: toks.join(" ").trim() || t, year };
+}
+
+/** Names to try when matching a download/torrent to a request: the release name
+ *  first, then the video filenames physically inside it. Cryptic release names
+ *  ("LOTR.18.2001") carry no title words at all, but the media file inside
+ *  ("The.Lord.of.the.Rings…Izyk.mkv") does — the same fallback the download-dir
+ *  scan uses, so the Link action agrees with what the scan already displayed. */
+function downloadMatchCandidateNames(torrent: any, entryName: string, downloadRoot: string): string[] {
+  const out: string[] = [];
+  const push = (s?: string | null) => {
+    const v = (s || "").trim();
+    if (v && !out.includes(v)) out.push(v);
+  };
+  push(torrent?.name);
+  push(entryName);
+  const bases: string[] = [];
+  if (torrent?.content_path) bases.push(fromQBittorrentPath(String(torrent.content_path)));
+  if (downloadRoot && entryName) bases.push(path.join(downloadRoot, entryName));
+  for (const base of bases) {
+    if (!base || !fs.existsSync(base)) continue;
+    try {
+      const st = fs.statSync(base);
+      if (st.isDirectory()) {
+        for (const f of fs.readdirSync(base)) {
+          if (!/\.(mkv|mp4|avi|mov|ts|wmv|m2ts|iso)$/i.test(f)) continue;
+          push(f);
+          if (out.length >= 6) break;
+        }
+      } else if (st.isFile()) {
+        push(path.basename(base));
+      }
+    } catch {}
+  }
+  return out;
+}
+
 async function findBestRequestForDownload(db: Database, name: string, type: string, season?: number | null): Promise<any | null> {
   const want = normalizeTitleForMatch(name || "");
   if (!want) return null;
@@ -700,8 +759,8 @@ async function findBestRequestForDownload(db: Database, name: string, type: stri
   // that space, and TMDB union-search adds ambiguity without evidence.
   if (!best && type === "movie") {
     try {
-      const searchable = cleanFranchiseTitle(name.replace(/[_]/g, " ").replace(/\./g, " ")) || name;
-      const hits = (await searchTMDB(searchable, "movie")) || [];
+      const { query: searchable, year } = releaseNameSearchQuery(name);
+      const hits = (await searchTMDB(searchable, "movie", undefined, year)) || [];
       for (const hit of hits) {
         const idRow = db.prepare(
           "SELECT library_key FROM tmdb_external_ids WHERE tmdb_id = ? AND media_type = 'movie' LIMIT 1"
@@ -726,8 +785,16 @@ async function findBestRequestForDownload(db: Database, name: string, type: stri
 // version counts pick it up. Returns the linked request, or null when no match.
 async function linkTorrentToRequest(db: Database, torrent: any, entryName: string, type: string, downloadRoot: string): Promise<any | null> {
   const parsed = parseTorrentName((torrent && torrent.name) || entryName);
-  const season = type === "series" ? (parsed.season != null ? parsed.season : null) : null;
-  const match = await findBestRequestForDownload(db, (torrent && torrent.name) || entryName, type, season);
+  const baseSeason = type === "series" ? (parsed.season != null ? parsed.season : null) : null;
+  // Try the release name, then any video filenames inside it, so a cryptic
+  // release name ("LOTR.18.2001") is matched by the media file it holds.
+  let match: any = null;
+  for (const candidate of downloadMatchCandidateNames(torrent, entryName, downloadRoot)) {
+    const p = parseTorrentName(candidate);
+    const season = type === "series" ? (p.season != null ? p.season : baseSeason) : null;
+    match = await findBestRequestForDownload(db, candidate, type, season);
+    if (match) break;
+  }
   if (!match) return null;
 
   const hash = torrent?.hash || "";
@@ -8763,33 +8830,34 @@ alreadyExtra = true;
         };
         sawChecking = await pollRecheck();
         // A fresh-add recheck occasionally wedges: state stays "checking" at 0%
-        // forever (qBittorrent hashing nothing), so the modal polls "infinite
-        // checking 0%". Recover it — but NEVER by calling recheck on a torrent
-        // that is still actively hashing (qBittorrent serialises rechecks per
-        // torrent and errors / restarts the run). Pause first, wait for the
-        // state to leave "checking", THEN recheck once. Gated on progress === 0
-        // so a large file legitimately hashing (which advances progress) is left
-        // alone rather than interrupted mid-check.
+        // forever, so the modal polls "infinite checking 0%". The torrent was
+        // added PAUSED, and qBittorrent queues a recheck but never runs it for a
+        // paused torrent — which is exactly why resuming it by hand (then
+        // stopping again) clears it. The recovery mirrors that: RESUME, let the
+        // queued check execute, then pause back once it verifies. Gated on
+        // progress === 0 so a large file legitimately hashing (which advances
+        // progress) is left alone rather than interrupted mid-check.
         if (finalT && torrentIsChecking(finalT.state || "") && (finalT.progress || 0) === 0) {
-          try { await qbittorrent.pauseTorrent(hash); } catch {}
-          for (let i = 0; i < 12; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-            const pausedT = await qbittorrent.getTorrentByHash(hash);
-            if (!pausedT) break;
-            finalT = pausedT;
-            if (!torrentIsChecking(pausedT.state || "")) break;
+          try { await qbittorrent.resumeTorrent(hash); } catch {}
+          for (let i = 0; i < 20; i++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            const resumedT = await qbittorrent.getTorrentByHash(hash);
+            if (!resumedT) break;
+            finalT = resumedT;
+            if (!torrentIsChecking(resumedT.state || "")) break;
           }
-          if (finalT && !torrentIsChecking(finalT.state || "")) {
-            try { await qbittorrent.recheck(hash); } catch {}
-            sawChecking = (await pollRecheck()) || sawChecking;
+          // Restore the paused state the restore intended once the check lands,
+          // so linking sees a completed (paused) torrent like a normal restore.
+          // A still-running check is left alone for the modal to follow live.
+          if (finalT && finalT.progress === 1) {
+            try { await qbittorrent.pauseTorrent(hash); } catch {}
+            finalT = (await qbittorrent.getTorrentByHash(hash)) || finalT;
           }
         }
-        // Never re-issue recheck outside the wedge recovery above. Calling
-        // recheck on one that is ALREADY actively hashing errors / restarts the
-        // run. The recovery modal polls the torrent's checking state live (3s),
-        // so a torrent still checking when this POST returns just needs more
-        // time, not a stop+retry. The in-band window is kept short (~8s), so one
-        // restore never holds the request open long enough to look like a hang.
+        // The recovery modal polls the torrent's checking state live (3s), so a
+        // torrent still checking when this POST returns just needs more time, not
+        // a stop+retry. The in-band window is kept short so one restore never
+        // holds the request open long enough to look like a hang.
         if (finalT && !torrentIsChecking(finalT.state || "")) {
           const pct = Math.floor((finalT.progress || 0) * 1000) / 10;
           if (finalT.progress === 1) {
@@ -8862,7 +8930,11 @@ alreadyExtra = true;
         if (wrong.length > 0) {
           const pn = parseTorrentName(torrent.name || "");
           const season = type === "series" && pn.season != null ? pn.season : null;
-          const best = await findBestRequestForDownload(db, torrent.name || "", type, season);
+          let best: any = null;
+          for (const candidate of downloadMatchCandidateNames(torrent, torrent.name || "", root)) {
+            best = await findBestRequestForDownload(db, candidate, type, season);
+            if (best) break;
+          }
           if (best) {
             const alreadyOnBest = existingRows.some((r) => r.request_id === best.id);
             for (const r of wrong) {

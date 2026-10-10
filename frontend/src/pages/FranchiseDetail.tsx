@@ -393,7 +393,9 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
   const [preprocessingMap, setPreprocessingMap] = useState<Record<number, boolean>>({});
   const [processedFiles, setProcessedFiles] = useState<{ name: string; size: number; isDir: boolean; inLibrary: boolean; libraryPath: string }[]>([]);
   const [processedDir, setProcessedDir] = useState<string>("");
-  const [movingProcessed, setMovingProcessed] = useState<string | null>(null);
+  // One entry per file in flight — a single string meant clicking a second row
+  // cleared the first row's spinner while its move was still running.
+  const [movingProcessed, setMovingProcessed] = useState<Set<string>>(new Set());
   const [deletingProcessed, setDeletingProcessed] = useState<string | null>(null);
   const [removeLibConfirm, setRemoveLibConfirm] = useState<string | null>(null);
   const [procWorkspaces, setProcWorkspaces] = useState<any[]>([]);
@@ -654,13 +656,14 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
 
   const handleProcWsMove = async (config: { workspaceIndex?: number; name?: string; notes?: string; scripts?: string[] }) => {
     if (!procWsPickerFile) return;
-    setMovingProcessed(procWsPickerFile);
+    const file = procWsPickerFile;
+    setMovingProcessed((prev) => new Set(prev).add(file));
     try {
-      await processedToWorkspace(season.request_id, procWsPickerFile, config);
+      await processedToWorkspace(season.request_id, file, config);
       await refreshProcessedAndWorkspaces();
       refreshMoveStatus();
     } catch {}
-    setMovingProcessed(null);
+    setMovingProcessed((prev) => { const next = new Set(prev); next.delete(file); return next; });
     setProcWsPickerFile(null);
   };
 
@@ -673,7 +676,7 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
         defaultName={procWsPickerFile?.replace(/\.[^.]+$/, "") || ""}
         onMove={handleProcWsMove}
         onCancel={() => setProcWsPickerFile(null)}
-        busy={movingProcessed === procWsPickerFile}
+        busy={!!procWsPickerFile && movingProcessed.has(procWsPickerFile)}
       />
 
       {processedFiles.length > 0 && (
@@ -702,14 +705,14 @@ function SeasonDetail({ season, franchise, initialSearch, onBack }: {
                   )}
                   <div className="move-actions">
                     {!f.inLibrary && (
-                      <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed(f.name); try { await moveToLibrary(season.request_id, f.name); await new Promise(r => setTimeout(r, 3000)); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed(null); }} disabled={movingProcessed === f.name}>
-                        {movingProcessed === f.name ? "..." : "To Library"}
+                      <button className="btn btn-primary btn-tiny" onClick={async () => { setMovingProcessed((prev) => new Set(prev).add(f.name)); try { await moveToLibrary(season.request_id, f.name); await new Promise(r => setTimeout(r, 3000)); await refreshProcessedAndWorkspaces(); } catch {} setMovingProcessed((prev) => { const next = new Set(prev); next.delete(f.name); return next; }); }} disabled={movingProcessed.has(f.name)}>
+                        {movingProcessed.has(f.name) ? "..." : "To Library"}
                       </button>
                     )}
                     {wsForFile ? (
                       <button className="btn btn-secondary btn-tiny" onClick={() => setWsManagerIdx(wsForFile.index)}>Manage</button>
                     ) : (
-                      <button className="btn btn-workspace btn-tiny" onClick={() => openProcWsPicker(f.name)} disabled={movingProcessed === f.name}>
+                      <button className="btn btn-workspace btn-tiny" onClick={() => openProcWsPicker(f.name)} disabled={movingProcessed.has(f.name)}>
                         To Workspace
                       </button>
                     )}

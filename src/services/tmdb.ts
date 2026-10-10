@@ -203,12 +203,18 @@ export async function searchTMDB(
   query: string,
   mediaType: "movie" | "series",
   language?: string,
+  year?: number | null,
 ): Promise<Array<{ id: number; title: string; year: number | null; overview: string; poster: string | null }>> {
   const key = apiKey();
   if (!key) return [];
   const q = query.replace(/[\[(]\d{4}[\])]/g, "").trim() || query;
   const path = mediaType === "movie" ? "/search/movie" : "/search/tv";
-  const data = await tmdbGet<any>(`${path}?query=${encodeURIComponent(q)}&page=1&language=${language || process.env.TMDB_LANGUAGE || "en-US"}`);
+  // A release name usually carries the film's year, but TMDB treats it as a
+  // query word and returns nothing ("… LEmpire du Milieu 2023" → 0 results).
+  // Passing it as the year filter keeps the disambiguation without poisoning
+  // the text match.
+  const yearParam = year && Number.isFinite(year) ? `&year=${year}` : "";
+  const data = await tmdbGet<any>(`${path}?query=${encodeURIComponent(q)}&page=1&language=${language || process.env.TMDB_LANGUAGE || "en-US"}${yearParam}`);
   if (!data?.results?.length) return [];
   return data.results.slice(0, 10).map((r: any) => {
     const date = r.release_date || r.first_air_date || "";
