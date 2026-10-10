@@ -335,6 +335,7 @@ export default function TorrentPanel({
       }}
       onCancel={() => setWsPickerOpen(false)}
       busy={isMoving}
+      onOpen={loadWorkspaces}
     />
 
     {showDestroyModal && onDestroy && (

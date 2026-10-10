@@ -18,6 +18,7 @@ export interface WorkspacePickerProps {
   onMove: (config: { workspaceIndex?: number; name?: string; notes?: string; scripts?: string[] }) => void;
   onCancel: () => void;
   busy?: boolean;
+  onOpen?: () => void;
 }
 
 export default function WorkspacePickerModal({
@@ -29,6 +30,7 @@ export default function WorkspacePickerModal({
   onMove,
   onCancel,
   busy,
+  onOpen,
 }: WorkspacePickerProps) {
   const [selected, setSelected] = useState<number | "new" | null>(null);
   const [newName, setNewName] = useState(defaultName);
@@ -41,7 +43,12 @@ export default function WorkspacePickerModal({
       setNewName(defaultName);
       setNewNotes("");
       setNewScripts([]);
+      // Re-fetch the list every time it opens: a workspace may have been
+      // completed (which deletes it) from another modal since the parent last
+      // loaded, and a stale entry would otherwise linger until a page refresh.
+      if (onOpen) onOpen();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultName]);
 
   if (!open) return null;
