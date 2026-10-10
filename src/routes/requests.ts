@@ -9215,6 +9215,7 @@ alreadyExtra = true;
       for (const item of items) {
         const hash = String(item.infoHash || "").toLowerCase();
         const type = item.type === "series" ? "series" : "movie";
+        const allowMissing = !!item.allowMissing;
         const tracker = byHash.get(hash);
         const plan = planByHash.get(hash);
         const out: any = { infoHash: hash, name: tracker?.name || null, ok: false };
@@ -9229,7 +9230,7 @@ alreadyExtra = true;
           results.push({ ...out, ok: true, alreadyLive: true, hash, state: t?.state || null, progress: t?.progress ?? null });
           continue;
         }
-        if (!plan.complete) {
+        if (!plan.complete && !allowMissing) {
           const absent = plan.missing.filter((m) => !m.partialPath).length;
           out.error = plan.hasMedia
             ? `Incomplete match — ${plan.missing.filter((m) => !m.partialPath && isMediaTorrentPath(m.torrentPath)).length} media file(s) missing (sidecars like nfo/txt/jpg are skipped on restore; video files must exist)`
@@ -9419,6 +9420,12 @@ alreadyExtra = true;
           }
         } else if (finalT) {
           out.verifying = true;
+        }
+
+        if (allowMissing && !plan.complete) {
+          out.allowMissing = true;
+          out.missingFiles = plan.missing.filter((m) => !m.partialPath).length;
+          out.warn = `${out.warn ? out.warn + "; " : ""}${out.missingFiles} file(s) had no source — resume the torrent to download them from peers (works only while the tracker has seeder-leechers)`;
         }
 
         console.log(`[Trackers] Restored ${plan.name} (${hash.slice(0, 8)}) into ${saveRoot} — ${out.verified ? "verified" : `state ${finalT?.state ?? added.state}, ${Math.floor((finalT?.progress ?? added.progress ?? 0) * 1000) / 10}%`}, then link via POST /trackers/link`);

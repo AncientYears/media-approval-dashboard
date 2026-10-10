@@ -582,7 +582,7 @@ export async function scanTrackers() {
   return response.data;
 }
 
-export async function restoreTrackers(items: { infoHash: string; type: "movie" | "series" }[]) {
+export async function restoreTrackers(items: { infoHash: string; type: "movie" | "series"; allowMissing?: boolean }[]) {
   const response = await api.post("/requests/trackers/restore", { items });
   return response.data;
 }

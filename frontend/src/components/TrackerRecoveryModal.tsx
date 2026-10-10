@@ -141,6 +141,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const [tab, setTab] = useState<"trackers" | "orphans">("trackers");
   const [types, setTypes] = useState<Record<string, "movie" | "series">>({});
   const [orphanPicks, setOrphanPicks] = useState<Set<string>>(new Set());
+  const [allowMissingMap, setAllowMissingMap] = useState<Record<string, boolean>>({});
   const [healNote, setHealNote] = useState<string | null>(null);
   const { toast } = useToast();
 
@@ -212,13 +213,21 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   async function restore(t: TrackerRow) {
     markBusy(t.infoHash);
     try {
-      const res = await restoreTrackers([{ infoHash: t.infoHash, type: types[t.infoHash] || t.typeGuess }]);
+      const res = await restoreTrackers([
+        { infoHash: t.infoHash, type: types[t.infoHash] || t.typeGuess, allowMissing: !!allowMissingMap[t.infoHash] },
+      ]);
       const r = res.results?.[0];
       if (r?.ok) {
         toast(
           `${t.name}: ${r.verified ? "added, verified" : r.verifying ? "added, verifying" : "added"}`,
           "success",
         );
+        if (r.allowMissing) {
+          toast(
+            `${t.name}: restored with ${r.missingFiles} file(s) missing — resume the torrent to download them from peers`,
+            "error",
+          );
+        }
         if (r.skippedFiles) toast(`${t.name}: skipping ${r.skippedFiles} missing sidecar file(s)`, "success");
         if (r.contentAligned) toast(`${t.name}: linked ${r.contentAligned} file(s) to qBittorrent's path`, "success");
         if (r.warn) toast(`${t.name}: ${r.warn}`, "error");
@@ -417,14 +426,36 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                             </button>
                           )}
                           {!t.live && (
-                            <button
-                              className="btn btn-small btn-primary"
-                              disabled={!t.complete || globalBusy || rowBusyOf(t.infoHash)}
-                              title={t.complete ? undefined : "Video files are missing on disk — see the missing list below"}
-                              onClick={() => restore(t)}
-                            >
-                              Restore
-                            </button>
+                            <>
+                              <button
+                                className="btn btn-small btn-primary"
+                                disabled={(!t.complete && !allowMissingMap[t.infoHash]) || globalBusy || rowBusyOf(t.infoHash)}
+                                title={
+                                  t.complete
+                                    ? undefined
+                                    : allowMissingMap[t.infoHash]
+                                      ? "Restoring anyway — the missing file(s) will be downloaded from peers once the torrent is resumed"
+                                      : "Video files are missing on disk — see the missing list below"
+                                }
+                                onClick={() => restore(t)}
+                              >
+                                Restore{!t.complete && allowMissingMap[t.infoHash] ? " anyway" : ""}
+                              </button>
+                              {!t.complete && (
+                                <label
+                                  className="tracker-allow-missing"
+                                  title="Restores the matched files and lets qBittorrent download whatever is missing — only useful while the tracker still has peers."
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={!!allowMissingMap[t.infoHash]}
+                                    disabled={globalBusy || rowBusyOf(t.infoHash)}
+                                    onChange={(e) => setAllowMissingMap((p) => ({ ...p, [t.infoHash]: e.target.checked }))}
+                                  />
+                                  Restore missing files anyway
+                                </label>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>

@@ -3224,6 +3224,21 @@ body {
   margin-left: auto;
 }
 
+.tracker-allow-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tracker-allow-missing input {
+  margin: 0;
+  accent-color: var(--primary);
+}
+
 .tracker-missing-details {
   font-size: 0.75rem;
 }
