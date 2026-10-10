@@ -107,6 +107,60 @@ function matchTreeSummary(t: TrackerRow): string {
     .join(" · ");
 }
 
+/** Every file the torrent tracks, each with an explicit present/missing status.
+ *  The old panel listed ONLY the missing files, so a file that was present had
+ *  no row at all and "orange = present" was a fair reading of the colours. */
+type FileStatus = "present" | "missing-media" | "missing-side" | "partial";
+interface FileRow {
+  key: string;
+  name: string;
+  size: number;
+  status: FileStatus;
+  tree?: string;
+  partialSize?: number;
+}
+
+function fileRows(t: TrackerRow): FileRow[] {
+  const rows: FileRow[] = [];
+  for (const m of t.matches || []) {
+    // A null sourcePath is a zero-length entry or torrent padding — present but
+    // not a real file, so it is left out of the listing.
+    if (!m.sourcePath) continue;
+    rows.push({
+      key: m.torrentPath,
+      name: m.torrentPath.split("/").pop() || m.torrentPath,
+      size: m.length,
+      status: "present",
+      tree: m.tree,
+    });
+  }
+  for (const m of t.missing) {
+    rows.push({
+      key: m.torrentPath,
+      name: m.torrentPath.split("/").pop() || m.torrentPath,
+      size: m.length,
+      status: m.partialPath ? "partial" : m.media || !t.hasMedia ? "missing-media" : "missing-side",
+      partialSize: m.partialSize,
+    });
+  }
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return rows;
+}
+
+const FLAG: Record<FileStatus, string> = {
+  present: "✓",
+  "missing-media": "✗",
+  "missing-side": "✗",
+  partial: "◐",
+};
+
+const FLAG_CLASS: Record<FileStatus, string> = {
+  present: "file-present",
+  "missing-media": "miss-media",
+  "missing-side": "miss-side",
+  partial: "miss-partial",
+};
+
 const TYPE_HINT =
   "A .torrent carries no movie/series label of its own. This picks the destination " +
   "(Movies vs Series download folder) and which requests are matched when linking. " +
@@ -399,6 +453,8 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   const partials = partialCount(t);
                   const ready = t.fileCount - t.missing.length;
                   const treeSummary = matchTreeSummary(t);
+                  const rows = fileRows(t);
+                  const presentRows = rows.filter((r) => r.status === "present").length;
                   const sideMissing = t.hasMedia ? absentCount(t) - blocking : 0;
                   const summaryParts: string[] = [];
                   if (blocking > 0) summaryParts.push(`${blocking} media missing — restore blocked`);
@@ -429,7 +485,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                                     ? undefined
                                     : allowMissingMap[t.infoHash]
                                       ? "Restoring anyway — the missing file(s) will be downloaded from peers once the torrent is resumed"
-                                      : "Video files are missing on disk — see the missing list below"
+                                      : "Video files are missing on disk — expand the file list below to see which"
                                 }
                                 onClick={() => restore(t)}
                               >
@@ -474,21 +530,26 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                         <span>{t.announce.length} tracker(s)</span>
                         {t.storedTracker && <span className="badge tracker-badge" title={STORED_HINT}>stored</span>}
                       </div>
-                      {t.missing.length > 0 && (
+                      {rows.length > 0 && (
                         <details className={`tracker-missing-details ${detailCls}`}>
-                          <summary>{summaryParts.join(" · ")}</summary>
+                          <summary>
+                            {summaryParts.length > 0 ? summaryParts.join(" · ") : `${presentRows} file(s) present`}
+                          </summary>
+                          <div className="tracker-file-flags">
+                            <span className="ff ff-present">✓ present</span>
+                            <span className="ff ff-missing">✗ missing</span>
+                            {partials > 0 && <span className="ff ff-partial">◐ partial</span>}
+                          </div>
                           <ul>
-                            {t.missing.map((m) => (
-                              <li
-                                key={m.torrentPath}
-                                className={m.partialPath ? "miss-partial" : m.media || !t.hasMedia ? "miss-media" : "miss-side"}
-                                title={m.torrentPath}
-                              >
-                                <span className="miss-path">{m.torrentPath.split("/").pop()}</span>
+                            {rows.map((r) => (
+                              <li key={r.key} className={FLAG_CLASS[r.status]} title={r.key}>
+                                <span className="file-flag">{FLAG[r.status]}</span>
+                                <span className="miss-path">{r.name}</span>
                                 <span className="miss-size">
-                                  {m.partialPath
-                                    ? `${fmtBytes(m.partialSize || 0)} / ${fmtBytes(m.length)}`
-                                    : fmtBytes(m.length)}
+                                  {r.status === "partial"
+                                    ? `${fmtBytes(r.partialSize || 0)} / ${fmtBytes(r.size)}`
+                                    : fmtBytes(r.size)}
+                                  {r.tree ? ` · ${r.tree}` : ""}
                                 </span>
                               </li>
                             ))}

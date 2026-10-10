@@ -3311,6 +3311,49 @@ body {
   color: #93c5fd;
 }
 
+.tracker-file-flags {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 5px 2px;
+  font-size: 0.68rem;
+}
+
+.tracker-file-flags .ff-present {
+  color: #6ee7b7;
+}
+
+.tracker-file-flags .ff-missing {
+  color: #fbbf24;
+}
+
+.tracker-file-flags .ff-partial {
+  color: #93c5fd;
+}
+
+.tracker-missing-details li .file-flag {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+}
+
+.tracker-missing-details li.file-present .miss-path,
+.tracker-missing-details li.file-present .miss-size,
+.tracker-missing-details li.file-present .file-flag {
+  color: #6ee7b7;
+}
+
+.tracker-missing-details li.miss-media .file-flag {
+  color: #fbbf24;
+}
+
+.tracker-missing-details li.miss-side .file-flag {
+  color: #94a3b8;
+}
+
+.tracker-missing-details li.miss-partial .file-flag {
+  color: #93c5fd;
+}
+
 .tracker-orphan {
   flex-direction: row;
   align-items: flex-start;
