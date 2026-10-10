@@ -27,6 +27,11 @@ TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 
+# Group-writable files (664/2775) so Jellyfin on its own VM can rewrite .nfo
+# sidecars through gid 1000. systemd's default umask (0022) would make new
+# files group read-only and reintroduce the EACCES this export fought to fix.
+UMask=002
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=media-approval-app

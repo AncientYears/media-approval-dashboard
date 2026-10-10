@@ -21,6 +21,16 @@ import { loadNamingConf, saveNamingConf, DEFAULT_NAMING, NAMING_TOKENS, type Nam
 // Load environment variables
 dotenv.config();
 
+// Create group-writable output by default (664 files / 775 dirs). The media
+// tree is shared with Jellyfin on another VM, which reaches it through gid 1000
+// and must write .nfo sidecars beside our files. The usual umask 022 makes new
+// directories 755 with no group write, so Jellyfin is denied the moment we mint
+// a fresh show/season folder — regardless of the ones chmod'd earlier. Set here
+// rather than only in the systemd unit so `npm run dev` matches production.
+// Directories inherit the setgid group from their parent (/media/{Serialy,Filmy}
+// are 2775), so the group stays 1000.
+process.umask(0o002);
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";

@@ -28,6 +28,10 @@ RestartSec=10
 NoNewPrivileges=true
 PrivateTmp=false
 
+# Group-writable downloads (664) — the app hardlinks these, and Jellyfin writes
+# .nfo sidecars through gid 1000. Default umask 0022 would strip group write.
+UMask=002
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=qbittorrent-nox

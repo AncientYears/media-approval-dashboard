@@ -196,6 +196,16 @@ forever. Harmless while its libraries are only `Filmy`/`Serialy`, and shrinkable
 with a more specific read-only export (NFS matches the longest path prefix) if
 that ever stops being true.
 
+New files must also land **group-writable**, or Jellyfin loses access to them
+again the moment the app or qBittorrent writes one. The app sets
+`process.umask(0o002)` at startup (`src/server.ts`) and the units add
+`UMask=002` (belt and suspenders), giving files `664` and directories `775`;
+the systemd/manual default `0022` creates group read-only files and `755` dirs
+that Jellyfin can no longer rewrite — a fresh show/season folder the app mints
+would deny Jellyfin's `.nfo` writes even after a successful `chmod -R` of the
+existing tree. The setgid bit on the library roots keeps new subdirectories in
+gid 1000. If you change or replace the units, keep `UMask=002`.
+
 Inotify does not cross NFS, so Jellyfin will not notice a Fix Names rename on
 its own — refresh the library manually after renaming.
 
