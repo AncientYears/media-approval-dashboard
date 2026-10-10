@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
+import { scanTrackers, scanCorruption, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
 import { useToast } from "./Toast";
 
 interface MissingFile {
@@ -13,6 +13,10 @@ interface MissingFile {
   partialPath?: string | null;
   /** Bytes currently on disk for a partial file. */
   partialSize?: number;
+  /** Non-null when a size-matching file was found but its bytes failed the
+   *  torrent's own piece hash — a wrong file, or one overwritten through a
+   *  hardlink by a past bad restore. Never used; listed so it can be repaired. */
+  corrupt?: { path: string; tree: string } | null;
 }
 
 interface TrackerRow {
@@ -57,6 +61,21 @@ interface ScanData {
   duplicates: { infoHash: string; sourcePath: string }[];
   parseErrors: { file: string; error: string }[];
   healed?: { request_id: number; title: string }[];
+}
+
+interface CorruptFinding {
+  infoHash: string;
+  name: string;
+  torrentPath: string;
+  expectedLength: number;
+  path: string;
+  tree: "download" | "processed" | "library";
+  type: "movie" | "series";
+  /** Another saved torrent this same file verifies against — the corruption is
+   *  the OTHER release's bytes written through the hardlink. null = matches none. */
+  matchOther: string | null;
+  /** A verified copy of the same entry found elsewhere, if any. */
+  goodCopy: string | null;
 }
 
 function fmtMB(v: number): string {
@@ -110,7 +129,7 @@ function matchTreeSummary(t: TrackerRow): string {
 /** Every file the torrent tracks, each with an explicit present/missing status.
  *  The old panel listed ONLY the missing files, so a file that was present had
  *  no row at all and "orange = present" was a fair reading of the colours. */
-type FileStatus = "present" | "missing-media" | "missing-side" | "partial";
+type FileStatus = "present" | "missing-media" | "missing-side" | "partial" | "corrupt";
 interface FileRow {
   key: string;
   name: string;
@@ -120,7 +139,8 @@ interface FileRow {
   partialSize?: number;
   /** Where a present file was found. Matching is by byte length across every
    *  tree, so an identical sidecar from an unrelated release can satisfy this
-   *  torrent — showing the source folder makes that visible instead of magic. */
+   *  torrent — showing the source folder makes that visible instead of magic.
+   *  For a corrupt row this is the file that failed the hash. */
   source?: string;
 }
 
@@ -146,6 +166,17 @@ function fileRows(t: TrackerRow): FileRow[] {
     });
   }
   for (const m of t.missing) {
+    if (m.corrupt) {
+      rows.push({
+        key: m.torrentPath,
+        name: m.torrentPath.split("/").pop() || m.torrentPath,
+        size: m.length,
+        status: "corrupt",
+        tree: m.corrupt.tree,
+        source: m.corrupt.path,
+      });
+      continue;
+    }
     rows.push({
       key: m.torrentPath,
       name: m.torrentPath.split("/").pop() || m.torrentPath,
@@ -163,6 +194,7 @@ const FLAG: Record<FileStatus, string> = {
   "missing-media": "✗",
   "missing-side": "✗",
   partial: "◐",
+  corrupt: "!",
 };
 
 const FLAG_CLASS: Record<FileStatus, string> = {
@@ -170,6 +202,7 @@ const FLAG_CLASS: Record<FileStatus, string> = {
   "missing-media": "miss-media",
   "missing-side": "miss-side",
   partial: "miss-partial",
+  corrupt: "miss-corrupt",
 };
 
 const TYPE_HINT =
@@ -208,6 +241,8 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const [orphanPicks, setOrphanPicks] = useState<Set<string>>(new Set());
   const [allowMissingMap, setAllowMissingMap] = useState<Record<string, boolean>>({});
   const [healNote, setHealNote] = useState<string | null>(null);
+  const [corruption, setCorruption] = useState<{ scanned: number; findings: CorruptFinding[] } | null>(null);
+  const [corruptBusy, setCorruptBusy] = useState(false);
   const { toast } = useToast();
 
   // Busy is PER-ROW, so restoring/linking one tracker keeps every other row's
@@ -274,6 +309,25 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     const t = setInterval(() => load(true), 3000);
     return () => clearInterval(t);
   }, [load, scan?.trackers]);
+
+  async function runCorruptionScan() {
+    setCorruptBusy(true);
+    try {
+      const data = await scanCorruption();
+      setCorruption({ scanned: data.scanned, findings: data.findings || [] });
+      const n = data.findings?.length || 0;
+      toast(
+        n === 0
+          ? `No corruption found — verified ${data.scanned} saved tracker(s)`
+          : `${n} suspect file(s) found — files whose bytes don't match their torrent`,
+        n === 0 ? "success" : "error",
+      );
+    } catch (err: any) {
+      toast(err?.response?.data?.error || err.message, "error");
+    } finally {
+      setCorruptBusy(false);
+    }
+  }
 
   async function restore(t: TrackerRow) {
     markBusy(t.infoHash);
@@ -447,7 +501,47 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   </button>
                 )}
                 {scan.parseErrors.length > 0 && <span className="tracker-note tracker-note-err">{scan.parseErrors.length} unreadable</span>}
+                <button
+                  className="tracker-note tracker-note-btn"
+                  title="Verify every download/processed/library file against the saved trackers' own piece hashes. Finds files a past bad restore overwrote with another release's bytes — same size, wrong content."
+                  disabled={corruptBusy || busy.size > 0}
+                  onClick={runCorruptionScan}
+                >
+                  {corruptBusy ? "Verifying…" : "Verify integrity"}
+                </button>
               </div>
+
+              {corruption && (
+                <div className={`corruption-panel ${corruption.findings.length ? "has-findings" : ""}`}>
+                  <div className="corruption-head">
+                    <strong>
+                      {corruption.findings.length === 0
+                        ? `No corruption found — verified ${corruption.scanned} saved tracker(s).`
+                        : `${corruption.findings.length} suspect file(s) — bytes don't match the torrent:`}
+                    </strong>
+                    <button className="tracker-note-btn" onClick={() => setCorruption(null)}>dismiss</button>
+                  </div>
+                  {corruption.findings.map((f, i) => (
+                    <div className="corruption-row" key={`${f.path}-${i}`}>
+                      <span className="corruption-flag">!</span>
+                      <div className="corruption-info">
+                        <div className="corruption-path" title={f.path}>{f.path}</div>
+                        <div className="corruption-sub">
+                          <span className="corruption-tree">{f.tree}</span>
+                          <span>expected {fmtBytes(f.expectedLength)}</span>
+                          <span className="corruption-tor" title={f.name}>in torrent: {f.name}</span>
+                          {f.matchOther && (
+                            <span className="corruption-other" title={f.matchOther}>holds another release's bytes: {f.matchOther}</span>
+                          )}
+                          {f.goodCopy && (
+                            <span className="corruption-good" title={f.goodCopy}>good copy: {parentDir(f.goodCopy)}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {visible.length === 0 && (
                 <div className="tor-empty">
@@ -466,6 +560,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   const treeSummary = matchTreeSummary(t);
                   const rows = fileRows(t);
                   const presentRows = rows.filter((r) => r.status === "present").length;
+                  const corruptRows = rows.filter((r) => r.status === "corrupt").length;
                   const sideMissing = t.hasMedia ? absentCount(t) - blocking : 0;
                   const summaryParts: string[] = [];
                   if (blocking > 0) summaryParts.push(`${blocking} media missing — restore blocked`);
@@ -547,9 +642,10 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                             {summaryParts.length > 0 ? summaryParts.join(" · ") : `${presentRows} file(s) present`}
                           </summary>
                           <div className="tracker-file-flags">
-                            <span className="ff ff-present">✓ present</span>
-                            <span className="ff ff-missing">✗ missing</span>
-                            {partials > 0 && <span className="ff ff-partial">◐ partial</span>}
+                            <span className="ff-present">✓ present</span>
+                            <span className="ff-missing">✗ missing</span>
+                            {partials > 0 && <span className="ff-partial">◐ partial</span>}
+                            {corruptRows > 0 && <span className="ff-corrupt">! wrong bytes</span>}
                           </div>
                           <ul>
                             {rows.map((r) => (

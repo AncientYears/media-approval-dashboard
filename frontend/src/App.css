@@ -3373,6 +3373,94 @@ body {
   color: #93c5fd;
 }
 
+.tracker-missing-details li.miss-corrupt .miss-path {
+  color: #fca5a5;
+}
+
+.tracker-missing-details li.miss-corrupt .file-flag {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.tracker-file-flags .ff-corrupt {
+  color: #f87171;
+}
+
+.corruption-panel {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+.corruption-panel.has-findings {
+  border-color: #7f1d1d;
+  background: #1a1013;
+}
+
+.corruption-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 0.78rem;
+}
+
+.corruption-panel.has-findings .corruption-head strong {
+  color: #fca5a5;
+}
+
+.corruption-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px solid #1e293b;
+}
+
+.corruption-flag {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  color: #f87171;
+  font-weight: 700;
+}
+
+.corruption-info {
+  min-width: 0;
+}
+
+.corruption-path {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.72rem;
+  color: #e2e8f0;
+  overflow-wrap: anywhere;
+}
+
+.corruption-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 2px;
+  font-size: 0.68rem;
+  color: #64748b;
+}
+
+.corruption-tree {
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.corruption-good {
+  color: #6ee7b7;
+}
+
+.corruption-other {
+  color: #fbbf24;
+}
+
 .tracker-orphan {
   flex-direction: row;
   align-items: flex-start;

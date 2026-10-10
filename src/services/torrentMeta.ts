@@ -32,8 +32,12 @@ export interface ParsedTorrent {
   totalSize: number;
   /** Every file the torrent claims, including 0-length padding entries. */
   files: TorrentFileEntry[];
-  /** Raw 20-byte sha1 of the first piece — cheap ground truth for "does this
-   *  file on disk actually hold this torrent's data?". */
+  /** Raw concatenated SHA-1 piece hashes (20 bytes each) — the torrent's own
+   *  ground truth for its data, used to verify a candidate file really IS this
+   *  torrent's content before it is hardlinked in. */
+  pieces: Buffer;
+  /** Raw 20-byte sha1 of the first piece — cheap ground truth from the creator's
+   *  side (kept alongside `pieces` for the one-piece fast path). */
   firstPieceHash: Buffer | null;
 }
 
@@ -175,7 +179,8 @@ export function parseTorrentFile(buf: Buffer): ParsedTorrent {
 
   const pieceLength = typeof info["piece length"] === "number" ? info["piece length"] : 0;
   const piecesStr = typeof info.pieces === "string" ? info.pieces : "";
-  const firstPieceHash = piecesStr.length >= 20 ? Buffer.from(piecesStr.slice(0, 20), "latin1") : null;
+  const pieces = Buffer.from(piecesStr, "latin1");
+  const firstPieceHash = pieces.length >= 20 ? pieces.subarray(0, 20) : null;
 
   return {
     infoHash,
@@ -187,6 +192,7 @@ export function parseTorrentFile(buf: Buffer): ParsedTorrent {
     pieceCount: pieceLength > 0 ? Math.ceil(totalSize / pieceLength) : 0,
     totalSize,
     files,
+    pieces,
     firstPieceHash,
   };
 }

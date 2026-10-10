@@ -29,6 +29,9 @@ export interface VideoEntry {
   size: number;
   dev: number;
   ino: number;
+  /** mtime — part of the content-verification cache key, so a rewritten file
+   *  (qBittorrent writing through a hardlink) is re-hashed instead of trusted. */
+  mtimeMs: number;
   tree: "download" | "processed" | "library";
   type: "movie" | "series";
 }
@@ -89,7 +92,7 @@ export function collectVideos(roots: RecoveryRoots = defaultRecoveryRoots()): Vi
             if (seen.has(full)) continue;
             seen.add(full);
             const st = fs.statSync(full);
-            out.push({ path: full, size: st.size, dev: st.dev, ino: st.ino, tree: def.tree, type: def.type });
+            out.push({ path: full, size: st.size, dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs, tree: def.tree, type: def.type });
           }
         } catch {}
       }
@@ -175,6 +178,11 @@ export interface TorrentMatch {
    *  "present, incomplete", not missing: qBittorrent resumes it, and it never
    *  blocks a restore. */
   partialPath?: string | null;
+  /** Set when a size-matching file WAS found but its bytes failed the torrent's
+   *  own piece hash: a wrong file, or one overwritten through a hardlink. It is
+   *  never used (the matcher keeps looking for a verified copy), and the route
+   *  surfaces it so the corruption can be repaired. */
+  corrupt?: { path: string; tree: VideoEntry["tree"] } | null;
 }
 
 export interface TorrentPlan {
@@ -253,6 +261,84 @@ function downloadPathIfExists(roots: RecoveryRoots, torrentPath: string): string
 }
 
 /** Match every saved tracker against the collected videos, each source used once. */
+const PIECE_HASH_LEN = 20;
+
+/** Content-verification cache: `${infoHash}:${fileIdx}:${dev}:${ino}:${mtimeMs}`
+ *  -> verdict. One hash per (file, torrent-entry) per scan; a rewritten file
+ *  (qBittorrent writing through a hardlink bumps mtime) is re-hashed, so a stale
+ *  "OK" can never survive a corruption. */
+const verifyCache = new Map<string, boolean | null>();
+
+/**
+ * Does `absPath` really hold this torrent's data for the entry occupying global
+ * bytes `[offset, offset+length)`? SHA-1s the FIRST piece lying wholly inside the
+ * file and compares it to the torrent's own piece hash. A whole 256KB–4MB piece
+ * matching cannot be coincidence, so true/false are conclusive.
+ *
+ * true  – bytes match the torrent.
+ * false – bytes differ: a wrong file, or one overwritten through a hardlink.
+ * null  – cannot decide in isolation (no piece hashes, unreadable, or the file
+ *         is smaller than one whole piece). Treated as OK so nothing small is
+ *         ever condemned without evidence.
+ */
+function verifyTorrentFile(
+  absPath: string,
+  offset: number,
+  length: number,
+  pieceLength: number,
+  pieces: Buffer,
+  totalSize: number,
+  cacheKey: string,
+): boolean | null {
+  const cached = verifyCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const verdict = computeVerify(absPath, offset, length, pieceLength, pieces, totalSize);
+  verifyCache.set(cacheKey, verdict);
+  return verdict;
+}
+
+function computeVerify(
+  absPath: string,
+  offset: number,
+  length: number,
+  pieceLength: number,
+  pieces: Buffer,
+  totalSize: number,
+): boolean | null {
+  if (length <= 0) return true;
+  if (pieceLength <= 0 || pieces.length < PIECE_HASH_LEN) return null;
+  let fd: number | null = null;
+  try {
+    const firstPiece = Math.floor(offset / pieceLength);
+    const lastPiece = Math.floor((offset + length - 1) / pieceLength);
+    for (let k = firstPiece; k <= lastPiece; k++) {
+      const hashOff = k * PIECE_HASH_LEN;
+      if (hashOff + PIECE_HASH_LEN > pieces.length) break;
+      const pieceStart = k * pieceLength;
+      const pieceEnd = Math.min((k + 1) * pieceLength, totalSize);
+      // Only a piece wholly inside this file can be judged from this file alone;
+      // a boundary piece is shared with a neighbour and is not this file's to
+      // prove.
+      if (pieceStart < offset || pieceEnd > offset + length) continue;
+      if (fd === null) fd = fs.openSync(absPath, "r");
+      const buf = Buffer.allocUnsafe(pieceEnd - pieceStart);
+      const got = fs.readSync(fd, buf, 0, buf.length, pieceStart - offset);
+      if (got !== buf.length) return false; // short read → wrong/truncated
+      const digest = crypto.createHash("sha1").update(buf).digest();
+      return digest.equals(pieces.subarray(hashOff, hashOff + PIECE_HASH_LEN));
+    }
+    return null; // no whole piece lands inside this file
+  } catch {
+    return null; // unreadable → never condemn
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
 export function planMatches(
   trackers: SavedTracker[],
   videos: VideoEntry[],
@@ -284,6 +370,16 @@ export function planMatches(
     const hasContent = t.parsed.files.some((f) => isContentTorrentPath(f.path));
 
     const contentDirs = new Set<string>();
+
+    // Global byte offset of each file entry, for piece-hash verification.
+    const offsets: number[] = [];
+    {
+      let acc = 0;
+      for (const f of t.parsed.files) {
+        offsets.push(acc);
+        acc += f.length;
+      }
+    }
 
     const rank = (torrentPath: string, candidates: VideoEntry[]) =>
       [...candidates].sort((a, b) => {
@@ -321,7 +417,43 @@ export function planMatches(
         });
         return;
       }
-      const pick = rank(torrentPath, candidates)[0];
+      // Verify in rank order: the first candidate whose bytes ARE this torrent's
+      // data wins. A size-matching file that fails the piece hash is a wrong or
+      // overwritten file — never hardlinked in (qBittorrent would then write
+      // through it and destroy the library/processed source) — and is reported.
+      let pick: VideoEntry | null = null;
+      let corrupt: { path: string; tree: VideoEntry["tree"] } | null = null;
+      for (const c of rank(torrentPath, candidates)) {
+        const verdict = verifyTorrentFile(
+          c.path,
+          offsets[fileIdx],
+          length,
+          t.parsed.pieceLength,
+          t.parsed.pieces,
+          t.parsed.totalSize,
+          `${t.infoHash}:${fileIdx}:${c.dev}:${c.ino}:${c.mtimeMs}`,
+        );
+        if (verdict === false) {
+          if (!corrupt) corrupt = { path: c.path, tree: c.tree };
+          continue;
+        }
+        pick = c;
+        break;
+      }
+      if (!pick) {
+        missing.push({
+          torrentPath,
+          length,
+          sourcePath: null,
+          tree: "download",
+          type: null,
+          unique: false,
+          fileIndex: fileIdx,
+          partialPath: downloadPathIfExists(roots, torrentPath),
+          corrupt,
+        });
+        return;
+      }
       used.add(`${pick.dev}:${pick.ino}`);
       if (isContentTorrentPath(torrentPath)) contentDirs.add(path.dirname(pick.path));
       matches.push({
@@ -391,6 +523,129 @@ function hasSize(
   tree: VideoEntry["tree"],
 ): boolean {
   return (bySize.get(length) || []).some((v) => v.tree === tree && !used.has(`${v.dev}:${v.ino}`));
+}
+export interface CorruptFinding {
+  infoHash: string;
+  name: string;
+  torrentPath: string;
+  expectedLength: number;
+  /** The file whose bytes failed this torrent's piece hash. */
+  path: string;
+  tree: VideoEntry["tree"];
+  type: VideoEntry["type"];
+  /** Name of ANOTHER saved torrent this same file verifies against, if any. A
+   *  bad hardlink is written through by qBittorrent, so the corrupted file ends
+   *  up holding the OTHER release's bytes — it still reads as valid data for
+   *  that torrent. null means the bytes match no saved torrent at all. Either
+   *  way this torrent lost its file. */
+  matchOther: string | null;
+  /** A verified copy of THIS same entry found elsewhere, so the corrupt copy can
+   *  be repaired from it (else it must be re-downloaded). */
+  goodCopy: string | null;
+}
+
+/**
+ * Full integrity scan: verify every candidate against every saved tracker's own
+ * piece hashes and report the entries whose file does not match. This is the
+ * retroactive hunt for files a past restore corrupted — a bad hardlink is
+ * written through by qBittorrent's recheck, so the library/processed copy ends up
+ * holding the OTHER torrent's bytes at the same length. A length scan cannot see
+ * that; a piece hash can.
+ *
+ * Every mismatch is reported, deliberately: the corrupted file USUALLY now
+ * verifies against the other release it was overwritten with, so suppressing
+ * "files that are valid for some torrent" would hide exactly what we're after.
+ * `matchOther` names that other torrent; the file is reported either way because
+ * THIS torrent can no longer be seeded from it. An unverifiable file (smaller
+ * than one whole piece) is never condemned.
+ */
+export function scanCorruptedFiles(trackers: SavedTracker[], videos: VideoEntry[]): CorruptFinding[] {
+  const bySize = new Map<number, VideoEntry[]>();
+  for (const v of videos) {
+    const list = bySize.get(v.size) || [];
+    list.push(v);
+    bySize.set(v.size, list);
+  }
+
+  const fileKey = (v: VideoEntry) => `${v.dev}:${v.ino}`;
+  const byKey = new Map<string, VideoEntry>();
+  for (const v of videos) byKey.set(fileKey(v), v);
+  // fileKey -> `${infoHash}:${fileIdx}` -> torrent name it verified correctly for.
+  const okEntries = new Map<string, Map<string, string>>();
+  // fileKey -> first failing finding (internal, with the tag so a good copy for
+  // the SAME entry can be located).
+  const suspects = new Map<string, CorruptFinding & { tag: string }>();
+
+  for (const t of trackers) {
+    const files = t.parsed.files;
+    let offset = 0;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const fileOffset = offset;
+      offset += f.length;
+      if (f.length <= 0) continue;
+      for (const c of bySize.get(f.length) || []) {
+        const tag = `${t.infoHash}:${i}`;
+        const verdict = verifyTorrentFile(
+          c.path,
+          fileOffset,
+          f.length,
+          t.parsed.pieceLength,
+          t.parsed.pieces,
+          t.parsed.totalSize,
+          `${tag}:${c.dev}:${c.ino}:${c.mtimeMs}`,
+        );
+        const key = fileKey(c);
+        if (verdict === true) {
+          let set = okEntries.get(key);
+          if (!set) {
+            set = new Map();
+            okEntries.set(key, set);
+          }
+          set.set(tag, t.name);
+        } else if (verdict === false && !suspects.has(key)) {
+          const torrentPath = t.parsed.layout === "folder" ? `${t.parsed.name}/${f.path}` : f.path;
+          suspects.set(key, {
+            tag,
+            infoHash: t.infoHash,
+            name: t.name,
+            torrentPath,
+            expectedLength: f.length,
+            path: c.path,
+            tree: c.tree,
+            type: c.type,
+            matchOther: null,
+            goodCopy: null,
+          });
+        }
+      }
+    }
+  }
+
+  const findings: CorruptFinding[] = [];
+  for (const [key, s] of suspects) {
+    const okFor = okEntries.get(key);
+    if (okFor) {
+      for (const nm of okFor.values()) {
+        if (nm !== s.name) {
+          s.matchOther = nm;
+          break;
+        }
+      }
+    }
+    for (const [otherKey, entries] of okEntries) {
+      if (otherKey !== key && entries.has(s.tag)) {
+        const v = byKey.get(otherKey);
+        if (v) {
+          s.goodCopy = v.path;
+          break;
+        }
+      }
+    }
+    const { tag: _tag, ...finding } = s;
+    findings.push(finding);
+  }
+  return findings;
 }
 
 /**

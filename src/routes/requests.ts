@@ -51,6 +51,7 @@ import {
   listSavedTrackers,
   collectVideos,
   planMatches,
+  scanCorruptedFiles,
   placeFilesIntoDownload,
   alignQbitContentPath,
   storeTrackers,
@@ -9080,6 +9081,7 @@ alreadyExtra = true;
             media: isMediaTorrentPath(m.torrentPath),
             fileIndex: m.fileIndex,
             partialPath: m.partialPath || null,
+            corrupt: m.corrupt || null,
             partialSize: m.partialPath
               ? (() => { try { return fs.statSync(m.partialPath as string).size; } catch { return 0; } })()
               : 0,
@@ -9155,6 +9157,31 @@ alreadyExtra = true;
       });
     } catch (error: any) {
       console.error("Error scanning trackers:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/requests/trackers/corruption - verify every library/processed/
+  // download candidate against the saved trackers' own piece hashes and report
+  // the files that fail. This is the retroactive hunt for files a past restore
+  // corrupted: a bad hardlink is written through by qBittorrent's recheck, so
+  // the library/processed copy ends up holding the OTHER torrent's bytes at the
+  // same length. A length scan cannot see that; a piece hash can. Read-only.
+  router.get("/trackers/corruption", async (_req: Request, res: Response) => {
+    try {
+      const scan = listSavedTrackers();
+      const videos = collectVideos();
+      const findings = scanCorruptedFiles(scan.trackers, videos);
+      findings.sort(
+        (a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path),
+      );
+      res.json({
+        scanned: scan.trackers.length,
+        findings,
+        parseErrors: scan.errors,
+      });
+    } catch (error: any) {
+      console.error("Error scanning for corruption:", error);
       res.status(500).json({ error: error.message });
     }
   });

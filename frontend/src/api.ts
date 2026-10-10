@@ -582,6 +582,28 @@ export async function scanTrackers() {
   return response.data;
 }
 
+/** Retroactive integrity scan: verify every library/processed/download file
+ *  against the saved trackers' own piece hashes and report the ones that fail
+ *  (a past bad restore wrote another torrent's bytes through the hardlink). */
+export async function scanCorruption() {
+  const response = await api.get("/requests/trackers/corruption");
+  return response.data as {
+    scanned: number;
+    findings: {
+      infoHash: string;
+      name: string;
+      torrentPath: string;
+      expectedLength: number;
+      path: string;
+      tree: "download" | "processed" | "library";
+      type: "movie" | "series";
+      matchOther: string | null;
+      goodCopy: string | null;
+    }[];
+    parseErrors: { file: string; error: string }[];
+  };
+}
+
 export async function restoreTrackers(items: { infoHash: string; type: "movie" | "series"; allowMissing?: boolean }[]) {
   const response = await api.post("/requests/trackers/restore", { items });
   return response.data;
