@@ -209,6 +209,23 @@ gid 1000. If you change or replace the units, keep `UMask=002`.
 Inotify does not cross NFS, so Jellyfin will not notice a Fix Names rename on
 its own — refresh the library manually after renaming.
 
+Anything created while the tree was group read-only stays that way until
+chmod'd. Repair it once — new folders the app mints take the right modes
+automatically:
+
+```bash
+# on the NFS server (client root is squashed over this export)
+chmod -R u=rwX,g=rwX,o=rX /media/Serialy /media/Filmy
+```
+
+This whole arrangement is the standard setgid shared-directory pattern, and it
+is best practice *for a trusted single-tenant box*: setgid keeps the group on
+new subdirectories, umask 002 keeps files group-writable. The tradeoff is that
+any identity in gid 1000 — Jellyfin included — can rename or delete library
+files; that is deliberate, and per-service uid stays distinct (Jellyfin keeps
+uid 103). If that ever stops being acceptable, the fix is per-library read-only
+exports with metadata stored outside the tree, not a per-file permission audit.
+
 ## Configuration
 
 `.env` — see `.env.example`. The app loads it itself via `dotenv`; do not use
