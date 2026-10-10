@@ -9044,7 +9044,7 @@ alreadyExtra = true;
       } catch {}
       const liveHashes = new Set(torrents.map((t: any) => t.hash));
       const videos = collectVideos();
-      const plans = planMatches(scan.trackers, videos);
+      const plans = planMatches(scan.trackers, videos, undefined, false);
 
       const linkedByHash = new Map<string, any>();
       for (const r of db.prepare(

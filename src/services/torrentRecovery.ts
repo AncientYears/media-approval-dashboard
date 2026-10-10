@@ -343,6 +343,14 @@ export function planMatches(
   trackers: SavedTracker[],
   videos: VideoEntry[],
   roots: RecoveryRoots = defaultRecoveryRoots(),
+  /**
+   * Verify each chosen candidate against the torrent's piece hashes. ON for any
+   * path that will actually HARD-LINK (restore, orphan moves) — a wrong same-length
+   * file would be written through by qBittorrent and destroy the source. OFF for the
+   * read-only listing, where hashing every file made the modal crawl on first open;
+   * the explicit "Verify integrity" scan is the deep check and the expensive part.
+   */
+  verify = true,
 ): TorrentPlan[] {
   // Order: torrents whose files already live in the download tree first — those
   // are the ones sitting in place, waiting for their torrent back. Stable-sort
@@ -421,24 +429,29 @@ export function planMatches(
       // data wins. A size-matching file that fails the piece hash is a wrong or
       // overwritten file — never hardlinked in (qBittorrent would then write
       // through it and destroy the library/processed source) — and is reported.
+      const ordered = rank(torrentPath, candidates);
       let pick: VideoEntry | null = null;
-      let corrupt: { path: string; tree: VideoEntry["tree"] } | null = null;
-      for (const c of rank(torrentPath, candidates)) {
-        const verdict = verifyTorrentFile(
-          c.path,
-          offsets[fileIdx],
-          length,
-          t.parsed.pieceLength,
-          t.parsed.pieces,
-          t.parsed.totalSize,
-          `${t.infoHash}:${fileIdx}:${c.dev}:${c.ino}:${c.mtimeMs}`,
-        );
-        if (verdict === false) {
-          if (!corrupt) corrupt = { path: c.path, tree: c.tree };
-          continue;
+      let corrupt: TorrentMatch["corrupt"] = null;
+      if (verify) {
+        for (const c of ordered) {
+          const verdict = verifyTorrentFile(
+            c.path,
+            offsets[fileIdx],
+            length,
+            t.parsed.pieceLength,
+            t.parsed.pieces,
+            t.parsed.totalSize,
+            `${t.infoHash}:${fileIdx}:${c.dev}:${c.ino}:${c.mtimeMs}`,
+          );
+          if (verdict === false) {
+            if (!corrupt) corrupt = { path: c.path, tree: c.tree };
+            continue;
+          }
+          pick = c;
+          break;
         }
-        pick = c;
-        break;
+      } else {
+        pick = ordered[0] || null;
       }
       if (!pick) {
         missing.push({
