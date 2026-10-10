@@ -246,16 +246,36 @@ export async function previewNormalizeProcessed() {
       evidence: "association" | "identity" | "name";
       warning: string | null;
     }[];
+    staleIdentity: {
+      dev: number;
+      inode: number;
+      path: string;
+      tree: "processed" | "library";
+      folder: string;
+      season: number;
+      claimedKey: string;
+      claimedTitle: string;
+      action: "repoint" | "clear";
+      ownerKey: string | null;
+      ownerTitle: string | null;
+      evidence: string;
+      warning: string | null;
+    }[];
     skips: { file: string; source: string; reason: string }[];
   };
 }
 
-export async function applyNormalizeProcessed(files: string[]) {
-  const response = await api.post(`/requests/normalize-processed/apply`, { files });
+export async function applyNormalizeProcessed(
+  files: string[],
+  identities: { dev: number; inode: number }[] = [],
+) {
+  const response = await api.post(`/requests/normalize-processed/apply`, { files, identities });
   return response.data as {
     success: boolean;
     moved: { file: string; destination: string }[];
     failed: { file: string; error: string }[];
+    identityApplied: { dev: number; inode: number; path: string; action: "repoint" | "clear"; ownerKey: string | null; error?: string }[];
+    identityFailed: { dev: number; inode: number; path: string; action: "repoint" | "clear"; ownerKey: string | null; error?: string }[];
   };
 }
 

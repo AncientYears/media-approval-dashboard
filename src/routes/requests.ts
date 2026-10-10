@@ -1797,9 +1797,33 @@ interface NormalizeSkip {
   reason: string;
 }
 
+/** A registered series file whose containing show folder belongs to a DIFFERENT
+ *  request than the key its media_files row claims. Unlike an unowned row (a key
+ *  no request holds, cleaned at boot) these rows point at a valid key, so they
+ *  silently pollute the wrong card — the Once Upon a Princess special sitting in
+ *  `sofia the first/s00/` while registered to Avatar. Surfaced read-only in the
+ *  Normalize preview; applying either re-points it to the folder's real owner or,
+ *  when no show owns the folder, clears the mis-attribution. */
+interface StaleIdentityItem {
+  dev: number;
+  inode: number;
+  path: string;
+  tree: "processed" | "library";
+  folder: string;
+  season: number;
+  claimedKey: string;
+  claimedTitle: string;
+  action: "repoint" | "clear";
+  ownerKey: string | null;
+  ownerTitle: string | null;
+  evidence: string;
+  warning: string | null;
+}
+
 interface NormalizePlan {
   processedDir: string;
   items: NormalizePlanItem[];
+  staleIdentity: StaleIdentityItem[];
   skips: NormalizeSkip[];
 }
 
@@ -1818,7 +1842,7 @@ interface NormalizePlan {
  *  "Avatar: Seven Havens"). */
 async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
   const processedDir = PROCESSED_TV;
-  const plan: NormalizePlan = { processedDir, items: [], skips: [] };
+  const plan: NormalizePlan = { processedDir, items: [], staleIdentity: [], skips: [] };
   if (!fs.existsSync(processedDir)) return plan;
 
   const requests = db.prepare(
@@ -1920,22 +1944,174 @@ async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
   }
 
   plan.items.sort((a, b) => a.file.localeCompare(b.file));
+  plan.staleIdentity = buildStaleIdentityItems(db);
   return plan;
 }
 
 interface NormalizeResult {
   moved: Array<{ file: string; destination: string }>;
   failed: Array<{ file: string; error: string }>;
+  identityApplied: NormalizeIdentityOutcome[];
+  identityFailed: NormalizeIdentityOutcome[];
+}
+
+interface NormalizeIdentityOutcome {
+  dev: number;
+  inode: number;
+  path: string;
+  action: "repoint" | "clear";
+  ownerKey: string | null;
+  error?: string;
+}
+
+/** Resolve a series show folder (basename) to the request that owns it. A folder
+ *  stating a tvdb id is deterministic; otherwise a conservative title match that
+ *  returns null on ambiguity, so a mis-resolved folder is never trusted. */
+function resolveSeriesFolderOwner(
+  folderBase: string,
+  requests: Array<{ id: number; title: string; season: number | null; library_key: string }>,
+): { id: number; title: string; season: number | null; library_key: string } | null {
+  const idMatch = folderBase.match(/\btvdbid[\s-]?(\d+)\b/i);
+  if (idMatch) {
+    return requests.find((r) => seriesKeyIdSegment(r.library_key) === idMatch[1]) || null;
+  }
+  const norm = normalizeFolder(folderBase);
+  if (!norm) return null;
+  const years = folderYears(folderBase);
+  const candidates = requests.filter((r) => {
+    const t = normalizeFolder(cleanFranchiseTitle(r.title || ""));
+    const slug = normalizeFolder(seriesKeySlugTitle(r.library_key) ?? "");
+    return (
+      (!!t && (norm === t || (t.length >= 6 && includesTitleNorm(t, norm)) || (norm.length >= 6 && includesTitleNorm(norm, t)))) ||
+      (!!slug && norm === slug)
+    );
+  });
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  if (years.length) {
+    const yearHit = candidates.find((r) => {
+      const ky = libraryKeyYear(r.library_key);
+      return ky != null && years.includes(ky);
+    });
+    if (yearHit) return yearHit;
+  }
+  return null;
+}
+
+/** Whether two names share a significant word (length > 2). Used only to decide
+ *  a folder name is plausibly the claimed request's own (localized) folder. */
+function sharesSignificantWord(a: string, b: string): boolean {
+  const words = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2));
+  const wa = words(a);
+  if (!wa.size) return false;
+  const wb = words(b);
+  for (const w of wa) if (wb.has(w)) return true;
+  return false;
+}
+
+/** Find registered series files sitting in a show folder that belongs to a
+ *  DIFFERENT request than their media_files row claims. Read-only: the plan
+ *  reports what each would become; applying re-points or clears (see
+ *  applyNormalizeProcessed). */
+function buildStaleIdentityItems(db: Database): StaleIdentityItem[] {
+  const out: StaleIdentityItem[] = [];
+  const requests = db.prepare(
+    "SELECT id, title, type, season, library_key FROM media_requests WHERE type = 'series' AND library_key IS NOT NULL AND library_key != ''",
+  ).all() as Array<{ id: number; title: string; type: string; season: number | null; library_key: string }>;
+  if (requests.length === 0) return out;
+  const reqByKey = new Map(requests.map((r) => [r.library_key, r]));
+
+  const byInode = new Map<string, { path: string; folder: string | null; season: number; tree: "processed" | "library" }>();
+  const walk = (root: string, tree: "processed" | "library") => {
+    const rec = (dir: string, depth: number) => {
+      if (depth > 6) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.name.startsWith(".")) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { rec(full, depth + 1); continue; }
+        if (!e.isFile() || !VIDEO_FILE_RE.test(e.name)) continue;
+        let st: fs.Stats;
+        try { st = fs.statSync(full); } catch { continue; }
+        if (!st.ino) continue;
+        const rel = path.relative(root, full);
+        const segs = rel.split(path.sep);
+        const folder = segs.length >= 2 ? segs[0] : null;
+        const season = segs.length >= 3 ? (parseSeasonNumber(segs[segs.length - 2]) ?? 0) : 0;
+        const key = `${st.dev}:${st.ino}`;
+        const prev = byInode.get(key);
+        if (!prev || (tree === "processed" && prev.tree === "library")) {
+          byInode.set(key, { path: full, folder, season, tree });
+        }
+      }
+    };
+    rec(root, 0);
+  };
+  walk(PROCESSED_TV, "processed");
+  walk(MEDIA_TV, "library");
+
+  const rows = db.prepare(
+    "SELECT dev, inode, library_key, title, season FROM media_files WHERE library_key LIKE 'series:%'",
+  ).all() as Array<{ dev: number; inode: number; library_key: string; title: string; season: number }>;
+
+  for (const row of rows) {
+    const claimed = reqByKey.get(row.library_key);
+    if (!claimed) continue; // unowned key: cleared at boot, not this tool's job
+    const hit = byInode.get(`${row.dev}:${row.inode}`);
+    if (!hit || !hit.folder) continue; // not on disk, or a root stray (move section owns it)
+
+    const owner = resolveSeriesFolderOwner(hit.folder, requests);
+    if (owner) {
+      if (owner.library_key === row.library_key) continue; // its own folder
+      out.push({
+        dev: row.dev, inode: row.inode,
+        path: hit.path, tree: hit.tree, folder: hit.folder, season: hit.season,
+        claimedKey: row.library_key, claimedTitle: claimed.title || "",
+        action: "repoint",
+        ownerKey: owner.library_key, ownerTitle: owner.title || "",
+        evidence: `folder "${hit.folder}" belongs to ${owner.title || owner.library_key}`,
+        warning: null,
+      });
+      continue;
+    }
+
+    // No owner resolved: only clear when the folder is provably NOT this
+    // request's own — its resolved library folder is known AND differs, and the
+    // folder shares no significant word with the claimed title (so a localized
+    // variant that translates the name is left alone rather than wiped).
+    const ownFolder = resolveLibraryShowFolder(claimed);
+    const ownBase = ownFolder ? path.basename(ownFolder) : "";
+    if (ownBase && normalizeFolder(ownBase) === normalizeFolder(hit.folder)) continue;
+    if (!ownBase || sharesSignificantWord(hit.folder, claimed.title || "")) continue;
+    out.push({
+      dev: row.dev, inode: row.inode,
+      path: hit.path, tree: hit.tree, folder: hit.folder, season: hit.season,
+      claimedKey: row.library_key, claimedTitle: claimed.title || "",
+      action: "clear",
+      ownerKey: null, ownerTitle: null,
+      evidence: `folder "${hit.folder}" is not "${ownBase}"`,
+      warning: "no tracked show owns this folder — clearing the mis-attribution",
+    });
+  }
+  out.sort((a, b) => a.path.localeCompare(b.path));
+  return out;
 }
 
 /** Carry out (a subset of) the normalize plan. Renames are inode-verified and
  *  the owning request's processed_files bookkeeping is rewritten to the new
  *  PROCESSED-root-relative path so the panel keeps finding the file afterwards. */
-async function applyNormalizeProcessed(db: Database, files: string[] | undefined): Promise<NormalizeResult> {
+async function applyNormalizeProcessed(
+  db: Database,
+  files: string[] | undefined,
+  identities?: Array<{ dev: number; inode: number }>,
+): Promise<NormalizeResult> {
   const plan = await buildNormalizePlan(db);
   const want = files && files.length ? new Set(files) : null;
   const moved: NormalizeResult["moved"] = [];
   const failed: NormalizeResult["failed"] = [];
+  const identityApplied: NormalizeIdentityOutcome[] = [];
+  const identityFailed: NormalizeIdentityOutcome[] = [];
 
   for (const item of plan.items) {
     if (want && !want.has(item.file) && !want.has(item.source)) continue;
@@ -1978,7 +2154,38 @@ async function applyNormalizeProcessed(db: Database, files: string[] | undefined
     }
   }
 
-  return { moved, failed };
+  if (identities && identities.length) {
+    const identityWant = new Set(identities.map((i) => `${i.dev}:${i.inode}`));
+    for (const item of plan.staleIdentity) {
+      if (!identityWant.has(`${item.dev}:${item.inode}`)) continue;
+      try {
+        let st: fs.Stats;
+        try { st = fs.statSync(item.path); } catch { throw new Error("file no longer exists"); }
+        if (st.ino !== item.inode || st.dev !== item.dev) throw new Error("inode changed on disk — skipped");
+        if (item.action === "repoint" && item.ownerKey) {
+          registerVideoTree(db, item.path, {
+            library_key: item.ownerKey,
+            title: item.ownerTitle || "",
+            season: item.season,
+          });
+          identityApplied.push({ dev: item.dev, inode: item.inode, path: item.path, action: "repoint", ownerKey: item.ownerKey });
+          console.log(`[Normalize] re-pointed ${path.basename(item.path)} -> ${item.ownerTitle || item.ownerKey}`);
+        } else {
+          db.prepare("DELETE FROM media_files WHERE dev = ? AND inode = ?").run(item.dev, item.inode);
+          identityApplied.push({ dev: item.dev, inode: item.inode, path: item.path, action: "clear", ownerKey: null });
+          console.log(`[Normalize] cleared stale identity for ${path.basename(item.path)}`);
+        }
+      } catch (err: any) {
+        identityFailed.push({
+          dev: item.dev, inode: item.inode, path: item.path,
+          action: item.action, ownerKey: item.ownerKey,
+          error: `${err.code || "ERR"}: ${err.message}`,
+        });
+      }
+    }
+  }
+
+  return { moved, failed, identityApplied, identityFailed };
 }
 
 // ---- P2: "Fix Names" — standardize existing trees (inode-verified renames) ----
@@ -8473,8 +8680,8 @@ alreadyExtra = true;
   // POST /api/requests/normalize-processed/apply - carry out the selected moves.
   router.post("/normalize-processed/apply", async (req: Request, res: Response) => {
     try {
-      const { files } = req.body as { files?: string[] };
-      const result = await applyNormalizeProcessed(db, files);
+      const { files, identities } = req.body as { files?: string[]; identities?: Array<{ dev: number; inode: number }> };
+      const result = await applyNormalizeProcessed(db, files, identities);
       res.json({ success: true, ...result });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
