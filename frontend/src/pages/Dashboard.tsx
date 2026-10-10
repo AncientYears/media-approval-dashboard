@@ -28,6 +28,11 @@ const STATUS_ORDER: Record<string, number> = {
   DOWNLOADING: 3,
 };
 
+// Kept at module scope so it survives route changes. Navigating back to the
+// Dashboard remounts the component (state resets), but the last list snapshot
+// can still be painted instantly while a background refresh runs in its place.
+let dashboardCache: { requests: any[]; managed: any[] } | null = null;
+
 function Modal({ title, lines, onClose, onOk, onCleanup, onApply }: { title?: string; lines: string[]; onClose: () => void; onOk?: () => void; onCleanup?: () => void; onApply?: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -96,10 +101,11 @@ export default function Dashboard() {
   const [normalizeOpen, setNormalizeOpen] = useState(false);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!opts?.silent) setLoading(true);
       const [reqData, managedData] = await Promise.all([fetchRequests(), fetchManaged()]);
+      dashboardCache = { requests: reqData, managed: managedData };
       setRequests(reqData);
       setManaged(managedData);
       setError(null);
@@ -107,14 +113,27 @@ export default function Dashboard() {
       setError("Failed to load requests");
       console.error(err);
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadData();
-    syncSeerr().catch(() => {}).then(() => loadData());
-    cleanupStaleRequests().then(() => loadData());
+    if (dashboardCache) {
+      // Instant first paint from the last snapshot; refresh silently after.
+      setRequests(dashboardCache.requests);
+      setManaged(dashboardCache.managed);
+      setLoading(false);
+      loadData({ silent: true });
+    } else {
+      loadData();
+    }
+    // Seerr sync and stale-RC cleanup can change what the lists show; run them
+    // in the background and refresh once after both settle instead of doing a
+    // full reload per job (three back-to-back heavy list fetches per visit).
+    Promise.all([
+      syncSeerr().catch(() => null),
+      cleanupStaleRequests().catch(() => null),
+    ]).then(() => loadData({ silent: true }));
   }, [loadData]);
 
   const requestsList = requests
