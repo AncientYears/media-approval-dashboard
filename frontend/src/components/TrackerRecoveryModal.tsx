@@ -222,12 +222,6 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
           `${t.name}: ${r.verified ? "added, verified" : r.verifying ? "added, verifying" : "added"}`,
           "success",
         );
-        if (r.allowMissing) {
-          toast(
-            `${t.name}: restored with ${r.missingFiles} file(s) missing — resume the torrent to download them from peers`,
-            "error",
-          );
-        }
         if (r.skippedFiles) toast(`${t.name}: skipping ${r.skippedFiles} missing sidecar file(s)`, "success");
         if (r.contentAligned) toast(`${t.name}: linked ${r.contentAligned} file(s) to qBittorrent's path`, "success");
         if (r.warn) toast(`${t.name}: ${r.warn}`, "error");

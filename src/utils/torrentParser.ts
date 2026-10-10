@@ -83,11 +83,20 @@ export function parseTorrentName(name: string): ParsedTorrent {
     }
   }
 
-  // Pattern: "Season 2" without S##E##
+  // Pattern: "Season 2" / "Sezon 2" (Polish) — must agree with parseSeasonNumber's
+  // vocabulary. Without "Sezon", a release titled "{Sezon 1}" parses to season
+  // null, findBestRequestForDownload drops its season guard, and the torrent can
+  // link onto the Specials (season 0) row instead of S01.
   if (result.season === null) {
-    const seasonWord = upper.match(/\bSEASON\s+(\d{1,2})\b/);
+    const seasonWord = upper.match(/\b(?:SEASON|SEZON)\s+(\d{1,2})\b/);
     if (seasonWord) {
       result.season = parseInt(seasonWord[1], 10);
+    } else {
+      const roman = upper.match(/\b(?:SEASON|SEZON)\s+([IVXLCDM]+)\b/);
+      if (roman) {
+        const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10 };
+        result.season = ROMAN[roman[1]] ?? null;
+      }
     }
   }
 
