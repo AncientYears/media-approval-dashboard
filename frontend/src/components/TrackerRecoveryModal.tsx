@@ -118,6 +118,16 @@ interface FileRow {
   status: FileStatus;
   tree?: string;
   partialSize?: number;
+  /** Where a present file was found. Matching is by byte length across every
+   *  tree, so an identical sidecar from an unrelated release can satisfy this
+   *  torrent — showing the source folder makes that visible instead of magic. */
+  source?: string;
+}
+
+/** Immediate parent folder of a path, for the compact source hint. */
+function parentDir(p: string): string {
+  const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : "";
 }
 
 function fileRows(t: TrackerRow): FileRow[] {
@@ -132,6 +142,7 @@ function fileRows(t: TrackerRow): FileRow[] {
       size: m.length,
       status: "present",
       tree: m.tree,
+      source: m.sourcePath,
     });
   }
   for (const m of t.missing) {
@@ -542,7 +553,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                           </div>
                           <ul>
                             {rows.map((r) => (
-                              <li key={r.key} className={FLAG_CLASS[r.status]} title={r.key}>
+                              <li key={r.key} className={FLAG_CLASS[r.status]}                                 title={r.source ? `${r.key}\n→ ${r.source}` : r.key}>
                                 <span className="file-flag">{FLAG[r.status]}</span>
                                 <span className="miss-path">{r.name}</span>
                                 <span className="miss-size">
@@ -550,6 +561,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                                     ? `${fmtBytes(r.partialSize || 0)} / ${fmtBytes(r.size)}`
                                     : fmtBytes(r.size)}
                                   {r.tree ? ` · ${r.tree}` : ""}
+                                  {r.source && parentDir(r.source) ? `/${parentDir(r.source)}` : ""}
                                 </span>
                               </li>
                             ))}
