@@ -12945,9 +12945,24 @@ const type = request.type === "series" ? "series" : "movie";
         } else {
           // Native movie: place into the matching "<Title> (Year)/" library
           // subfolder when one exists (same resolution the processed panel's
-          // in-library scan uses), else the MEDIA_MOVIES root.
+          // in-library scan uses). When NO folder exists yet, MINT the canonical
+          // per-movie dir instead of dropping the file flat in MEDIA_MOVIES:
+          // the library convention is one folder per movie (Jellyfin wants it,
+          // the embedded id makes the folder self-describing, and every folder
+          // scan already handles per-movie dirs) — the series branch above does
+          // exactly this for shows. Falls back to the root only when the naming
+          // kernel cannot resolve a canonical name (no year/id) — never guesses.
           const folders = nativeMovieLibraryFolders(request.title || "", requestImdbId(db, request), db, request.library_key);
-          destFolder = folders[0] && folders[0] !== MEDIA_MOVIES ? folders[0] : MEDIA_MOVIES;
+          if (folders[0] && folders[0] !== MEDIA_MOVIES) {
+            destFolder = folders[0];
+          } else {
+            destFolder = MEDIA_MOVIES;
+            try {
+              const packed = await fixNamesPieces(db, request, []);
+              const canonical = packed.pieces ? canonicalMovieDir(loadNamingConf(db), packed.pieces) : null;
+              if (canonical) destFolder = path.join(MEDIA_MOVIES, canonical);
+            } catch {}
+          }
         }
         try {
           if (!fs.existsSync(destFolder)) fs.mkdirSync(destFolder, { recursive: true });
