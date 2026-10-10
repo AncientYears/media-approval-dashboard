@@ -194,19 +194,23 @@ session can start with P0 without re-deriving the design.
   offline fallback parses ids from an already-canonical target folder) + naming
   templates stored in the `settings` table and editable at
   `GET`/`PUT /api/settings/naming` (Settings → Naming Templates). Applied to NEW
-  files only: single-file `move-to-processed` names files per template
-  (`{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}`,
-  `{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}`) **and
-  places them under the canonical `<Show>/<Sxx>/` dir — a series file (single
-  file, or a folder whose episodes sit directly in it) must not land at the
-  processed root**; `canonicalFileBase` returns a name WITHOUT extension, so the
-  source extension is appended before it becomes the filename;
-  **native `move-to-library` no longer names files** — it carries the processed
-  basename over verbatim, because renaming is owned by the P2 "Fix Names" tool the
-  user reviews (pre-naming there left the library file "already canonical" before
-  the tool ever ran, and there are quirks still being worked out). It still
-  creates/uses a canonical DIR when the library show folder does not exist yet.
-  `{EpisodeTitle}` fills from `tmdb_season_cache` (offline). **P1b: playback
+  files only, and **filenames are now kept VERBATIM** — renaming is owned entirely
+  by the P2 "Fix Names" tool the user reviews, for `move-to-processed` too:
+  `move-to-processed` places a series file under the `<Show>/<Sxx>/` dir (a series
+  file — single file, or a folder whose episodes sit directly in it — must not land
+  at the processed root), but **prefers a show folder already in use for the
+  request** (`processedShowDirFromFiles`) and only mints the canonical
+  `<Title> (YYYY) [tvdbid-####]`/`[imdbid-tt…]` dir when none exists yet, so a show
+  is never split across two differently-named folders. Movies stay flat in
+  `PROCESSED_MOVIES`. The naming kernel (`assembleCanonicalTags`/`parseReleaseTags`/
+  `inheritReleaseFacts`, the canonical dir + file builders, `{EpisodeTitle}` from
+  `tmdb_season_cache`) is now reached through Fix Names (`proposeCanonicalName`);
+  the old "name NEW files at move time" helper (`canonicalFileBase`) is kept but
+  UNUSED (intentionally, while Fix Names is still being polished).
+  **native `move-to-library` likewise does NOT name files** — it carries the processed
+  basename over verbatim. It still creates/uses a canonical DIR when the library show
+  folder does not exist yet.
+  **P1b: playback
   tags are probed from the source file with ffprobe
   (`src/services/mediaProbe.ts` → `assembleCanonicalTags`) before title
    inference — resolution TIER from the measured frame (width-primary, so a
@@ -260,7 +264,7 @@ kept intact (`DD+5.1`). A bracketed `[Unknown]`/`[Group]` is a "not stated"
 - **P2 — standardize tool (DONE, committed `0b6a48c`, pending VM verification)**: "Fix Names"
   modal + HTTP surface (`POST /:id/fix-names/preview` + `POST /:id/fix-names/apply` in
   `src/routes/requests.ts`, helpers `buildFixNameGroups`/`proposeCanonicalName`/
-  `applyFixNameRename` after `canonicalFileBase`). Preview returns grouped rows —
+  `applyFixNameRename`, in the block after `buildNormalizePlan`). Preview returns grouped rows —
   each processed file (matched via AH `processed_files`/identity/title fallback) plus its
   library twin by inode (`nativeMovieLibraryFolders`/`resolveLibraryFolder`); proposal
   reuses the naming kernel + `assembleCanonicalTags`, one ffprobe per `(dev,ino)` (pool of
@@ -649,7 +653,8 @@ why extraction is a script and not a TorrentPanel button.
 ### Move to Processed (POST /:id/move-to-processed)
 1. Gets content path from qBittorrent
 2. Hardlinks files from Download to Processed folder
-3. Processed files await Sonarr/Radarr import to Library
+3. A series file (single file, or a folder whose episodes sit directly in it) is placed under `<Show>/<Sxx>/` — preferring a show folder already in use for the request, else the canonical one — while its FILENAME is kept verbatim (renaming stays with Fix Names)
+4. Processed files await Sonarr/Radarr import to Library
 
 ### Move to Workspace (POST /:id/move-to-workspace)
 1. Gets content path from qBittorrent
@@ -1097,7 +1102,8 @@ SEERR_API_KEY=
 
 ## Common Gotchas
 
-- **Native "To Library" must NOT rename the file.** `POST /:id/move-to-library` carries the processed basename over verbatim; it no longer runs `canonicalFileBase`. Renaming is owned by the P2 "Fix Names" tool, which the user reviews — pre-naming the library file there left it "already canonical" before Fix Names ever ran, so the tool had nothing to do (and it interacts confusingly with quirks still being worked out). The route still creates/uses a canonical DIR when the library show folder does not exist yet. A `[WEBDL-1080p PCOK]`-style provider tag inside the source bracket is CORRECT (`PROVIDERS` in `naming.ts`; PCOK = Peacock) and will render when Fix Names does the rename.
+- **Native "To Library" must NOT rename the file.** `POST /:id/move-to-library` carries the processed basename over verbatim; it no longer runs `canonicalFileBase` (now unused). Renaming is owned by the P2 "Fix Names" tool, which the user reviews — pre-naming the library file there left it "already canonical" before Fix Names ever ran, so the tool had nothing to do (and it interacts confusingly with quirks still being worked out). The route still creates/uses a canonical DIR when the library show folder does not exist yet. A `[WEBDL-1080p PCOK]`-style provider tag inside the source bracket is CORRECT (`PROVIDERS` in `naming.ts`; PCOK = Peacock) and will render when Fix Names does the rename.
+- **"Move to Processed" must not rename the file either.** It only decides the DIRECTORY: a series file (single file, or a folder whose episodes sit directly in it) goes under `<Show>/<Sxx>/`, preferring a show folder already in use for the request (`processedShowDirFromFiles`) and minting the canonical one only when none exists; movies stay flat. The FILENAME rides over verbatim, so the processed panel initially shows the raw release name and Fix Names is what normalizes it. Do not re-wire `canonicalFileBase` back into this path — it defeats the review step the user asked for.
 - Express v5 routing: `/{*path}` for catch-all, not `/*`
 - `better-sqlite3` v12: `lastInsertRowid` returns BigInt, never extract `.get`/`.run` from prepared statements (loses `this` binding → `Illegal invocation`)
 - Sonarr's `/api/v3/release` ignores `term` parameter — use Prowlarr instead
@@ -1126,8 +1132,8 @@ SEERR_API_KEY=
 - **`completeWorkspace` deletes the workspace folder, so the picker must re-fetch on open.** The "Complete & Import" flow moves outputs out and `rmSync`s the whole workspace dir (`processor.ts`), and the picker's "Existing Workspaces" list is the only place a deleted job would still appear. The picker (`WorkspacePickerModal`) now takes an optional `onOpen` fired whenever it opens, and `TorrentPanel` passes `loadWorkspaces`; previously the torrent panel's "To Workspace" opened the picker with whatever list it last held, so a job completed from another modal's manager lingered until a full page refresh. The parent pages (`RequestDetail`/`FranchiseDetail`) already re-fetch in `openProcWsPicker`.
 - **The workspace PATCH route must persist `scripts`.** `PATCH /api/requests/:id/workspaces/:index` used to destructure only `name`/`notes`/`status`, so a script added from the manager's ScriptDropdown after the workspace was created was silently dropped — "Run scripts" then read an empty selection ("No scripts selected for this workspace") and the reload wiped the checkbox. Selecting the script at CREATE time worked because that travels through the move-to-workspace call instead. The route now accepts `scripts: string[]` (400 on a non-string-array) and write-merges it like the other fields.
 - **A series file must live under `<Show>/<Sxx>/`, and the processed panel no longer advertises a root stray it does not own.** Before the canonical write fix, "Complete & Import" dropped workspace outputs straight into the processed ROOT (no season folder existed). Those leftovers are still visible for a request they are *explicitly* associated with (`approval_history`/torrent/workspace basename, or a library inode twin), but a series file at the root whose ONLY claim is a `media_files` row is now skipped in `GET /:id/processed` (`e.isRoot` + `request.type === "series"` + `!explicit`). That kills the confusing "why is an unrelated file listed here" case where identity was mis-attributed (an `Once Upon a Princess`/`Dragons: Gift of the Night Fury` row registered against `Avatar: Seven Havens`), without hiding the request's own stray. The physical relocation is a deliberate, reviewable step — see the Normalize tool below.
-- **`POST /api/requests/normalize-processed/apply` (dry-run-previewed) relocates series strays into their canonical folder.** `GET /api/requests/normalize-processed/preview` returns the plan only; `POST .../apply {files, identities?}` carries out the ticked moves and the ticked identity fixes. `buildNormalizePlan` scans direct children of `PROCESSED_TV`, resolves each file's owner identity-first (`media_files` by inode), then `approval_history.processed_files`, then filename title-match, and proposes `PROCESSED_TV/<canonical show dir>/<Sxx>/<basename>`. Moves are `renameSync` + pre/post inode verification (a changed inode is rolled back) and the owner's `processed_files` entries are rewritten to the new PROCESSED-root-relative path. **A move is never auto-applied**: identity-ONLY matches whose filename does not match the owner's title are flagged with a `warning` and left UNticked by default, because a stale/mis-attributed row is exactly what the operator must eyeball (`Avatar`'s rogue `Dragons` row). Movies are untouched (they are flat in `PROCESSED_MOVIES` by design). UI: Dashboard toolbar → "Normalize Processed" (`NormalizeProcessedModal.tsx`).
-- **The Normalize preview also carries a "Stale identities" section — mis-attributed `media_files` rows, fixed only when you tick them.** A row is stale when its file's containing show folder belongs to a DIFFERENT request than the key the row claims (the `once upon a princess.mkv` special sitting in `sofia the first/s00/` but registered to Avatar — an *owned* key, so the boot-time unowned-row cleanup never touches it). `buildStaleIdentityItems` walks `PROCESSED_TV`+`MEDIA_TV`, maps `(dev,ino) → {path, showFolder, Sxx}` (processed wins for a shared inode), and for each series `media_files` row resolves the folder via `resolveSeriesFolderOwner` — deterministic (`[tvdbid-####]`) first, then a conservative title/slug match that returns null on ambiguity, so a mis-resolved folder is never trusted. Apply is server-recomputed (client sends only `{dev,inode}`) and inode-verified; a folder with a confident owner is **re-pointed** (`registerVideoTree` under the owner key/title, season from the Sxx dir), otherwise the row is **cleared** (`DELETE`). Clearing is deliberately hard-gated: only when the claimed request's own library folder is *known* and differs AND the folder shares no significant word with the claimed title, so a localized variant that merely translates the name is left alone rather than wiped. Root strays are excluded here (the move section owns them); movies are flat and excluded. Re-point rows are pre-ticked, clear rows (with a `warning`) are unticked.
+- **`POST /api/requests/normalize-processed/apply` (dry-run-previewed) relocates series strays into their canonical folder.** `GET /api/requests/normalize-processed/preview` returns the plan only; `POST .../apply {files, identities?}` carries out the ticked moves and the ticked identity fixes. `buildNormalizePlan` scans direct children of `PROCESSED_TV`, resolves each file's owner identity-first (`media_files` by inode), then `approval_history.processed_files`, then filename title-match, and proposes `PROCESSED_TV/<canonical show dir>/<Sxx>/<basename>`. Moves are `renameSync` + pre/post inode verification (a changed inode is rolled back) and the owner's `processed_files` entries are rewritten to the new PROCESSED-root-relative path. **A move is never auto-applied**: an identity-ONLY match whose filename does not match the owner's title is NOT offered as a move at all — moving it would drop it into the wrong show's folder — and is instead surfaced in the stale-identity section as a **clear** (see below), because a stale/mis-attributed row is exactly what the operator must eyeball (`Avatar`'s rogue `Dragons` row). Movies are untouched (they are flat in `PROCESSED_MOVIES` by design). UI: Dashboard toolbar → "Normalize Processed" (`NormalizeProcessedModal.tsx`).
+- **The Normalize preview also carries a "Stale identities" section — mis-attributed `media_files` rows, fixed only when you tick them.** A row is stale when its file's containing show folder belongs to a DIFFERENT request than the key the row claims (the `once upon a princess.mkv` special sitting in `sofia the first/s00/` but registered to Avatar — an *owned* key, so the boot-time unowned-row cleanup never touches it). `buildStaleIdentityItems` walks `PROCESSED_TV`+`MEDIA_TV`, maps `(dev,ino) → {path, showFolder, Sxx}` (processed wins for a shared inode), and for each series `media_files` row resolves the folder via `resolveSeriesFolderOwner` — deterministic (`[tvdbid-####]`) first, then a conservative title/slug match that returns null on ambiguity, so a mis-resolved folder is never trusted. Apply is server-recomputed (client sends only `{dev,inode}`) and inode-verified; a folder with a confident owner is **re-pointed** (`registerVideoTree` under the owner key/title, season from the Sxx dir), otherwise the row is **cleared** (`DELETE`). Clearing is deliberately hard-gated: only when the claimed request's own library folder is *known* and differs AND the folder shares no significant word with the claimed title, so a localized variant that merely translates the name is left alone rather than wiped. Root strays (video directly in `PROCESSED_TV`) are included ONLY when the identity row is the sole signal and the filename contradicts that request — offered as a `clear` (no folder evidence, so it cannot be re-pointed safely); an attributable root stray is the move section's job. Movies are flat and excluded. Re-point rows are pre-ticked, clear rows (with a `warning`) are unticked.
 - **A RAR archive set is its own content type, not "none".** `/:id/content-info` counts split-RAR parts (`.rar`/`.r00`/`.partN.rar`/`.NNN`) and reports `type: "archive"` (with `archiveParts`) when there is no video file, so the TorrentPanel badge says "RAR archive" instead of the misleading "No video files". `needsProcessing` is true for it too. **Extraction is a WORKSPACE SCRIPT, never a TorrentPanel button** (a torrent panel is not a workspace, and `/download` is immutable). The user attaches "Extract archives" when creating the workspace (ScriptDropdown) and runs it from the workspace manager; see "Workspace Scripts" below.
 
 - **A packed episode file moves the whole tail of the season.** When a release packs
@@ -1318,7 +1324,8 @@ SEERR_API_KEY=
 - [ ] titlesMatch: "Mufasa: The Lion King" does NOT match "The Lion King" torrents
 - [ ] Processing pipeline creates workspace with inputs/output dirs
 - [ ] Move to Processed hardlinks from Download to Processed
-- [ ] Single-file series `move-to-processed` lands at `<Show>/<Sxx>/<name>.mkv` (extension preserved), never at the processed root without an extension
+- [ ] Single-file series `move-to-processed` lands at `<Show>/<Sxx>/<name>.mkv` (extension preserved), never at the processed root without an extension, and KEEPS the original release filename (no canonical rename) — renaming stays with Fix Names
+- [ ] `move-to-processed` prefers a show folder already in use for the request (`processedShowDirFromFiles`) and only mints the canonical `<Title> (YYYY) [tvdbid-####]` dir when none exists, so a show is never split across two folders
 - [ ] Move to Workspace hardlinks from Download to Workspace inputs/ (with output/ pre-created)
 - [ ] Move to Library hardlinks from Processed (not Download)
 - [ ] Native "To Library" carries the processed filename verbatim (no canonical rename) — renaming stays with Fix Names
@@ -1331,6 +1338,7 @@ SEERR_API_KEY=
 - [ ] "Normalize Processed" preview lists recoverable series strays with evidence + warnings (identity-only mismatches unticked), and Apply relocates the ticked files inode-verifiably into `<Show>/<Sxx>/`, rewriting the owner's `processed_files` paths
 - [ ] "Normalize Processed" also lists stale identities (a file in `<Show>/<Sxx>/` registered to a different request): re-point rows are pre-ticked, clear rows (no owning show) are unticked, and Apply re-points/clears them server-recomputed + inode-verified
 - [ ] Clearing a stale identity is hard-gated: only when the claimed request's own library folder is known and differs AND the folder shares no word with the claimed title (a localized folder is never wiped for merely translating the name)
+- [ ] A root stray (video directly in `PROCESSED_TV`) whose identity row is the only signal and whose filename contradicts that request is NOT offered as a move into the claimed show's folder — it is surfaced in "Stale identities" as a **clear** (no folder evidence, so it cannot be re-pointed safely), unticked by default
 - [ ] The workspace picker re-fetches its list every time it opens (`onOpen`), so a workspace completed/deleted from the manager (which removes its folder) no longer lingers as a selectable "existing workspace" until a page refresh
 - [ ] Adding a script from the workspace manager (PATCH) persists it, so "Run scripts" finds the selection instead of failing "No scripts selected" and losing the checkbox on reload
 - [ ] TorrentPanel checkbox toggles between "Move to Processed" and "Move to Workspace"

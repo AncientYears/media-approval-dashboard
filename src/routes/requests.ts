@@ -1722,7 +1722,12 @@ async function fixNamesPieces(
  * null to keep today's raw release name. Null on disabled naming, missing
  * pivots (episode code / title / id), or unresolved identity — never guesses.
  * `probe` (ffprobe facts about the source file, when probing is available)
- * upgrades playback-info tags beyond what title-scraping infers. */
+ * upgrades playback-info tags beyond what title-scraping infers.
+ *
+ * NOTE: currently UNUSED — the move paths keep filenames verbatim and renaming
+ * is owned by the Fix Names tool (`proposeCanonicalName`). Kept intentionally
+ * while Fix Names is still being polished; a later pass will either re-wire it
+ * or drop it. Do NOT delete without the user's say-so. */
 async function canonicalFileBase(db: Database, request: any, sourceBase: string, idHintFolder?: string, probe?: ProbeInfo | null): Promise<string | null> {
   const conf = loadNamingConf(db);
   if (!conf.enabled) return null;
@@ -1849,6 +1854,7 @@ async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
     "SELECT id, title, type, season, library_key FROM media_requests WHERE type = 'series' AND library_key IS NOT NULL AND library_key != ''",
   ).all() as Array<{ id: number; title: string; type: string; season: number | null; library_key: string }>;
   const reqById = new Map(requests.map((r) => [r.id, r]));
+  const rootStale: StaleIdentityItem[] = [];
 
   // basename -> request ids whose approval_history explicitly lists it.
   const assocByBase = new Map<string, number[]>();
@@ -1907,6 +1913,30 @@ async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
       continue;
     }
 
+    // A root stray whose identity row is the ONLY signal and whose filename
+    // contradicts that request is not a move candidate: moving it would drop it
+    // into the wrong show's folder. Surface it as a stale identity to CLEAR
+    // instead (no folder evidence, so it cannot be re-pointed safely).
+    if (evidence === "identity" && identityRow) {
+      const norm = entry.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const ownerNorm = (owner.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (!titlesMatch(ownerNorm, norm)) {
+        let st: fs.Stats | null = null;
+        try { st = fs.statSync(source); } catch {}
+        if (st && st.ino) {
+          rootStale.push({
+            dev: st.dev, inode: st.ino,
+            path: source, tree: "processed", folder: "", season: identityRow.season ?? owner.season ?? 0,
+            claimedKey: identityRow.library_key, claimedTitle: owner.title || "",
+            action: "clear", ownerKey: null, ownerTitle: null,
+            evidence: `processed-root stray registered to ${owner.title || identityRow.library_key}, but the filename does not match`,
+            warning: "identity-only match with a mismatched filename — clearing the mis-attribution (the file is left where it is)",
+          });
+          continue;
+        }
+      }
+    }
+
     const season = identityRow?.season ?? owner.season ?? 1;
     const showDir = await showDirFor(owner);
     if (!showDir) {
@@ -1922,15 +1952,6 @@ async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
       continue;
     }
 
-    let warning: string | null = null;
-    if (evidence === "identity") {
-      const norm = entry.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      const ownerNorm = (owner.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      if (!titlesMatch(ownerNorm, norm)) {
-        warning = "identity-only match, and the filename does not match this request's title — verify before moving";
-      }
-    }
-
     plan.items.push({
       file: entry.name,
       source,
@@ -1939,12 +1960,12 @@ async function buildNormalizePlan(db: Database): Promise<NormalizePlan> {
       ownerTitle: owner.title || "",
       season,
       evidence,
-      warning,
+      warning: null,
     });
   }
 
   plan.items.sort((a, b) => a.file.localeCompare(b.file));
-  plan.staleIdentity = buildStaleIdentityItems(db);
+  plan.staleIdentity = [...buildStaleIdentityItems(db), ...rootStale];
   return plan;
 }
 
@@ -2988,9 +3009,9 @@ async function specialPiecesForFile(db: Database, request: any, sourceBase: stri
 /**
  * Canonical basename proposal for ONE existing file (no extension never applied
  * here — callers keep the original extension). Returns null when nothing should
- * change (already canonical / missing pivots / naming disabled). Mirrors
- * canonicalFileBase but for on-disk files whose current name is the starting
- * point, and optionally enriched by an ffprobe probe.
+ * change (already canonical / missing pivots / naming disabled). Mirrors the
+ * (currently unused) `canonicalFileBase` but for on-disk files whose current name
+ * is the starting point, and optionally enriched by an ffprobe probe.
  *
  * `forcedPart` supplies the part marker for a file whose OWN name carries none:
  * buildFixNameGroups uses it to label the unmarked half of a split release
@@ -11410,12 +11431,11 @@ const type = request.type === "series" ? "series" : "movie";
 
       const type = request.type === "series" ? "series" : "movie";
 
-      // P1 canonical naming for NEW processed files: single-file torrents get
-      // the naming-template name; a series folder whose episodes sit DIRECTLY in
-      // it (no Sxx subdirs) is destructured into the canonical <Show>/<Sxx/>
-      // layout, because the processed-panel scan only reads that shape. Multi-
-      // season packs (Sxx subdirs present) keep their structure intact.
-      let canonicalName: string | null = null;
+      // Series layout for NEW processed files: a single-file series (or a folder
+      // whose episodes sit DIRECTLY in it) is placed under the <Show>/<Sxx/>
+      // tree the processed-panel scan reads; multi-season packs (Sxx subdirs
+      // present) keep their structure intact. FILENAMES are kept verbatim —
+      // renaming is owned by the Fix Names tool.
       let seriesLayout: { showDir: string; seasonDir: string } | null = null;
       try {
         const contentStat = fs.statSync(contentPath);
@@ -11433,27 +11453,26 @@ const type = request.type === "series" ? "series" : "movie";
           }
           if (eligible) {
             const conf = loadNamingConf(db);
-            const packed = await fixNamesPieces(db, request, []);
+            // Prefer a show folder already in use for this request; only mint the
+            // canonical one when none exists yet, so we never split a show across
+            // two differently-named folders.
+            let showDir: string | null = processedShowDirFromFiles(db, [request.id]);
+            if (!showDir) {
+              const packed = await fixNamesPieces(db, request, []);
+              showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
+                || cleanFranchiseTitle(request.title || "")
+                || null;
+            }
             const seasonNum = request.season ?? parseSeasonNumber(path.basename(contentPath)) ?? 1;
-            const showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
-              || cleanFranchiseTitle(request.title || "");
             if (showDir) {
               const seasonDir = canonicalSeasonDir(conf, seasonNum) || `S${String(seasonNum).padStart(2, "0")}`;
               seriesLayout = { showDir, seasonDir };
             }
           }
         }
-        if (request.library_key && contentStat.isFile()) {
-          const probe = await probeVideoFile(contentPath);
-          // canonicalFileBase returns a NAME WITHOUT EXTENSION, and
-          // moveToProcessedSync uses it verbatim as the filename — so append the
-          // source extension or the file lands with no extension at all.
-          const base = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV, probe);
-          canonicalName = base ? `${base}${path.extname(contentPath)}` : null;
-        }
       } catch {}
 
-      const result = moveToProcessedSync(contentPath, type, canonicalName || undefined, seriesLayout || undefined);
+      const result = moveToProcessedSync(contentPath, type, undefined, seriesLayout || undefined);
       if (!result.success) return res.status(500).json({ error: result.error });
 
       // Register identity for the processed inodes (same inode as the download
@@ -11515,13 +11534,17 @@ const type = request.type === "series" ? "series" : "movie";
           }
         }
       } else if (srcStat) {
-        const base = canonicalName ? path.basename(result.destination || "") || path.basename(contentPath) : path.basename(contentPath);
-        const destPath = path.join(processedDir, base);
+        // A single file lands flat (movies) or under <Show>/<Sxx>/ (series),
+        // matching moveToProcessedSync's destination.
+        const prefix = seriesLayout ? path.join(seriesLayout.showDir, seriesLayout.seasonDir) : "";
+        const base = path.basename(result.destination || "") || path.basename(contentPath);
+        const rel = prefix ? path.join(prefix, base) : base;
+        const destPath = path.join(processedDir, rel);
         if (fs.existsSync(destPath)) {
           try {
             const st = fs.statSync(destPath);
-            if (!(st.ino > 0 && existingInodes.has(st.ino))) linkedFiles.push(base);
-          } catch { linkedFiles.push(base); }
+            if (!(st.ino > 0 && existingInodes.has(st.ino))) linkedFiles.push(rel);
+          } catch { linkedFiles.push(rel); }
         }
       }
       if (linkedFiles.length > 0) {
