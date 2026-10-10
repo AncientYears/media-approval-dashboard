@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, deleteWorkspaceFile, deleteWorkspace } from "../api";
+import { fetchWorkspaces, updateWorkspaceMetadata, completeWorkspace, deleteWorkspaceFile, deleteWorkspace, runWorkspaceScripts } from "../api";
 import ScriptDropdown from "./ScriptDropdown";
 
 function formatBytes(bytes: number) {
@@ -21,6 +21,8 @@ export default function WorkspaceManagerModal({ open, requestId, workspaceIndex,
   const [ws, setWs] = useState<any>(null);
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [running, setRunning] = useState(false);
+  const [runResults, setRunResults] = useState<any[] | null>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -103,10 +105,50 @@ export default function WorkspaceManagerModal({ open, requestId, workspaceIndex,
             value={meta.scripts || []}
             onChange={async (next) => {
               setWs({ ...ws, metadata: { ...meta, scripts: next } });
-              await updateWorkspaceMetadata(requestId, ws.index, { scripts: next } as any);
+              setRunResults(null);
+              await updateWorkspaceMetadata(requestId, ws.index, { scripts: next });
             }}
             placeholder="Select scripts..."
           />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+            <button
+              className={`btn btn-tiny ${(meta.scripts || []).length > 0 && !running ? "btn-secondary" : "btn-secondary btn-disabled"}`}
+              disabled={(meta.scripts || []).length === 0 || running}
+              title={(meta.scripts || []).length === 0 ? "Select a script first" : "Run selected scripts on inputs/"}
+              onClick={async () => {
+                setRunning(true);
+                setRunResults(null);
+                try {
+                  const data = await runWorkspaceScripts(requestId, ws.index);
+                  setRunResults(data.results || []);
+                } catch (err: any) {
+                  setRunResults([{ id: "error", label: "Run failed", success: false, message: err?.response?.data?.error || err.message }]);
+                } finally {
+                  setRunning(false);
+                  refreshAndReload();
+                }
+              }}
+            >
+              {running ? "Running…" : "Run scripts"}
+            </button>
+          </div>
+          {runResults && (
+            <div className="ws-manager-section" style={{ marginTop: 6 }}>
+              {runResults.map((r: any, i: number) => (
+                <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: r.success ? "var(--success, #4ade80)" : "var(--danger, #f87171)" }}>
+                    {r.success ? "●" : "■"} {r.label}:
+                  </span>{" "}
+                  <span style={{ color: "var(--text-secondary)" }}>{r.message}</span>
+                  {r.errors?.length > 0 && (
+                    <ul style={{ margin: "2px 0 0 16px", color: "var(--text-secondary)" }}>
+                      {r.errors.map((e: string, j: number) => <li key={j}>{e}</li>)}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="ws-manager-section">
             <div className="ws-manager-section-label">Inputs ({ws.inputCount})</div>
             {ws.inputFiles?.length > 0 ? (

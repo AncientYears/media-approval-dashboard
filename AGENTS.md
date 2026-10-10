@@ -464,6 +464,8 @@ Download (100% complete)
      └── [checkbox ON] "To Workspace" → opens WorkspacePickerModal
            → select existing workspace or create new (name, notes, scripts)
            → hardlink Download/* to workspace/inputs/
+           → (optional) run attached scripts, e.g. "Extract archives"
+             (inputs/ → output/)
            → user processes files manually (mux/merge)
            → "Complete & Import" deletes inputs, MOVEs outputs into the
              canonical <Show>/<Sxx>/ layout under /Processed/ (same layout
@@ -483,6 +485,35 @@ Download (100% complete)
            → "Complete & Import" MOVEs outputs to /Processed/
            → file replaced as independent
 ```
+
+### Workspace Scripts
+Built-in, named steps a user attaches to a workspace at creation (and edits in
+the manager). They run **inputs/ → output/** and never touch `/download`
+(qBittorrent seeds from it forever) nor anywhere outside the workspace — this is
+why extraction is a script and not a TorrentPanel button.
+
+- Registry: `src/services/workspaceScripts.ts` — `WORKSPACE_SCRIPTS` holds the
+  definitions (`id`, `label`, `description`). Currently one: `extract-archives`
+  ("Extract archives").
+- Selection is stored in the workspace's `metadata.json` as `scripts: string[]`
+  (ids). The frontend reads the definitions from
+  `GET /api/requests/workspace-scripts` (so the list lives in ONE place);
+  `ScriptDropdown` caches them per session.
+- Run: `POST /api/requests/:id/workspaces/:index/run` (optional `{scripts}` body
+  overrides the stored selection, which is then persisted). Returns per-script
+  results. The "Run scripts" button in `WorkspaceManagerModal` calls it and
+  shows success/failure per script.
+- **`extract-archives`**: feeds each FIRST archive part to `7z x` (preferred —
+  handles rar/7z/zip in one tool) or `unrar x` (fallback), writing into
+  `output/`. First-part detection (`isFirstArchivePart`) accepts `.rar` (old
+  scene, the first volume), `.part1.rar`/`.part01.rar`, `.7z.001`, `.7z`,
+  `.zip`, `.001`; it REJECTS continuations (`*.r00`, `*.part2.rar`) so one set is
+  not extracted N times. After extraction a lone wrapper folder is collapsed so
+  the video lands directly in `output/` — the processed panel only reads video
+  files DIRECTLY inside the season dir, so a wrapper would hide it once
+  Complete & Imported. Errors are classified "password-protected archive",
+  "missing or incomplete archive volume(s)" or the extractor's own tail;
+  "no tool installed" is reported when neither 7z nor unrar is on the server.
 
 ### Key Principles
 - **Download is immutable**: never modify, never delete while seeding
@@ -961,6 +992,7 @@ TMDB's default aired order numbers the same episodes differently.
 | `src/services/qbittorrent.ts` | qBittorrent Web API v2 (torrents, auth) |
 | `src/services/scoring.ts` | Release scoring engine |
 | `src/services/processor.ts` | Hardlink processing (mkvmerge/ffmpeg), workspace management |
+| `src/services/workspaceScripts.ts` | Built-in workspace scripts (`WORKSPACE_SCRIPTS`): `extract-archives` unpacks split-RAR/7z/zip from inputs/ into output/ via 7z/unrar; `runWorkspaceScripts()` is the runner. List exposed at `GET /api/requests/workspace-scripts`, run at `POST /:id/workspaces/:index/run` |
 | `src/services/libraryImport.ts` | Arr-free library reconcile: plans/creates COMPLETED `media_requests` keyed by `library_key`, inode-links library files to their processed counterparts. Dry run unless `apply: true` (endpoint `POST /api/requests/import-library/native`) |
 | `src/services/identity.ts` | Identity layer (P0): `media_files` registration keyed by `(dev, inode)`, inode lookups (`identifyByPath`, `identifySeasonFolderFiles`), `registerVideoTree` on write paths, `autodetectIdentity` for adopt/import (title+season matched against `media_requests`), `deriveIdentityFromFilename` (S0X → unnumbered special) |
 | `src/config/naming.ts` | Naming kernel (P1 + P1b): token templates + `loadNamingConf`/`saveNamingConf` (Settings → Naming Templates), `parseReleaseTags` (language/source/res/audio/HDR/video/group, `+`-joined language enumerations, channel-number + multi-word bracket merging, `[Unknown]` placeholder → dropped, never a group), `assembleCanonicalTags` (probe-over-title merge; probe language enumerates 2+ foreign streams in track order, dub only when exactly one), `inheritReleaseFacts` (fills source/group/edition gaps from a same-inode twin's name — never overriding, never inheriting probe facts), canonical dir + file builders, `uniqueDestPath` collision suffixes, `sanitizeSegment`. `xvid`/`divx`/`mpeg-4` are MPEG-4 Part 2 (`videoFamilyOf`), so a title-branded label is kept instead of being flattened to the probe's generic `Xvid` — which used to render `[Xvid][Xvid]`. **Encode-quality modifiers** (`Proper`, `Repack`, `Rerip`, `Reencode`/`Reenc`) are held in `ReleaseTags.qualityMods` and rendered *inside* the source-resolution bracket (`[Remux-2160p Proper]`), because that is where groups write them: they claim the encode was fixed, which is a property of the resolution group, so isolating them in their own bracket mis-ranks them as an unrelated edition. They are name-only, so they are inherited from a same-inode twin — but as a *set*, not per item, since a repack is not a proper release and a name that states its own keeps it whole (`[Proper Repack]` is never synthesized). With no resolution anywhere the modifier is dropped rather than orphaned as a bare `[Proper]`. **Streaming providers** (`NF`, `AMZN`, `DSNP`, `ATVP`, `HMAX`, `PCOK`, `STARZ`, `HULU`, `iP` — `PROVIDERS`) are held in `ReleaseTags.provider` and rendered inside the source bracket *after* the resolution (`[WEBDL-2160p NF]`), the way modifiers ride it: the service says where the WEB-DL was ripped from, so a separate bracket scans as an unrelated tag, and the source bracket is the part Radarr/Sonarr keep intact. They are name-only (nothing probes them), so they inherit from a same-inode twin like the group. Matching is case-SENSITIVE and full-token — groups write these all-caps, and a lowercase `nf` is title text; **`iP` is the one mixed-case entry** (ITV Player, written in exactly that case by the UK TV releases) and is safe for the same reason matching is case-sensitive, while all-caps **`MAX` stays omitted** as an ordinary word and given name |
@@ -1081,7 +1113,7 @@ SEERR_API_KEY=
 - **Import-library processed_files**: Always targets/creates `release_id IS NULL` AH rows (not torrent-linked rows). Skips adding files already in /processed by inode check (`alreadyImported`).
 - **Workspace "Complete & Import" drops outputs into the canonical `<Show>/<Sxx>/` tree, not the processed root.** `completeWorkspace(wsPath, type, seriesLayout?)` (`processor.ts`) accepts the same `{showDir, seasonDir}` the move-to-processed route builds (`fixNamesPieces` → `canonicalSeriesDir`/`canonicalSeasonDir`, falling back to `cleanFranchiseTitle`/`Sxx`), and the complete route passes it so the processed panel's per-season scan finds the files. Filenames are still kept verbatim — only the DIRECTORY is canonicalized (P2 "Fix Names" owns renaming). Because the layout is now nested, `approval_history.processed_files` stores **PROCESSED-root-relative** paths (`path.relative(getProcessedDir(type), p)`), not bare basenames: the old `path.basename` was only ever correct because the flat layout made them equal, and the panel joins these onto the root.
 - **The navbar Workspaces dropdown must route native series to `/native/:id`, not `/managed/:id`.** `/workspaces/active` now returns `sonarrId`; arr-linked series open `/managed/${sonarrId}`, native series open `/native/${requestId}`, movies `/requests/${requestId}` (matching Dashboard's `item.sonarr_id ? /managed : /native` rule). Sending an internal request id to `/managed/:id` made `FranchiseDetail` fetch it as a sonarr id and render "Failed to load franchise".
-- **A RAR archive set is its own content type, not "none".** `/:id/content-info` counts split-RAR parts (`.rar`/`.r00`/`.partN.rar`/`.NNN`) and reports `type: "archive"` (with `archiveParts`) when there is no video file, so the TorrentPanel badge says "RAR archive" instead of the misleading "No video files". `needsProcessing` is true for it too. **Extraction is deliberately NOT done in-app**: it belongs as a workspace SCRIPT (unrar/7z), chosen when the workspace is created — never a TorrentPanel button (a torrent panel is not a workspace, and `/download` is immutable). The scripts mechanism is currently a stub (`ScriptDropdown.SCRIPT_OPTIONS` is empty and nothing executes the stored `metadata.scripts`), so archive extraction is a planned addition to that feature, not something to bolt onto the torrent panel.
+- **A RAR archive set is its own content type, not "none".** `/:id/content-info` counts split-RAR parts (`.rar`/`.r00`/`.partN.rar`/`.NNN`) and reports `type: "archive"` (with `archiveParts`) when there is no video file, so the TorrentPanel badge says "RAR archive" instead of the misleading "No video files". `needsProcessing` is true for it too. **Extraction is a WORKSPACE SCRIPT, never a TorrentPanel button** (a torrent panel is not a workspace, and `/download` is immutable). The user attaches "Extract archives" when creating the workspace (ScriptDropdown) and runs it from the workspace manager; see "Workspace Scripts" below.
 
 - **A packed episode file moves the whole tail of the season.** When a release packs
   TMDB's double episode into one file it keeps only the FIRST number (DuckTales
@@ -1275,6 +1307,8 @@ SEERR_API_KEY=
 - [ ] Move to Library hardlinks from Processed (not Download)
 - [ ] Workspace cleaned up after processing completes
 - [ ] Workspace "Complete & Import" places series outputs under the canonical `<Show>/<Sxx>/` tree (filenames kept) and stores PROCESSED-root-relative `processed_files` paths
+- [ ] Workspace scripts: definitions come from `GET /api/requests/workspace-scripts`; selection persists in `metadata.scripts`; "Run scripts" runs them (inputs/ → output/) via `POST /:id/workspaces/:index/run`
+- [ ] `extract-archives` accepts only first volumes (`.rar`/`.part1.rar`/`.7z.001`/`.7z`/`.zip`/`.001`), rejects continuations (`.r00`/`.part2.rar`), collapses a lone wrapper folder, and reports password-protected / missing-volume / no-tool errors clearly
 - [ ] Navbar Workspaces dropdown routes a native series to `/native/:id` (arr-linked to `/managed/:sonarrId`, movies to `/requests/:id`) — never an internal request id to `/managed/:id`
 - [ ] TorrentPanel checkbox toggles between "Move to Processed" and "Move to Workspace"
 - [ ] TorrentPanel shared component renders correctly in both RequestDetail and FranchiseDetail

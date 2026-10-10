@@ -59,6 +59,7 @@ import {
   isMediaTorrentPath,
 } from "../services/torrentRecovery";
 import { processToLibrary, processFile, ProcessOptions, moveToProcessedSync, moveToLibrarySync, moveToWorkspaceSync, getProcessedDir, listWorkspaces, writeWorkspaceMetadata, readWorkspaceMetadata, completeWorkspace, deleteWorkspaceInputs, deleteWorkspaceFile, deleteWorkspace } from "../services/processor";
+import { WORKSPACE_SCRIPTS, runWorkspaceScripts } from "../services/workspaceScripts";
 import {
   fromQBittorrentPath,
   toQBittorrentPath,
@@ -8248,6 +8249,12 @@ alreadyExtra = true;
     }
   });
 
+  // GET /api/requests/workspace-scripts - list built-in workspace scripts
+  // (registered before `GET /:id` so it is never parsed as a request id).
+  router.get("/workspace-scripts", (_req: Request, res: Response) => {
+    res.json({ scripts: WORKSPACE_SCRIPTS });
+  });
+
   // POST /api/requests/workspaces/scan - Scan all workspace dirs, report orphaned/empty
   router.post("/workspaces/scan", async (req: Request, res: Response) => {
     try {
@@ -12125,6 +12132,37 @@ const type = request.type === "series" ? "series" : "movie";
 
       console.log(`[Workspace] Completed ${ws.dirName}: inputs removed, ${result.processedPaths.length} output(s) moved to processed`);
       res.json({ success: true, processedPaths: result.processedPaths });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/:id/workspaces/:index/run - Run the workspace's scripts
+  // (inputs/ -> output/). The body may override the selected scripts with
+  // `scripts: string[]`; otherwise the scripts stored in the workspace metadata
+  // are used. Nothing outside the workspace is ever touched.
+  router.post("/:id/workspaces/:index/run", async (req: Request, res: Response) => {
+    try {
+      const { id, index } = req.params;
+      const request = db.prepare("SELECT * FROM media_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Request not found" });
+
+      const workspaces = listWorkspaces(request.id, request.title);
+      const ws = workspaces.find((w) => w.index === Number(index));
+      if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+      const requested = Array.isArray(req.body?.scripts) ? (req.body.scripts as string[]) : null;
+      if (requested) {
+        writeWorkspaceMetadata(ws.path, { scripts: requested } as any);
+      }
+      const scripts = requested || ws.metadata?.scripts || [];
+      if (scripts.length === 0) {
+        return res.status(400).json({ error: "No scripts selected for this workspace" });
+      }
+
+      const results = await runWorkspaceScripts(scripts, ws.path);
+      console.log(`[Workspace] Ran ${scripts.length} script(s) on ${ws.dirName}`);
+      res.json({ success: results.every((r) => r.success), results });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

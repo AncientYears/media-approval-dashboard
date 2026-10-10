@@ -214,9 +214,22 @@ export async function fetchWorkspaces(requestId: number) {
   return response.data;
 }
 
-export async function updateWorkspaceMetadata(requestId: number, workspaceIndex: number, data: { name?: string; notes?: string; status?: string }) {
+export async function updateWorkspaceMetadata(requestId: number, workspaceIndex: number, data: { name?: string; notes?: string; status?: string; scripts?: string[] }) {
   const response = await api.patch(`/requests/${requestId}/workspaces/${workspaceIndex}`, data);
   return response.data;
+}
+
+export async function fetchWorkspaceScripts() {
+  const response = await api.get(`/requests/workspace-scripts`);
+  return response.data as { scripts: { id: string; label: string; description: string }[] };
+}
+
+export async function runWorkspaceScripts(requestId: number, workspaceIndex: number, scripts?: string[]) {
+  const response = await api.post(`/requests/${requestId}/workspaces/${workspaceIndex}/run`, scripts ? { scripts } : {});
+  return response.data as {
+    success: boolean;
+    results: { id: string; label: string; success: boolean; message: string; extracted?: string[]; errors?: string[] }[];
+  };
 }
 
 export async function completeWorkspace(requestId: number, workspaceIndex: number) {
