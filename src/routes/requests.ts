@@ -9186,6 +9186,38 @@ alreadyExtra = true;
     }
   });
 
+  // GET /api/requests/trackers/corruption/stream - same piece-hash scan as
+  // /trackers/corruption, but STREAMS progress. Hashing every candidate against
+  // every saved tracker is disk-bound (and these are HDDs), so a single request
+  // can hang for minutes with no feedback; the UI shows a bar instead.
+  router.get("/trackers/corruption/stream", async (_req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "close");
+    res.flushHeaders();
+
+    const send = (eventType: string, data: any) => {
+      res.write(`event: ${eventType}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const scan = listSavedTrackers();
+      const videos = collectVideos();
+      send("progress", { done: 0, total: 0, message: `Checking ${scan.trackers.length} saved tracker(s)…` });
+      const findings = scanCorruptedFiles(scan.trackers, videos, (done, total, current) => {
+        send("progress", { done, total, message: current || "" });
+      });
+      findings.sort((a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path));
+      send("done", { scanned: scan.trackers.length, findings, parseErrors: scan.errors });
+      res.end();
+    } catch (error: any) {
+      console.error("Error scanning for corruption:", error);
+      send("error", { error: error.message });
+      res.end();
+    }
+  });
+
   // POST /api/requests/trackers/duplicates/remove - delete the redundant
   // .torrent copies the scan reports (same info hash, not the surviving
   // first-win). Exactly one copy per hash always remains — the keeper is

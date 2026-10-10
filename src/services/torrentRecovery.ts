@@ -572,13 +572,39 @@ export interface CorruptFinding {
  * THIS torrent can no longer be seeded from it. An unverifiable file (smaller
  * than one whole piece) is never condemned.
  */
-export function scanCorruptedFiles(trackers: SavedTracker[], videos: VideoEntry[]): CorruptFinding[] {
+export function scanCorruptedFiles(
+  trackers: SavedTracker[],
+  videos: VideoEntry[],
+  onProgress?: (done: number, total: number, current?: string) => void,
+): CorruptFinding[] {
   const bySize = new Map<number, VideoEntry[]>();
   for (const v of videos) {
     const list = bySize.get(v.size) || [];
     list.push(v);
     bySize.set(v.size, list);
   }
+
+  // Total verifications = one per (torrent entry, same-size candidate). Used only
+  // to drive the progress bar; cached re-checks still count, so the bar never
+  // stalls waiting on a hash.
+  let total = 0;
+  for (const t of trackers) {
+    for (const f of t.parsed.files) {
+      if (f.length <= 0) continue;
+      total += (bySize.get(f.length) || []).length;
+    }
+  }
+  let done = 0;
+  let lastTick = 0;
+  const tick = (current?: string) => {
+    done++;
+    if (!onProgress) return;
+    const now = Date.now();
+    if (done === total || now - lastTick >= 120) {
+      lastTick = now;
+      onProgress(done, total, current);
+    }
+  };
 
   const fileKey = (v: VideoEntry) => `${v.dev}:${v.ino}`;
   const byKey = new Map<string, VideoEntry>();
@@ -608,6 +634,7 @@ export function scanCorruptedFiles(trackers: SavedTracker[], videos: VideoEntry[
           t.parsed.totalSize,
           `${tag}:${c.dev}:${c.ino}:${c.mtimeMs}`,
         );
+        tick(c.path);
         const key = fileKey(c);
         if (verdict === true) {
           let set = okEntries.get(key);

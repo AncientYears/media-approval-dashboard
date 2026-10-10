@@ -5,6 +5,7 @@ import UnmatchedTorrentsPanel from "../components/UnmatchedTorrentsPanel";
 import DownloadDirsModal from "../components/DownloadDirsModal";
 import DiscoverModal from "../components/DiscoverModal";
 import NormalizeProcessedModal from "../components/NormalizeProcessedModal";
+import VerifyIntegrityModal from "../components/VerifyIntegrityModal";
 
 function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -103,6 +104,7 @@ export default function Dashboard() {
   const [downloadDirsOpen, setDownloadDirsOpen] = useState(false);
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [normalizeOpen, setNormalizeOpen] = useState(false);
+  const [verifyOpen, setVerifyOpen] = useState(false);
   const [franchiseSeasons, setFranchiseSeasons] = useState<{ [sonarrId: number]: any }>({});
 
   const loadData = useCallback(async (opts?: { silent?: boolean }) => {
@@ -249,6 +251,7 @@ export default function Dashboard() {
       {downloadDirsOpen && <DownloadDirsModal onClose={() => { setDownloadDirsOpen(false); loadData(); }} />}
       {discoverOpen && <DiscoverModal onClose={() => setDiscoverOpen(false)} onRequested={(id) => navigate(`/requests/${id}`)} />}
       {normalizeOpen && <NormalizeProcessedModal onClose={() => { setNormalizeOpen(false); loadData(); }} />}
+      {verifyOpen && <VerifyIntegrityModal onClose={() => setVerifyOpen(false)} />}
       {confirmDelete && (
         <ConfirmModal
           message={`Permanently delete "${confirmDelete.title}"? This cannot be undone.`}
@@ -343,6 +346,7 @@ export default function Dashboard() {
           }}>Import Missing</button>
           <button className="btn btn-primary btn-tiny" onClick={() => setDiscoverOpen(true)}>Discover</button>
           <button className="btn btn-primary btn-tiny" onClick={() => setNormalizeOpen(true)}>Normalize Processed</button>
+          <button className="btn btn-primary btn-tiny" onClick={() => setVerifyOpen(true)}>Verify integrity</button>
           <button className="btn btn-primary btn-tiny" onClick={async () => {
             setModal({ title: "Scan Downloads", lines: ["Scanning qBittorrent..."] });
             const result = await scanDownloads();

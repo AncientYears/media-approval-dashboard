@@ -3461,6 +3461,48 @@ body {
   color: #fbbf24;
 }
 
+.integrity-box {
+  max-width: 720px;
+  width: 92vw;
+}
+
+.integrity-intro {
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.integrity-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.integrity-note {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.integrity-bar {
+  height: 10px;
+  border-radius: 6px;
+  background: #334155;
+  overflow: hidden;
+}
+
+.integrity-fill {
+  display: block;
+  height: 100%;
+  background: var(--primary, #3b82f6);
+  transition: width 0.2s ease;
+}
+
+.integrity-box .modal-actions {
+  align-items: center;
+  gap: 12px;
+}
+
 .tracker-orphan {
   flex-direction: row;
   align-items: flex-start;
