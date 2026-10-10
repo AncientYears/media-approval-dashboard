@@ -12287,11 +12287,21 @@ const type = request.type === "series" ? "series" : "movie";
       const ws = workspaces.find((w) => w.index === Number(index));
       if (!ws) return res.status(404).json({ error: "Workspace not found" });
 
-      const { name, notes, status } = req.body || {};
+      const { name, notes, status, scripts } = req.body || {};
       const updates: any = {};
       if (name !== undefined) updates.name = name;
       if (notes !== undefined) updates.notes = notes;
       if (status !== undefined) updates.status = status;
+      // The manager's ScriptDropdown persists the selection through this route;
+      // omitting `scripts` here silently dropped it, so "Run scripts" then read
+      // an empty selection ("No scripts selected for this workspace") and the
+      // reload wiped the checkbox.
+      if (scripts !== undefined) {
+        if (!Array.isArray(scripts) || scripts.some((s: unknown) => typeof s !== "string")) {
+          return res.status(400).json({ error: "scripts must be an array of strings" });
+        }
+        updates.scripts = scripts as string[];
+      }
 
       writeWorkspaceMetadata(ws.path, updates);
       const updated = readWorkspaceMetadata(ws.path);
