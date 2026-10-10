@@ -225,6 +225,15 @@ export function isMediaTorrentPath(p: string): boolean {
   return MEDIA_EXT_RE.test(p);
 }
 
+/** Archive/part files that ARE the content of a no-video release (a RAR/7z set).
+ *  Media plus archives are "content": a sidecar (nfo/srt/jpg/…) only counts when
+ *  it sits beside content of the SAME torrent, so a 4 KB `.nfo` cannot resolve to
+ *  an unrelated show's `.nfo` that merely shares the length. */
+const ARCHIVE_EXT_RE = /\.(rar|7z|zip|tar|gz|bz2|xz|r\d{2,3}|\d{3}|iso|bin|img|nrg|mdf|mds|dmg|vhd|wim|part\d+\.rar)$/i;
+function isContentTorrentPath(p: string): boolean {
+  return isMediaTorrentPath(p) || ARCHIVE_EXT_RE.test(p);
+}
+
 function leaf(s: string): string {
   return path.basename(s).replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -272,8 +281,9 @@ export function planMatches(
     const missing: TorrentMatch[] = [];
     let coveredBytes = 0;
     const hasMedia = t.parsed.files.some((f) => isMediaTorrentPath(f.path));
+    const hasContent = t.parsed.files.some((f) => isContentTorrentPath(f.path));
 
-    const mediaDirs = new Set<string>();
+    const contentDirs = new Set<string>();
 
     const rank = (torrentPath: string, candidates: VideoEntry[]) =>
       [...candidates].sort((a, b) => {
@@ -287,7 +297,7 @@ export function planMatches(
         return a.path.localeCompare(b.path);
       });
 
-    const consider = (fileIdx: number, torrentPath: string, length: number, scopeToMediaDirs: boolean) => {
+    const consider = (fileIdx: number, torrentPath: string, length: number, scopeToContentDirs: boolean) => {
       let candidates = (bySize.get(length) || []).filter((v) => !used.has(`${v.dev}:${v.ino}`));
       // The download tree keeps every release name verbatim — nothing ever renames
       // there — so a same-length file under a different name is a different
@@ -297,7 +307,7 @@ export function planMatches(
       candidates = candidates.filter(
         (v) => v.tree !== "download" || leaf(path.basename(v.path)) === leaf(path.basename(torrentPath)),
       );
-      if (scopeToMediaDirs) candidates = candidates.filter((v) => mediaDirs.has(path.dirname(v.path)));
+      if (scopeToContentDirs) candidates = candidates.filter((v) => contentDirs.has(path.dirname(v.path)));
       if (candidates.length === 0) {
         missing.push({
           torrentPath,
@@ -313,7 +323,7 @@ export function planMatches(
       }
       const pick = rank(torrentPath, candidates)[0];
       used.add(`${pick.dev}:${pick.ino}`);
-      if (isMediaTorrentPath(torrentPath)) mediaDirs.add(path.dirname(pick.path));
+      if (isContentTorrentPath(torrentPath)) contentDirs.add(path.dirname(pick.path));
       matches.push({
         torrentPath,
         length,
@@ -326,7 +336,8 @@ export function planMatches(
       coveredBytes += length;
     };
 
-    // Media first, so the sidecar pass can scope to the folders they landed in.
+    // Content first (media + archive parts), so the sidecar pass can scope to the
+    // folders they landed in.
     for (let fileIdx = 0; fileIdx < t.parsed.files.length; fileIdx++) {
       const f = t.parsed.files[fileIdx];
       const torrentPath = t.parsed.layout === "folder" ? `${t.parsed.name}/${f.path}` : f.path;
@@ -334,21 +345,20 @@ export function planMatches(
         matches.push({ torrentPath, length: 0, sourcePath: null, tree: "zero", type: null, unique: true, fileIndex: fileIdx });
         continue;
       }
-      if (isMediaTorrentPath(f.path)) consider(fileIdx, torrentPath, f.length, false);
+      if (isContentTorrentPath(f.path)) consider(fileIdx, torrentPath, f.length, false);
     }
-    // Sidecars are scoped to a folder where a MEDIA file of this same release
-    // matched. Matching is by byte length, so a tracker's promo .url/.html —
-    // byte-identical in every release from that tracker — otherwise reads as
-    // present even when this release has no folder here, and a same-size but
-    // different file from an unrelated release could be hardlinked in and then
-    // overwritten by qBittorrent's recheck. Sidecars never block a restore (they
-    // are skipped), so this only changes what is reported. A no-media release
-    // (RAR set) is left alone: there its parts ARE the content.
+    // Sidecars (nfo/srt/jpg/txt/…) are scoped to a folder where CONTENT of this
+    // same torrent matched. Matching is by byte length, so a small `.nfo`/`.jpg`
+    // otherwise resolves to any unrelated release that ships a same-length one —
+    // and a same-size-but-different file from an unrelated release could be
+    // hardlinked in and then overwritten by qBittorrent's recheck. Sidecars never
+    // block a restore (they are skipped), so this only changes what is reported.
+    // A torrent with no content at all is left alone.
     for (let fileIdx = 0; fileIdx < t.parsed.files.length; fileIdx++) {
       const f = t.parsed.files[fileIdx];
-      if (f.length === 0 || isMediaTorrentPath(f.path)) continue;
+      if (f.length === 0 || isContentTorrentPath(f.path)) continue;
       const torrentPath = t.parsed.layout === "folder" ? `${t.parsed.name}/${f.path}` : f.path;
-      consider(fileIdx, torrentPath, f.length, hasMedia);
+      consider(fileIdx, torrentPath, f.length, hasContent);
     }
 
     return {
