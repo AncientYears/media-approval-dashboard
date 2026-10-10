@@ -196,7 +196,11 @@ session can start with P0 without re-deriving the design.
   `GET`/`PUT /api/settings/naming` (Settings → Naming Templates). Applied to NEW
   files only: single-file `move-to-processed` names files per template
   (`{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}`,
-  `{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}`);
+  `{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}`) **and
+  places them under the canonical `<Show>/<Sxx>/` dir — a series file (single
+  file, or a folder whose episodes sit directly in it) must not land at the
+  processed root**; `canonicalFileBase` returns a name WITHOUT extension, so the
+  source extension is appended before it becomes the filename;
   **native `move-to-library` no longer names files** — it carries the processed
   basename over verbatim, because renaming is owned by the P2 "Fix Names" tool the
   user reviews (pre-naming there left the library file "already canonical" before
@@ -1314,6 +1318,7 @@ SEERR_API_KEY=
 - [ ] titlesMatch: "Mufasa: The Lion King" does NOT match "The Lion King" torrents
 - [ ] Processing pipeline creates workspace with inputs/output dirs
 - [ ] Move to Processed hardlinks from Download to Processed
+- [ ] Single-file series `move-to-processed` lands at `<Show>/<Sxx>/<name>.mkv` (extension preserved), never at the processed root without an extension
 - [ ] Move to Workspace hardlinks from Download to Workspace inputs/ (with output/ pre-created)
 - [ ] Move to Library hardlinks from Processed (not Download)
 - [ ] Native "To Library" carries the processed filename verbatim (no canonical rename) — renaming stays with Fix Names

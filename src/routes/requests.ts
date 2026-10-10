@@ -11419,14 +11419,19 @@ const type = request.type === "series" ? "series" : "movie";
       let seriesLayout: { showDir: string; seasonDir: string } | null = null;
       try {
         const contentStat = fs.statSync(contentPath);
-        if (request.library_key && contentStat.isFile()) {
-          const probe = await probeVideoFile(contentPath);
-          canonicalName = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV, probe);
-        } else if (request.library_key && type === "series" && contentStat.isDirectory()) {
-          const withDirEnts = fs.readdirSync(contentPath, { withFileTypes: true });
-          const hasSeasonSubdirs = withDirEnts.some((e) => e.isDirectory() && parseSeasonNumber(e.name) !== null);
-          const hasDirectVideos = withDirEnts.some((e) => e.isFile() && /\.(mkv|mp4|avi|mov|ts|wmv)$/i.test(e.name));
-          if (!hasSeasonSubdirs && hasDirectVideos) {
+        // A single-file episode, or a series folder whose episodes sit DIRECTLY
+        // in it, belongs under the canonical <Show>/<Sxx>/ layout — the panel
+        // scan only reads that shape. A folder holding Sxx subdirs (a
+        // multi-season pack) keeps its structure.
+        if (request.library_key && type === "series") {
+          let eligible = contentStat.isFile();
+          if (contentStat.isDirectory()) {
+            const withDirEnts = fs.readdirSync(contentPath, { withFileTypes: true });
+            const hasSeasonSubdirs = withDirEnts.some((e) => e.isDirectory() && parseSeasonNumber(e.name) !== null);
+            const hasDirectVideos = withDirEnts.some((e) => e.isFile() && VIDEO_FILE_RE.test(e.name));
+            eligible = !hasSeasonSubdirs && hasDirectVideos;
+          }
+          if (eligible) {
             const conf = loadNamingConf(db);
             const packed = await fixNamesPieces(db, request, []);
             const seasonNum = request.season ?? parseSeasonNumber(path.basename(contentPath)) ?? 1;
@@ -11437,6 +11442,14 @@ const type = request.type === "series" ? "series" : "movie";
               seriesLayout = { showDir, seasonDir };
             }
           }
+        }
+        if (request.library_key && contentStat.isFile()) {
+          const probe = await probeVideoFile(contentPath);
+          // canonicalFileBase returns a NAME WITHOUT EXTENSION, and
+          // moveToProcessedSync uses it verbatim as the filename — so append the
+          // source extension or the file lands with no extension at all.
+          const base = await canonicalFileBase(db, request, path.basename(contentPath), type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV, probe);
+          canonicalName = base ? `${base}${path.extname(contentPath)}` : null;
         }
       } catch {}
 

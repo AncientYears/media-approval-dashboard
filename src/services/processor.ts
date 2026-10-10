@@ -145,7 +145,10 @@ export function moveToProcessedSync(
     return { success: true, destination: dest };
   }
 
-  const dest = path.join(destDir, destFileName || path.basename(sourcePath));
+  const dest = seriesLayout && type === "series"
+    ? path.join(destDir, seriesLayout.showDir, seriesLayout.seasonDir, destFileName || path.basename(sourcePath))
+    : path.join(destDir, destFileName || path.basename(sourcePath));
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(dest)) {
     return { success: true, destination: dest };
   }
