@@ -1,16 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-
-interface Finding {
-  infoHash: string;
-  name: string;
-  torrentPath: string;
-  expectedLength: number;
-  path: string;
-  tree: "download" | "processed" | "library";
-  type: "movie" | "series";
-  matchOther: string | null;
-  goodCopy: string | null;
-}
+import { streamCorruptionScan, type CorruptFinding } from "../api";
 
 function fmtBytes(v: number): string {
   if (v <= 0) return "0 B";
@@ -26,10 +15,8 @@ function parentDir(p: string): string {
 }
 
 /**
- * Dashboard-level integrity audit: streams the piece-hash scan of every
- * download/processed/library file against the saved trackers, shows a progress
- * bar while it runs (it is disk-bound), then lists files whose bytes no longer
- * match their torrent — the retroactive hunt for a past bad hardlink.
+ * Dashboard-level integrity scan. Streams progress because the piece hashing is
+ * disk-bound and can run for minutes; a single request would just hang. Read-only.
  */
 export default function VerifyIntegrityModal({ onClose }: { onClose: () => void }) {
   const [running, setRunning] = useState(true);
@@ -37,58 +24,30 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
   const [total, setTotal] = useState(0);
   const [message, setMessage] = useState("Starting…");
   const [scanned, setScanned] = useState(0);
-  const [findings, setFindings] = useState<Finding[] | null>(null);
+  const [findings, setFindings] = useState<CorruptFinding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const ac = new AbortController();
     abort.current = ac;
-
-    (async () => {
-      try {
-        const resp = await fetch("/api/requests/trackers/corruption/stream", { signal: ac.signal });
-        if (!resp.body) throw new Error("No response body");
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let eventType = "";
-
-        for (;;) {
-          const { done: streamDone, value } = await reader.read();
-          if (streamDone) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith("data: ")) {
-              const data = JSON.parse(line.slice(6));
-              if (eventType === "progress") {
-                setDone(data.done || 0);
-                setTotal(data.total || 0);
-                if (data.message) setMessage(data.message);
-              } else if (eventType === "done") {
-                setScanned(data.scanned || 0);
-                setFindings(data.findings || []);
-                setRunning(false);
-              } else if (eventType === "error") {
-                setError(data.error || "Scan failed");
-                setRunning(false);
-              }
-            } else if (line.trim() === "") {
-              eventType = "";
-            }
-          }
-        }
+    streamCorruptionScan({
+      signal: ac.signal,
+      onProgress: (d, t, msg) => {
+        setDone(d);
+        setTotal(t);
+        if (msg) setMessage(msg);
+      },
+    })
+      .then((res) => {
+        setScanned(res.scanned);
+        setFindings(res.findings);
         setRunning(false);
-      } catch (err: any) {
+      })
+      .catch((err: any) => {
         if (err?.name !== "AbortError") setError(err?.message || "Scan failed");
         setRunning(false);
-      }
-    })();
-
+      });
     return () => abort.current?.abort();
   }, []);
 
@@ -112,52 +71,44 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
               <div className="integrity-bar">
                 <div className="integrity-fill" style={{ width: `${pct}%` }} />
               </div>
-              <div className="integrity-line">
-                <span>
-                  {total > 0 ? `${done} / ${total} files` : "Counting files…"}
-                </span>
-                {message && <span className="integrity-current" title={message}>{message}</span>}
+              <div className="integrity-sub">
+                <span>{total > 0 ? `Verified ${done} / ${total}` : "Collecting files…"}</span>
+                {message && <span className="integrity-msg" title={message}>{message}</span>}
               </div>
             </div>
+          ) : findings && findings.length === 0 ? (
+            <div className="integrity-ok">No corruption found — verified {scanned} saved tracker(s).</div>
           ) : findings ? (
-            findings.length === 0 ? (
-              <div className="integrity-ok">No corruption found — verified {scanned} saved tracker(s).</div>
-            ) : (
-              <div className={`corruption-panel has-findings`}>
-                <div className="corruption-head">
-                  <strong>{findings.length} suspect file(s) — bytes don't match the torrent:</strong>
-                </div>
-                {findings.map((f, i) => (
-                  <div className="corruption-row" key={`${f.path}-${i}`}>
-                    <span className="corruption-flag">!</span>
-                    <div className="corruption-info">
-                      <div className="corruption-path" title={f.path}>{f.path}</div>
-                      <div className="corruption-sub">
-                        <span className="corruption-tree">{f.tree}</span>
-                        <span>expected {fmtBytes(f.expectedLength)}</span>
-                        <span className="corruption-tor" title={f.name}>in torrent: {f.name}</span>
-                        {f.matchOther && (
-                          <span className="corruption-other" title={f.matchOther}>holds another release's bytes: {f.matchOther}</span>
-                        )}
-                        {f.goodCopy && (
-                          <span className="corruption-good" title={f.goodCopy}>good copy: {parentDir(f.goodCopy)}</span>
-                        )}
-                      </div>
+            <div className="corruption-panel has-findings">
+              <div className="corruption-head">
+                <strong>{findings.length} suspect file(s) — bytes don't match the torrent:</strong>
+              </div>
+              {findings.map((f, i) => (
+                <div className="corruption-row" key={`${f.path}-${i}`}>
+                  <span className="corruption-flag">!</span>
+                  <div className="corruption-info">
+                    <div className="corruption-path" title={f.path}>{f.path}</div>
+                    <div className="corruption-sub">
+                      <span className="corruption-tree">{f.tree}</span>
+                      <span>expected {fmtBytes(f.expectedLength)}</span>
+                      <span className="corruption-tor" title={f.name}>in torrent: {f.name}</span>
+                      {f.matchOther && (
+                        <span className="corruption-other" title={f.matchOther}>holds another release's bytes: {f.matchOther}</span>
+                      )}
+                      {f.goodCopy && (
+                        <span className="corruption-good" title={f.goodCopy}>good copy: {parentDir(f.goodCopy)}</span>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            )
+                </div>
+              ))}
+            </div>
           ) : null}
         </div>
         <div className="modal-actions">
-          {running ? (
-            <span className="integrity-note">Scanning… you can close this and it will keep running.</span>
-          ) : (
-            <span className="integrity-note">
-              {findings ? `Verified ${scanned} saved tracker(s).` : ""}
-            </span>
-          )}
+          <span className="integrity-note">
+            {running ? "Scanning… you can close this; it keeps running." : `Verified ${scanned} saved tracker(s).`}
+          </span>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>
       </div>

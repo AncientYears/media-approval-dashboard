@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { scanTrackers, scanCorruption, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
+import { scanTrackers, streamCorruptionScan, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
 import { useToast } from "./Toast";
 
 interface MissingFile {
@@ -243,6 +243,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const [healNote, setHealNote] = useState<string | null>(null);
   const [corruption, setCorruption] = useState<{ scanned: number; findings: CorruptFinding[] } | null>(null);
   const [corruptBusy, setCorruptBusy] = useState(false);
+  const [corruptProgress, setCorruptProgress] = useState<number | null>(null);
   const { toast } = useToast();
 
   // Busy is PER-ROW, so restoring/linking one tracker keeps every other row's
@@ -312,8 +313,11 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
 
   async function runCorruptionScan() {
     setCorruptBusy(true);
+    setCorruptProgress(null);
     try {
-      const data = await scanCorruption();
+      const data = await streamCorruptionScan({
+        onProgress: (done, total) => setCorruptProgress(total > 0 ? Math.round((done / total) * 100) : 0),
+      });
       setCorruption({ scanned: data.scanned, findings: data.findings || [] });
       const n = data.findings?.length || 0;
       toast(
@@ -326,6 +330,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       toast(err?.response?.data?.error || err.message, "error");
     } finally {
       setCorruptBusy(false);
+      setCorruptProgress(null);
     }
   }
 
@@ -507,7 +512,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   disabled={corruptBusy || busy.size > 0}
                   onClick={runCorruptionScan}
                 >
-                  {corruptBusy ? "Verifying…" : "Verify integrity"}
+                  {corruptBusy ? (corruptProgress != null ? `Verifying… ${corruptProgress}%` : "Verifying…") : "Verify integrity"}
                 </button>
               </div>
 

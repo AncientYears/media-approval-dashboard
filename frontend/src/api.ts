@@ -585,23 +585,66 @@ export async function scanTrackers() {
 /** Retroactive integrity scan: verify every library/processed/download file
  *  against the saved trackers' own piece hashes and report the ones that fail
  *  (a past bad restore wrote another torrent's bytes through the hardlink). */
+export interface CorruptFinding {
+  infoHash: string;
+  name: string;
+  torrentPath: string;
+  expectedLength: number;
+  path: string;
+  tree: "download" | "processed" | "library";
+  type: "movie" | "series";
+  matchOther: string | null;
+  goodCopy: string | null;
+}
+
 export async function scanCorruption() {
   const response = await api.get("/requests/trackers/corruption");
   return response.data as {
     scanned: number;
-    findings: {
-      infoHash: string;
-      name: string;
-      torrentPath: string;
-      expectedLength: number;
-      path: string;
-      tree: "download" | "processed" | "library";
-      type: "movie" | "series";
-      matchOther: string | null;
-      goodCopy: string | null;
-    }[];
+    findings: CorruptFinding[];
     parseErrors: { file: string; error: string }[];
   };
+}
+
+/** Same integrity scan, but streamed so the UI can show a progress bar — the
+ *  piece hashing is disk-bound and can run for minutes. Resolves with the final
+ *  findings; onProgress fires as verifications complete. */
+export async function streamCorruptionScan(opts?: {
+  onProgress?: (done: number, total: number, message: string) => void;
+  signal?: AbortSignal;
+}): Promise<{ scanned: number; findings: CorruptFinding[]; parseErrors: { file: string; error: string }[] }> {
+  const resp = await fetch("/api/requests/trackers/corruption/stream", { signal: opts?.signal });
+  if (!resp.body) throw new Error("No response body");
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventType = "";
+  let result: { scanned: number; findings: CorruptFinding[]; parseErrors: { file: string; error: string }[] } | null = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        const data = JSON.parse(line.slice(6));
+        if (eventType === "progress") {
+          opts?.onProgress?.(data.done || 0, data.total || 0, data.message || "");
+        } else if (eventType === "done") {
+          result = { scanned: data.scanned || 0, findings: data.findings || [], parseErrors: data.parseErrors || [] };
+        } else if (eventType === "error") {
+          throw new Error(data.error || "Scan failed");
+        }
+      } else if (line.trim() === "") {
+        eventType = "";
+      }
+    }
+  }
+  if (!result) throw new Error("Scan ended without a result");
+  return result;
 }
 
 export async function restoreTrackers(items: { infoHash: string; type: "movie" | "series"; allowMissing?: boolean }[]) {
