@@ -5270,9 +5270,39 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
     return disk.size > 0;
   }
 
+  // A short-lived memo for /managed. The endpoint walks the NFS-backed
+  // processed/library trees (readdir + stat per file, per franchise, per
+  // season) on every call, so page reloads and rapid dashboard revisits pay
+  // that cost repeatedly. The payload is only ever served from the memo when
+  // BOTH it is younger than MANAGED_MEMO_TTL_MS AND no media-table write has
+  // happened since it was built (media_dirty_flag counter, bumped by triggers
+  // in db/index.ts). Covered tables: media_requests, release_candidates,
+  // approval_history, tmdb_season_cache, tmdb_franchise_prefs — together they
+  // drive every field the dashboard shows (status, sizes, counts,
+  // denominators), so a mutation always forces a recompute. The computation's
+  // OWN writes (episode_count backfill, season-cache warm, identity heal) bump
+  // the counter mid-flight but land before the memo's counter snapshot, so the
+  // memo stays valid — it is the snapshot of the state it actually reported.
+  const MANAGED_MEMO_TTL_MS = 5000;
+  let managedMemo: { at: number; memoN: number; payload: any[] } | null = null;
+  const managedDirtyN = (): number => {
+    try {
+      return (db.prepare("SELECT n FROM media_dirty_flag WHERE id = 1").get() as any)?.n ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+
   // GET /api/requests/managed - Grouped managed media (series by franchise, movies individual)
   router.get("/managed", async (req: Request, res: Response) => {
     try {
+      if (
+        managedMemo &&
+        Date.now() - managedMemo.at < MANAGED_MEMO_TTL_MS &&
+        managedMemo.memoN === managedDirtyN()
+      ) {
+        return res.json(managedMemo.payload);
+      }
       // All requests with active torrents
       const rows = db.prepare(`
         SELECT * FROM (
@@ -5625,6 +5655,10 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
         return a.title.localeCompare(b.title);
       });
 
+      // Snapshot AFTER the payload is built: the counter records every write
+      // the computation itself made, so a later mutation (not this request's
+      // own backfills) will be visible as a counter change.
+      managedMemo = { at: Date.now(), memoN: managedDirtyN(), payload: managed };
       res.json(managed);
     } catch (error) {
       console.error("Error fetching managed media:", error);

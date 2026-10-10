@@ -1004,6 +1004,34 @@ CREATE TABLE IF NOT EXISTS unmatched_torrents (
       skipped INTEGER DEFAULT 0
     )`);
 
+    // /api/requests/managed memo invalidation: any write to the media tables
+    // that drive the dashboard endpoint bumps this counter, so a cached payload
+    // (5s TTL in requests.ts) is never served after a real mutation — regardless
+    // of which route, poller or sync did the write. Idempotent: the table and
+    // triggers are re-created cheaply on every boot.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS media_dirty_flag (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        n INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT OR IGNORE INTO media_dirty_flag (id, n) VALUES (1, 0);
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_mr_i AFTER INSERT ON media_requests BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_mr_u AFTER UPDATE ON media_requests BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_mr_d AFTER DELETE ON media_requests BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_rc_i AFTER INSERT ON release_candidates BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_rc_u AFTER UPDATE ON release_candidates BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_rc_d AFTER DELETE ON release_candidates BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_ah_i AFTER INSERT ON approval_history BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_ah_u AFTER UPDATE ON approval_history BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_ah_d AFTER DELETE ON approval_history BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_sc_i AFTER INSERT ON tmdb_season_cache BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_sc_u AFTER UPDATE ON tmdb_season_cache BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_sc_d AFTER DELETE ON tmdb_season_cache BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_fp_i AFTER INSERT ON tmdb_franchise_prefs BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_fp_u AFTER UPDATE ON tmdb_franchise_prefs BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+      CREATE TRIGGER IF NOT EXISTS trg_media_dirty_fp_d AFTER DELETE ON tmdb_franchise_prefs BEGIN UPDATE media_dirty_flag SET n = n + 1 WHERE id = 1; END;
+    `);
+
   return {
     db,
     close: () => db.close(),
