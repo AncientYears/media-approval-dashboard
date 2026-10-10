@@ -12655,23 +12655,13 @@ const type = request.type === "series" ? "series" : "movie";
         return res.status(400).json({ error: "No Radarr or Sonarr ID associated" });
       }
 
-      // P1 canonical naming: for native (arr-free) requests, name NEW library
-      // files per the naming template instead of copying the release basename.
-      // Dirs keep their structure; null means "keep raw name, never guess".
-      let destFileName = path.basename(sourcePath);
-      if (request.library_key && !fs.statSync(sourcePath).isDirectory()) {
-        try {
-          const probe = await probeVideoFile(sourcePath);
-          const canonical = await canonicalFileBase(
-            db,
-            request,
-            path.basename(sourcePath),
-            request.type === "series" ? path.dirname(destFolder) : destFolder,
-            probe,
-          );
-          if (canonical) destFileName = `${canonical}${path.extname(sourcePath)}`;
-        } catch {}
-      }
+      // Keep the processed basename verbatim. Renaming is owned by the P2
+      // "Fix Names" tool, which the user reviews before applying — so
+      // move-to-library must NOT canonicalize behind their back (it produced
+      // names like "... [WEBDL-1080p PCOK]..." that then read as "already
+      // canonical" in Fix Names, and there are naming quirks still being
+      // worked out). Dirs keep their structure; the filename carries over.
+      const destFileName = path.basename(sourcePath);
 
       // Same-inode destination returns unchanged (idempotent already-exists);
       // a different file at the canonical name gets a "-2" suffix so multiple

@@ -194,10 +194,14 @@ session can start with P0 without re-deriving the design.
   offline fallback parses ids from an already-canonical target folder) + naming
   templates stored in the `settings` table and editable at
   `GET`/`PUT /api/settings/naming` (Settings → Naming Templates). Applied to NEW
-  files only: single-file `move-to-processed` and native (arr-free)
-  `move-to-library` (per-file + torrent paths) name files per template
+  files only: single-file `move-to-processed` names files per template
   (`{Title} ({Year}) [imdbid-tt{ImdbId}] - {Tags}{Group}`,
   `{Title} - S{Season:02}E{Episode:02} - {EpisodeTitle} {Tags}{Group}`);
+  **native `move-to-library` no longer names files** — it carries the processed
+  basename over verbatim, because renaming is owned by the P2 "Fix Names" tool the
+  user reviews (pre-naming there left the library file "already canonical" before
+  the tool ever ran, and there are quirks still being worked out). It still
+  creates/uses a canonical DIR when the library show folder does not exist yet.
   `{EpisodeTitle}` fills from `tmdb_season_cache` (offline). **P1b: playback
   tags are probed from the source file with ffprobe
   (`src/services/mediaProbe.ts` → `assembleCanonicalTags`) before title
@@ -1089,6 +1093,7 @@ SEERR_API_KEY=
 
 ## Common Gotchas
 
+- **Native "To Library" must NOT rename the file.** `POST /:id/move-to-library` carries the processed basename over verbatim; it no longer runs `canonicalFileBase`. Renaming is owned by the P2 "Fix Names" tool, which the user reviews — pre-naming the library file there left it "already canonical" before Fix Names ever ran, so the tool had nothing to do (and it interacts confusingly with quirks still being worked out). The route still creates/uses a canonical DIR when the library show folder does not exist yet. A `[WEBDL-1080p PCOK]`-style provider tag inside the source bracket is CORRECT (`PROVIDERS` in `naming.ts`; PCOK = Peacock) and will render when Fix Names does the rename.
 - Express v5 routing: `/{*path}` for catch-all, not `/*`
 - `better-sqlite3` v12: `lastInsertRowid` returns BigInt, never extract `.get`/`.run` from prepared statements (loses `this` binding → `Illegal invocation`)
 - Sonarr's `/api/v3/release` ignores `term` parameter — use Prowlarr instead
@@ -1310,6 +1315,7 @@ SEERR_API_KEY=
 - [ ] Move to Processed hardlinks from Download to Processed
 - [ ] Move to Workspace hardlinks from Download to Workspace inputs/ (with output/ pre-created)
 - [ ] Move to Library hardlinks from Processed (not Download)
+- [ ] Native "To Library" carries the processed filename verbatim (no canonical rename) — renaming stays with Fix Names
 - [ ] Workspace cleaned up after processing completes
 - [ ] Workspace "Complete & Import" places series outputs under the canonical `<Show>/<Sxx>/` tree (filenames kept) and stores PROCESSED-root-relative `processed_files` paths
 - [ ] Workspace scripts: definitions come from `GET /api/requests/workspace-scripts`; selection persists in `metadata.scripts`; "Run scripts" runs them (inputs/ → output/) via `POST /:id/workspaces/:index/run`
