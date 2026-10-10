@@ -1233,6 +1233,23 @@ function processedShowDirFromFiles(db: Database, requestIds: number[]): string |
   return null;
 }
 
+/** The processed show folder this request's FRANCHISE already uses, if any.
+ *  Scoped by `library_key` (not just this request id) because a multi-season
+ *  franchise shares ONE show folder: if S01 was placed under a non-canonical
+ *  folder, S02 must be placed there too rather than minting a second canonical
+ *  one and splitting the show. Null means no folder is in use yet. */
+function existingProcessedShowDir(db: Database, request: any): string | null {
+  if (!request?.library_key) return null;
+  let ids: number[] = [];
+  try {
+    ids = (db.prepare("SELECT id FROM media_requests WHERE library_key = ?").all(request.library_key) as any[]).map((r) => r.id);
+  } catch {
+    ids = [request.id];
+  }
+  if (!ids.length) ids = [request.id];
+  return processedShowDirFromFiles(db, ids);
+}
+
 /** The processed movie SUBFOLDER holding these requests' accepted files, when
  *  they are foldered. Movies are mostly flat in PROCESSED_MOVIES, so this is
  *  frequently null - that is fine, it only serves as a fallback title source
@@ -11453,10 +11470,10 @@ const type = request.type === "series" ? "series" : "movie";
           }
           if (eligible) {
             const conf = loadNamingConf(db);
-            // Prefer a show folder already in use for this request; only mint the
-            // canonical one when none exists yet, so we never split a show across
-            // two differently-named folders.
-            let showDir: string | null = processedShowDirFromFiles(db, [request.id]);
+            // Prefer a show folder already in use for this franchise; only mint
+            // the canonical one when none exists yet, so a show is never split
+            // across two differently-named folders.
+            let showDir: string | null = existingProcessedShowDir(db, request);
             if (!showDir) {
               const packed = await fixNamesPieces(db, request, []);
               showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
@@ -12573,10 +12590,17 @@ const type = request.type === "series" ? "series" : "movie";
       if (type === "series" && request.library_key) {
         try {
           const conf = loadNamingConf(db);
-          const packed = await fixNamesPieces(db, request, []);
+          // Prefer the show folder this franchise already uses; else the canonical
+          // one — same rule as move-to-processed, so outputs land beside the
+          // request's existing files instead of splitting the show.
+          let showDir: string | null = existingProcessedShowDir(db, request);
+          if (!showDir) {
+            const packed = await fixNamesPieces(db, request, []);
+            showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
+              || cleanFranchiseTitle(request.title || "")
+              || null;
+          }
           const seasonNum = request.season ?? 1;
-          const showDir = (packed.pieces && canonicalSeriesDir(conf, packed.pieces))
-            || cleanFranchiseTitle(request.title || "");
           if (showDir) {
             const seasonDir = canonicalSeasonDir(conf, seasonNum) || `S${String(seasonNum).padStart(2, "0")}`;
             seriesLayout = { showDir, seasonDir };
