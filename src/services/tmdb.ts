@@ -73,7 +73,7 @@ function libraryKeyYear(libraryKey: string): number | null {
   return Number.isFinite(y) ? y : null;
 }
 
-async function tmdbGet<T>(path: string): Promise<T | null> {
+async function tmdbGet<T>(path: string, opts?: { notFound?: (status: number) => void }): Promise<T | null> {
   const key = apiKey();
   if (!key) return null;
   try {
@@ -82,9 +82,15 @@ async function tmdbGet<T>(path: string): Promise<T | null> {
   } catch (err: any) {
     // 404 is an ANSWER, not a fault: a season the show does not have (S00 for
     // most series) comes back as one, and dumping the stack for it read like a
-    // crash in the logs when the caller simply proceeds with no metadata.
-    if (err?.response?.status === 404) console.warn(`[TMDB] no such resource ${path}`);
-    else console.error(`[TMDB] request failed ${path}: ${err.stack || err.message}`);
+    // crash in the logs when the caller simply proceeds with no metadata. The
+    // notFound callback lets the caller distinguish the answer from a transient
+    // network error, so only genuine absences get negative-cached.
+    if (err?.response?.status === 404) {
+      console.warn(`[TMDB] no such resource ${path}`);
+      opts?.notFound?.(404);
+    } else {
+      console.error(`[TMDB] request failed ${path}: ${err.stack || err.message}`);
+    }
     return null;
   }
 }
@@ -483,19 +489,28 @@ export async function fetchTMDBSeason(
     .prepare("SELECT payload FROM tmdb_season_cache WHERE library_key = ? AND season = ? AND language = ?")
     .get(libraryKey, season, language) as any;
   let cached: SeasonMeta | null = null;
+  let negativeHit = false;
   if (cacheRow) {
     try {
-      const payload = JSON.parse(cacheRow.payload) as SeasonMeta;
-      // Same order AND already reconciled against it: a row fetched under an
-      // order but written before the reconciliation existed (or during a
-      // group-detail outage) still lists an order-relocated special as a
-      // missing S00 entry — treat it as a miss so the next read rewrites it.
-      const sameOrder = (payload.episode_group_id ?? null) === rowGroup;
-      const reconciled = rowGroup == null || payload.order_pruned === true;
-      if (sameOrder && reconciled) cached = payload;
+      const payload = JSON.parse(cacheRow.payload) as (SeasonMeta & { negative?: boolean }) | null;
+      if (payload && payload.negative === true) {
+        // A recorded "the show has no such season" (S00 for most series) answers
+        // from cache without a network call. Only written from a real 404 — a
+        // transient error is never frozen in. force still re-queries (a season
+        // TMDB gained later self-heals by overwriting the row on success).
+        negativeHit = true;
+      } else if (payload) {
+        // Same order AND already reconciled against it: a row fetched under an
+        // order but written before the reconciliation existed (or during a
+        // group-detail outage) still lists an order-relocated special as a
+        // missing S00 entry — treat it as a miss so the next read rewrites it.
+        const sameOrder = (payload.episode_group_id ?? null) === rowGroup;
+        const reconciled = rowGroup == null || payload.order_pruned === true;
+        if (sameOrder && reconciled) cached = payload;
+      }
     } catch {}
   }
-  if (cached && !force) return cached;
+  if (!force && (cached || negativeHit)) return cached;
 
   const key = apiKey();
   if (!key) return cached;
@@ -535,8 +550,21 @@ export async function fetchTMDBSeason(
       return gmeta;
     }
   }
-  const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`);
-  if (!data?.episodes) return cached;
+  let seasonNotFound = false;
+  const data = await tmdbGet<any>(`/tv/${show.id}/season/${season}?language=${language}`, {
+    notFound: () => {
+      seasonNotFound = true;
+    },
+  });
+  if (!data?.episodes) {
+    // A genuine 404 is an ANSWER, not a fault: most shows have no S00, yet the
+    // dashboard queried it on EVERY /managed recompute because nothing was
+    // cached for a missing season. Negative-cache the absence so that answer is
+    // ever after served from the DB. Transient errors (data === null via
+    // timeout/5xx) are NOT cached. Overwritten by a real result later.
+    if (seasonNotFound) saveNegativeSeasonCache(db, libraryKey, season, language);
+    return cached;
+  }
 
   // The selected order lacks this season (S00 is the usual case), so the aired
   // endpoint answers — but the aired list can hold episodes the order FILED IN
@@ -611,6 +639,24 @@ function saveSeasonCache(db: Database, libraryKey: string, season: number, langu
     meta.tmdb_show_id,
     meta.show_name,
     JSON.stringify(meta),
+    new Date().toISOString(),
+  );
+}
+
+/** Record "this show has no such season" from a genuine 404. The dashboard asks
+ *  for S00 of every native franchise with an S00 folder on disk, and for most
+ *  shows TMDB answers 404 — which used to re-trigger the network call on every
+ *  /managed recompute. payload carries `negative: true`; readers treat it as a
+ *  resolved miss and return null without touching the network. `force` on a
+ *  later fetch overrides it, and a real result overwrites the row. */
+function saveNegativeSeasonCache(db: Database, libraryKey: string, season: number, language: string): void {
+  db.prepare("INSERT OR REPLACE INTO tmdb_season_cache (library_key, season, language, tmdb_show_id, show_name, payload, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+    libraryKey,
+    season,
+    language,
+    0,
+    "",
+    JSON.stringify({ negative: true }),
     new Date().toISOString(),
   );
 }

@@ -86,9 +86,13 @@ function ConfirmModal({ message, onConfirm, onCancel }: { message: string; onCon
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [requests, setRequests] = useState<any[]>([]);
-  const [managed, setManaged] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed STATE from the module-level snapshot so a remount after navigation
+  // paints the last-known data on the very first render — no "Loading
+  // requests..." frame. Only a cold load (no snapshot yet) starts with the
+  // spinner. The effect below refreshes silently on top of this.
+  const [requests, setRequests] = useState<any[]>(() => (dashboardCache ? dashboardCache.requests : []));
+  const [managed, setManaged] = useState<any[]>(() => (dashboardCache ? dashboardCache.managed : []));
+  const [loading, setLoading] = useState(() => !dashboardCache);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
@@ -118,15 +122,11 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (dashboardCache) {
-      // Instant first paint from the last snapshot; refresh silently after.
-      setRequests(dashboardCache.requests);
-      setManaged(dashboardCache.managed);
-      setLoading(false);
-      loadData({ silent: true });
-    } else {
-      loadData();
-    }
+    // Cold mount (no snapshot yet) should show the spinner while loadData runs;
+    // a remount after navigation already painted `dashboardCache` state above,
+    // so its refresh runs silently. Both arms update `dashboardCache` for the
+    // next visit.
+    loadData({ silent: !!dashboardCache });
     // Seerr sync and stale-RC cleanup can change what the lists show; run them
     // in the background and refresh once after both settle instead of doing a
     // full reload per job (three back-to-back heavy list fetches per visit).
