@@ -8978,6 +8978,62 @@ alreadyExtra = true;
 
   // GET /api/requests/trackers/scan - match saved .torrent trackers against
   // every file we have (download/processed/library) and list download orphans.
+  // Shared per-entry orphan computation for the scan route AND the delete
+  // route — deleting must re-apply exactly the filters the scan used, or it
+  // could remove a file that a live torrent or a saved tracker now claims
+  // (the move/delete surfaces race the scan otherwise).
+  const computeOrphan = async (
+    full: string,
+    name: string,
+    isDir: boolean,
+    rootType: "movie" | "series",
+    torrents: any[],
+    plans: any[],
+    procInodes: Set<number>,
+  ): Promise<any | null> => {
+    const coveredByLive = torrents.some((t: any) => {
+      const cp = t.content_path ? fromQBittorrentPath(t.content_path) : "";
+      return cp === full || cp.startsWith(full + path.sep);
+    });
+    if (coveredByLive) return null;
+    const isPlanSource = plans.some((p: any) =>
+      p.matches.some((m: any) => m.sourcePath && (m.sourcePath === full || m.sourcePath.startsWith(full + path.sep)))
+    );
+    if (isPlanSource) return null;
+    // A single-file orphan (most movies/specials) is a FILE, not a dir:
+    // collectVideoInodes is a DIRECTORY walker, so calling it on a file made
+    // readdirSync throw and the orphan came back with zero inodes — videoCount
+    // 0 and existsInProcessed always false even when the exact same inode sits
+    // in /Processed (a move-to-processed hardlink later renamed by Fix Names
+    // keeps its inode). Stat the file directly; directories keep the walk.
+    let inodes = new Set<number>();
+    if (isDir) {
+      inodes = collectVideoInodes(full);
+    } else if (VIDEO_FILE_RE.test(name)) {
+      try {
+        inodes.add(fs.statSync(full).ino);
+      } catch {}
+    }
+    const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
+    const parsed = parseTorrentName(name);
+    const matched = await findBestRequestForDownload(
+      db,
+      name,
+      rootType,
+      rootType === "series" && parsed.season != null ? parsed.season : null
+    );
+    return {
+      path: full,
+      type: rootType,
+      name,
+      isDir,
+      sizeMb: Math.round(dirSizeBytes(full) / (1024 * 1024)),
+      videoCount: inodes.size,
+      existsInProcessed,
+      matchedRequest: matched ? { id: matched.id, title: matched.title, season: matched.season ?? null } : null,
+    };
+  };
+
   router.get("/trackers/scan", async (req: Request, res: Response) => {
     try {
       const scan = listSavedTrackers();
@@ -9068,55 +9124,22 @@ alreadyExtra = true;
       // restore source of any plan. These are who "link trackers to them, or
       // move to processed when no tracker exists" applies to.
       const orphans: any[] = [];
-      const scanOrphans = async (root: string, rootType: string) => {
+      const scanOrphans = async (root: string, rootType: "movie" | "series") => {
         if (!fs.existsSync(root)) return;
         const relevantProc = rootType === "movie" ? PROCESSED_MOVIES : PROCESSED_TV;
         const procInodes = fs.existsSync(relevantProc) ? collectVideoInodes(relevantProc) : new Set<number>();
         for (const e of fs.readdirSync(root, { withFileTypes: true })) {
           if (e.name.startsWith(".")) continue;
-          const full = path.join(root, e.name);
-          const coveredByLive = torrents.some((t: any) => {
-            const cp = t.content_path ? fromQBittorrentPath(t.content_path) : "";
-            return cp === full || cp.startsWith(full + path.sep);
-          });
-          if (coveredByLive) continue;
-          const isPlanSource = plans.some((p) =>
-            p.matches.some((m) => m.sourcePath && (m.sourcePath === full || m.sourcePath.startsWith(full + path.sep)))
-          );
-          if (isPlanSource) continue;
-          // A single-file orphan (most movies/specials) is a FILE, not a dir:
-          // collectVideoInodes is a DIRECTORY walker, so calling it on a file
-          // made readdirSync throw and every single-file orphan came back with
-          // zero inodes — videoCount 0 and existsInProcessed always false even
-          // when the exact same inode sits in /Processed (a move-to-processed
-          // hardlink later renamed by Fix Names keeps its inode). Stat the file
-          // directly; directories keep the recursive walk.
-          let inodes = new Set<number>();
-          if (e.isDirectory()) {
-            inodes = collectVideoInodes(full);
-          } else if (VIDEO_FILE_RE.test(e.name)) {
-            try {
-              inodes.add(fs.statSync(full).ino);
-            } catch {}
-          }
-          const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
-          const parsed = parseTorrentName(e.name);
-          const matched = await findBestRequestForDownload(
-            db,
+          const rec = await computeOrphan(
+            path.join(root, e.name),
             e.name,
+            e.isDirectory(),
             rootType,
-            rootType === "series" && parsed.season != null ? parsed.season : null
+            torrents,
+            plans,
+            procInodes,
           );
-          orphans.push({
-            path: full,
-            type: rootType,
-            name: e.name,
-            isDir: e.isDirectory(),
-            sizeMb: Math.round(dirSizeBytes(full) / (1024 * 1024)),
-            videoCount: inodes.size,
-            existsInProcessed,
-            matchedRequest: matched ? { id: matched.id, title: matched.title, season: matched.season ?? null } : null,
-          });
+          if (rec) orphans.push(rec);
         }
       };
       await scanOrphans(DOWNLOADS_MOVIES, "movie");
@@ -9599,6 +9622,92 @@ alreadyExtra = true;
       res.json({ results });
     } catch (error: any) {
       console.error("Error moving orphans:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/requests/trackers/orphans/delete - delete an orphan that is a
+  // leftover hardlink of a file already in /Processed (same inode, owned by a
+  // matching request). Deleting removes only the /download copy — content,
+  // inode identity and the request all live on in /Processed, and saved-tracker
+  // restores (which match by byte length across download/processed/library)
+  // still find the bytes there. Refuses anything the scan would not list as an
+  // orphan in the first place (covered by a live torrent, or claimed as the
+  // restore source of a saved tracker) and anything not already in /Processed.
+  router.post("/trackers/orphans/delete", async (req: Request, res: Response) => {
+    try {
+      const items: any[] = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (items.length === 0) return res.status(400).json({ error: "No items provided" });
+      let torrents: any[] = [];
+      try {
+        torrents = await qbittorrent.getTorrents();
+      } catch {}
+      const plans = planMatches(listSavedTrackers().trackers, collectVideos());
+      const procInodesByRoot = new Map<string, Set<number>>();
+      const results: any[] = [];
+      for (const item of items) {
+        const p = String(item?.path || "");
+        const type = item?.type === "movie" ? "movie" : "series";
+        const out: any = { path: p, ok: false };
+        if (!p) {
+          out.error = "Missing path";
+          results.push(out);
+          continue;
+        }
+        const root = isWithinDownloadRoot(p);
+        if (!root) {
+          out.error = "Path is outside download directories";
+          results.push(out);
+          continue;
+        }
+        const expectRoot = type === "movie" ? path.resolve(DOWNLOADS_MOVIES) : path.resolve(DOWNLOADS_TV);
+        if (root !== expectRoot) {
+          out.error = "Type does not match the path's download directory";
+          results.push(out);
+          continue;
+        }
+        if (path.dirname(p) !== expectRoot) {
+          out.error = "Path is not a direct child of the download root (only scan-listed entries)";
+          results.push(out);
+          continue;
+        }
+        if (!fs.existsSync(p)) {
+          out.error = "Path no longer exists — re-run the scan";
+          results.push(out);
+          continue;
+        }
+        const relevantProc = type === "movie" ? PROCESSED_MOVIES : PROCESSED_TV;
+        let procInodes = procInodesByRoot.get(relevantProc);
+        if (!procInodes) {
+          procInodes = fs.existsSync(relevantProc) ? collectVideoInodes(relevantProc) : new Set<number>();
+          procInodesByRoot.set(relevantProc, procInodes);
+        }
+        const isDir = fs.statSync(p).isDirectory();
+        const rec = await computeOrphan(p, path.basename(p), isDir, type, torrents, plans, procInodes);
+        if (!rec) {
+          out.error = "No longer an orphan (a live torrent or a saved tracker now covers it) — re-run the scan";
+          results.push(out);
+          continue;
+        }
+        if (!rec.existsInProcessed || !rec.matchedRequest) {
+          out.error = "Only orphans already in /Processed with a matching request are deleted — move this one instead";
+          results.push(out);
+          continue;
+        }
+        try {
+          if (isDir) fs.rmSync(p, { recursive: true, force: true });
+          else fs.unlinkSync(p);
+        } catch (err: any) {
+          out.error = err.message;
+          results.push(out);
+          continue;
+        }
+        console.log(`[Trackers] Deleted download orphan ${p} (content stays in /Processed)`);
+        results.push({ ...out, ok: true });
+      }
+      res.json({ results });
+    } catch (error: any) {
+      console.error("Error deleting orphans:", error);
       res.status(500).json({ error: error.message });
     }
   });

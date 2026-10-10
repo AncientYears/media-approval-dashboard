@@ -598,6 +598,12 @@ export async function moveOrphans(items: { path: string; type: "movie" | "series
   return response.data;
 }
 
+/** Delete an orphan that is a leftover hardlink already present in /Processed — removes only the /download copy. */
+export async function deleteOrphans(items: { path: string; type: "movie" | "series" }[]) {
+  const response = await api.post("/requests/trackers/orphans/delete", { items });
+  return response.data;
+}
+
 /** Delete the redundant same-hash .torrent copies the scan reports (one copy per hash always survives). */
 export async function removeDuplicateTrackers() {
   const response = await api.post("/requests/trackers/duplicates/remove");

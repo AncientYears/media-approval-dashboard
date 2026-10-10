@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans, removeDuplicateTrackers } from "../api";
+import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
 import { useToast } from "./Toast";
 
 interface MissingFile {
@@ -272,6 +272,33 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     });
   }
 
+  // A download orphan that is a leftover hardlink of a file already in
+  // /Processed (same inode) can be deleted: it removes only the /download
+  // copy — content, inode identity and the request all live on in Processed,
+  // and saved-tracker restores (which match by bytes) still find the content.
+  async function deleteOrphan(o: OrphanRow) {
+    if (
+      !window.confirm(
+        `Delete "${o.name}" from the download folder?\n\nIts content is already hardlinked into /Processed, so nothing is lost — this only removes the leftover download copy.`,
+      )
+    ) {
+      return;
+    }
+    const busyKey = `del-${o.path}`;
+    markBusy(busyKey);
+    try {
+      const res = await deleteOrphans([{ path: o.path, type: o.type }]);
+      const r = res.results?.[0];
+      if (r?.ok) toast(`${o.name}: deleted (content stays in /Processed)`, "success");
+      else toast(`${o.name}: ${r?.error || "failed"}`, "error");
+      await load(true);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || err.message, "error");
+    } finally {
+      clearBusy(busyKey);
+    }
+  }
+
   async function moveSelectedOrphans() {
     if (!scan) return;
     const selected = scan.orphans.filter((o) => orphanPicks.has(o.path));
@@ -458,23 +485,36 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
               {orphans.length === 0 && <div className="tor-empty">No orphaned download files.</div>}
               {orphans.length > 0 && (
                 <div className="tracker-list">
-                  {orphans.map((o) => (
-                    <label className="tracker-item tracker-orphan" key={o.path}>
-                      <input type="checkbox" checked={orphanPicks.has(o.path)} onChange={() => toggleOrphan(o.path)} />
-                      <div className="tracker-orphan-info">
-                        <div className="tracker-name" title={o.path}>
-                          {o.name}
-                          {o.isDir && " /"}
+                  {orphans.map((o) => {
+                    const delBusy = busy.has(`del-${o.path}`);
+                    return (
+                      <div className={`tracker-item tracker-orphan ${delBusy ? "tracker-item-busy" : ""}`} key={o.path}>
+                        <input type="checkbox" checked={orphanPicks.has(o.path)} onChange={() => toggleOrphan(o.path)} />
+                        <div className="tracker-orphan-info">
+                          <div className="tracker-name" title={o.path}>
+                            {o.name}
+                            {o.isDir && " /"}
+                          </div>
+                          <div className="tracker-item-sub">
+                            <span>{o.type}</span>
+                            <span>{fmtMB(o.sizeMb)}</span>
+                            {o.existsInProcessed && <span className="badge tracker-badge">already in processed</span>}
+                            {o.matchedRequest && <span className="tracker-linked">→ request #{o.matchedRequest.id}</span>}
+                          </div>
                         </div>
-                        <div className="tracker-item-sub">
-                          <span>{o.type}</span>
-                          <span>{fmtMB(o.sizeMb)}</span>
-                          {o.existsInProcessed && <span className="badge tracker-badge">already in processed</span>}
-                          {o.matchedRequest && <span className="tracker-linked">→ request #{o.matchedRequest.id}</span>}
-                        </div>
+                        {o.existsInProcessed && o.matchedRequest && (
+                          <button
+                            className="btn btn-small btn-danger"
+                            disabled={globalBusy || delBusy}
+                            title="This file's content is already hardlinked into /Processed — deleting removes only this leftover download copy. Saved-tracker restores match files by bytes, so the content is still found next time."
+                            onClick={() => deleteOrphan(o)}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
-                    </label>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
