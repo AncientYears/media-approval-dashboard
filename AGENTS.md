@@ -689,6 +689,56 @@ why extraction is a script and not a TorrentPanel button.
 6. Cleans up release_candidates, approval_history for that release
 7. Does NOT touch Sonarr/Radarr (they remain as-is)
 
+## Tracker Recovery (restore saved trackers / download orphans)
+
+Restores a release that qBittorrent no longer tracks: `listSavedTrackers` reads the
+`.torrent` files archived in `TRACKERS_DIR`, `planMatches`
+(`src/services/torrentRecovery.ts`) matches each torrent's internal files against
+the download ∪ processed ∪ library trees by **exact byte length**, and
+`placeFilesIntoDownload` hardlinks the matched files back into the download folder
+so the torrent can re-add and seed. `POST /trackers/restore` then re-adds it and
+`alignQbitContentPath` fixes up `name.utf-8` wrapper paths.
+
+### Hardlinks are shared data, so a matched file MUST be verified
+`placeFilesIntoDownload` uses `fs.linkSync` — the download path, the processed
+copy and the library copy are ONE inode. If a wrong same-length file is placed,
+qBittorrent's recheck writes the torrent's bytes **through the hardlink** and
+destroys the processed/library source it pointed at (there is no "only that one
+link": any write to a hardlink writes the shared data; the `.!qB` incomplete-name
+setting only renames the inode, it does not fork it). A length match therefore is
+NOT enough — same length ≠ same bytes.
+
+`planMatches` verifies the chosen candidate against the torrent's own SHA-1 piece
+hashes before using it (`verifyTorrentFile` hashes the first piece that lies
+**wholly inside** the file; a boundary piece is shared with a neighbour and cannot
+be judged from one file). Verdicts: `true` used, `false` refused (the matcher
+keeps looking and reports the file as `corrupt`), `null` (smaller than one whole
+piece / unreadable / no piece hashes) accepted, so nothing small is ever
+condemned without evidence. `torrentMeta.ts` exposes the concatenated `pieces`
+buffer for this. A match cache keyed `${infoHash}:${fileIdx}:${dev}:${ino}:{mtime}`
+makes repeated scans one hash per file, and a rewritten file (new mtime) is
+re-hashed. `parseTorrentFile` files carry contiguous offsets (BitTorrent v1
+concatenation); the offset of file `i` is the sum of the preceding lengths.
+
+### Retroactive corruption scan
+`GET /api/requests/trackers/corruption` → `scanCorruptedFiles` verifies every
+size-candidate against every saved tracker's pieces and returns the failures — the
+hunt for files a **past** restore already overwrote. A corrupted file usually now
+holds the OTHER release's bytes, so it still verifies against THAT torrent; the
+finding carries `matchOther` (the torrent it now matches, if any), the torrent it
+failed, and `goodCopy` (a verified copy of the same entry elsewhere). Findings are
+only possible for torrents whose `.torrent` is saved — an unsaved release has no
+piece hashes to check against. UI: "Verify integrity" button +
+`.corruption-panel`, and a `corrupt` flag (distinct from missing) on file rows.
+
+### Sidecar scoping
+Media **and** archive parts are "content"; a sidecar (nfo/srt/jpg/txt/…) only
+matches inside a folder where content of the SAME torrent already matched. Matching
+is by byte length, so a 4 KB tracker promo `.nfo` otherwise resolves to any
+unrelated release's same-length `.nfo`. A download-tree candidate additionally
+requires a leaf-name match — nothing renames the download tree, so a same-length
+file under a different name is a different release.
+
 ## Request Grouping (Dashboard)
 
 - Series requests are grouped by `sonarr_id` in the Requests section
