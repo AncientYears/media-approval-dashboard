@@ -240,7 +240,7 @@ function parseAudioToken(tok: string): string | null {
   // Atmos is a mixing format, but a name may glue its (base) layout to the word
   // ("Atmos7.1"). Keep that number rather than eating the track's only stated
   // layout; a lone "Atmos" is unchanged (withChannel adds nothing).
-  if (/atmos/i.test(tok)) return withChannel("Atmos", tok);
+  if (/atmos/i.test(tok)) return withChannel("Atmos", tok.replace(/-(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{1,20}$/, ""));
   if (/dolby/i.test(tok)) return "Dolby";
   if (/opus/i.test(tok)) return "Opus";
   if (/mp3/i.test(tok)) return "MP3";
@@ -1431,6 +1431,26 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
   // being treated as a release group.
   const editions = collectEditions(base);
 
+  // A " ~ <flavour>" suffix (dub/sub prose such as "Dubbing i Napisy PL", or a
+  // vendor watermark) sits AFTER the release group and defeats every end-anchored
+  // tail rule: the group regex and the vendor peel both anchor at end-of-string,
+  // so "…ATMOS7.1-DENDA ~ Dubbing i Napisy PL" hid "-DENDA" entirely. The suffix
+  // is lifted out for the release-fact extraction below and re-attached before
+  // the tokenizer, which is the only thing that reads its words (Dubbing, PL).
+  let flavour = "";
+  const tilde = base.lastIndexOf(" ~ ");
+  if (tilde >= 0) {
+    const tail = base.slice(tilde);
+    // Only when the tail is prose: a title can CONTAIN " ~ " ("Foo ~ Bar (2020)
+    // 1080p BluRay x264-GRP"), where the tilde sits inside the title and the
+    // release facts follow it. A tag in the tail means exactly that, so the split
+    // is refused and the tail rules see the whole name as before.
+    if (!SOURCE_RE.test(tail) && !RES_RE.test(tail)) {
+      flavour = tail;
+      base = base.slice(0, tilde);
+    }
+  }
+
   // Tail qualifiers that sit AFTER the release group and break every tail rule,
   // because both the group regex and the vendor peel anchor at end-of-string:
   //   "…Atmos-FGT (1)"  a collision suffix from a previous rename
@@ -1749,6 +1769,10 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       }
     }
   };
+
+  // The flavour suffix split off above is restored now, so the tokenizer reads
+  // its words (Dubbing, PL) exactly as it always did.
+  if (flavour) base += flavour;
 
   // Only SQUARE brackets carry release tags. Parentheses hold disambiguators —
   // "(Inna historia)", "(2019)" — and reading those as tags emitted junk like

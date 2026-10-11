@@ -122,7 +122,11 @@ session can start with P0 without re-deriving the design.
   the number is dropped — with one exception: a lone `Atmos` is still a track the
   name explicitly laid out, so `Atmos.7.1` (or glued `Atmos7.1`) keeps the layout as
   `[Atmos 7.1]`, which round-trips. A disc remux named `...HEVC.ATMOS7.1-DENDA` was
-  losing its `7.1` this way. The exception is narrow: a DETACHED `Atmos` with no
+  losing its `7.1` this way, and here the `-DENDA` release group is glued to the
+  token — `withChannel`'s channel match is anchored at the token END, so the group
+  must be peeled first (`tok.replace(/-(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{1,20}$/, "")`,
+  the lookahead requiring a letter so a glued layout `Atmos-5.1` is never mistaken
+  for a group). The exception is narrow: a DETACHED `Atmos` with no
   channel still folds into a probed carrier (`[EAC3 Atmos 5.1]`), and a standalone
   `[Atmos]` with no channel is unchanged.
 - **`Remux` outranks every other source token** — source parsing is otherwise
@@ -1538,6 +1542,15 @@ SEERR_API_KEY=
   (the common spelling) was invisible to them. All three now take `-\s*`, and all
   three reject a language/dub word (`isLanguageishWord`) — `… (Dual Audio -
   Polish)` would otherwise have made `Polish` a release group.
+- **A " ~ <flavour>" suffix sits AFTER the group and defeated every end-anchored
+  tail rule.** `… ATMOS7.1-DENDA ~ Dubbing i Napisy PL` kept the release group off
+  the end of the string, so `-DENDA` was invisible to `matchGroupTail` — and the
+  `7.1` was glued to it (`ATMOS7.1-DENDA`). The suffix is split off (only when its
+  tail carries NO resolution/source token: a title can itself contain ` ~ `, e.g.
+  `Foo ~ Bar (2020) 1080p BluRay x264-GRP`, where the release facts FOLLOW the
+  tilde and must not be read as prose) so the group rule sees `…-DENDA` at the end,
+  then re-attached before the tokenizer, which is the only thing that reads the
+  suffix's words (`Dubbing` → `[PL DUB]`, `PL` → `[PL]`).
 - **A peeled group must leave the tokenizer's input too.** The bracket pass
   rewrote `m[0]` (the name) but tokenises `m[1]` (the bracket's original
   content), so the group was still there and printed `[WEM]` right beside the
@@ -1614,6 +1627,7 @@ SEERR_API_KEY=
 - [ ] The closer must touch the group: `… - Title (1080p)` does NOT make `Title` a release group, and `… (Dual Audio - Polish)` does not make `Polish` one
 - [ ] A bracketed vendor takes its `[`/`]` pair with it, and the group in front of it survives — with `TAoE` in the vendors list the name ends `-WEM TAoE`, not `… 2.0 -WEM)]` and not a stray `[WEM]` tag
 - [ ] All of the above round-trip: re-parsing a canonical name yields the identical string, so a second Fix Names pass has nothing to do
+- [ ] A ` ~ <flavour>` suffix is split off before group extraction and re-attached before the tokenizer: `…ATMOS7.1-DENDA ~ Dubbing i Napisy PL` yields `[PL DUB] [Remux-2160p][Atmos 7.1][HDR][HEVC]-DENDA` (group + channel recovered), while a title containing ` ~ ` (`Foo ~ Bar (2020) 1080p BluRay x264-GRP`) is NOT split and keeps `-GRP`
 - [ ] A release that names NO episode (`S14E01.1080p.iP.WEB-DL.AAC2.0.HFR.H.264-RAWR`) gets no episode title — the tag run is not printed twice, as prose and as tags
 - [ ] The same shape with no resolution (`S14E01.WEB-DL.AAC2.0.H.264-GRP`) is also titleless, while a real title that merely CONTAINS a resolution is still cut at it (`Episode.1.1080p.AMZN...` → `Episode 1`)
 - [ ] A release naming no episode still takes TMDB's SLOT title as a last resort (`S14E01.1080p.iP...` → `- Episode 1`), but a release naming its own keeps its own wording over it, a season of real TMDB titles is unchanged, and a season with no cache row still gets nothing
