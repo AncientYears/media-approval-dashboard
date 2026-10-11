@@ -7271,12 +7271,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const procInodes = type === "movie"
               ? (fs.existsSync(PROCESSED_MOVIES) ? collectVideoInodes(PROCESSED_MOVIES) : new Set<number>())
               : (fs.existsSync(PROCESSED_TV) ? collectVideoInodes(PROCESSED_TV) : new Set<number>());
-    // "Already in /Processed" must mean the WHOLE entry is: .some() reported it
-    // for a folder holding one matching file plus nine that weren't, so a delete
-    // authorized on the old check could have wiped the nine. Every video inode
-    // must be present for the download copy to be redundant. Empty (no video)
-    // is never "in processed".
-    const existsInProcessed = inodes.size > 0 && [...inodes].every((ino) => procInodes.has(ino));
+            // "Already in /Processed" must mean the WHOLE entry is: .some()
+            // reported it for a folder holding one matching file plus nine that
+            // weren't, so a delete authorized on the old check could have wiped
+            // the nine. Every video inode must be present for the download copy
+            // to be redundant. Empty (no video) is never "in processed".
+            const existsInProcessed = inodes.size > 0 && [...inodes].every((ino) => procInodes.has(ino));
             if (!existsInProcessed && !force) {
               results.push({
                 path: entryPath,
@@ -9020,14 +9020,40 @@ alreadyExtra = true;
         inodes.add(fs.statSync(full).ino);
       } catch {}
     }
-    const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
+    const existsInProcessed = inodes.size > 0 && [...inodes].every((ino) => procInodes.has(ino));
     const parsed = parseTorrentName(name);
-    const matched = await findBestRequestForDownload(
-      db,
-      name,
-      rootType,
-      rootType === "series" && parsed.season != null ? parsed.season : null
-    );
+    const seasonFilter = rootType === "series" && parsed.season != null ? parsed.season : null;
+    // Identity-first: an inode registered in media_files (the same file already
+    // hardened into /Processed) pins the exact library_key, so a localized
+    // collection name never has to be guessed by word overlap — "Xiaolin -
+    // pojedynek mistrzów …" shares only "Xiaolin" with "Xiaolin Showdown" and
+    // the fuzzy matcher returns null. The name match stays the fallback for
+    // entries whose download inode was never registered (a Complete & Import
+    // remux writes a NEW inode, so nothing links it to the request).
+    let matched: any = null;
+    if (inodes.size) {
+      const list = [...inodes];
+      let dev: number | null = null;
+      try { dev = fs.statSync(full).dev; } catch {}
+      const keys = db.prepare(
+        `SELECT library_key, COUNT(*) AS c FROM media_files
+         WHERE inode IN (${list.map(() => "?").join(",")})` +
+        (dev != null ? " AND dev = ?" : "") +
+        ` AND library_key != ''
+         GROUP BY library_key ORDER BY c DESC LIMIT 5`,
+      ).all(...(dev != null ? [...list, dev] : list)) as any[];
+      for (const k of keys) {
+        const req = db.prepare(
+          "SELECT id, title, season FROM media_requests WHERE library_key = ?" +
+          (seasonFilter != null ? " AND (season = ? OR season IS NULL)" : "") +
+          " ORDER BY season LIMIT 1",
+        ).get(...(seasonFilter != null ? [k.library_key, seasonFilter] : [k.library_key])) as any;
+        if (req) { matched = req; break; }
+      }
+    }
+    if (!matched) {
+      matched = await findBestRequestForDownload(db, name, rootType, seasonFilter);
+    }
     return {
       path: full,
       type: rootType,
