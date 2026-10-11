@@ -7271,7 +7271,12 @@ export function createRequestRoutes(db: Database, radarr: RadarrService, sonarr:
             const procInodes = type === "movie"
               ? (fs.existsSync(PROCESSED_MOVIES) ? collectVideoInodes(PROCESSED_MOVIES) : new Set<number>())
               : (fs.existsSync(PROCESSED_TV) ? collectVideoInodes(PROCESSED_TV) : new Set<number>());
-            const existsInProcessed = [...inodes].some((ino) => procInodes.has(ino));
+    // "Already in /Processed" must mean the WHOLE entry is: .some() reported it
+    // for a folder holding one matching file plus nine that weren't, so a delete
+    // authorized on the old check could have wiped the nine. Every video inode
+    // must be present for the download copy to be redundant. Empty (no video)
+    // is never "in processed".
+    const existsInProcessed = inodes.size > 0 && [...inodes].every((ino) => procInodes.has(ino));
             if (!existsInProcessed && !force) {
               results.push({
                 path: entryPath,
