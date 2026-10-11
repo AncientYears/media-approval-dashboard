@@ -9185,7 +9185,7 @@ alreadyExtra = true;
       } catch {
         skipHashes = undefined;
       }
-      const findings = await scanCorruptedFiles(scan.trackers, videos, undefined, skipHashes);
+      const { findings, stats } = await scanCorruptedFiles(scan.trackers, videos, undefined, skipHashes);
       findings.sort(
         (a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path),
       );
@@ -9193,6 +9193,7 @@ alreadyExtra = true;
         scanned: scan.trackers.length,
         skipped: skipHashes?.size ?? 0,
         findings,
+        stats,
         parseErrors: scan.errors,
       });
     } catch (error: any) {
@@ -9238,12 +9239,12 @@ alreadyExtra = true;
       } catch {
         skipHashes = undefined;
       }
-      const findings = await scanCorruptedFiles(scan.trackers, videos, async (done, total, current) => {
+      const { findings, stats } = await scanCorruptedFiles(scan.trackers, videos, async (done, total, current) => {
         send("progress", { done, total, message: current || "" });
         await flush();
       }, skipHashes);
       findings.sort((a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path));
-      send("done", { scanned: scan.trackers.length, skipped: skipHashes?.size ?? 0, findings, parseErrors: scan.errors });
+      send("done", { scanned: scan.trackers.length, skipped: skipHashes?.size ?? 0, findings, stats, parseErrors: scan.errors });
       res.end();
     } catch (error: any) {
       console.error("Error scanning for corruption:", error);

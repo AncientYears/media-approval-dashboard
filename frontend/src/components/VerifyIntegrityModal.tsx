@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { streamCorruptionScan, type CorruptFinding } from "../api";
+import { streamCorruptionScan, type CorruptFinding, type CorruptionScanStats } from "../api";
 
 function fmtBytes(v: number): string {
   if (v <= 0) return "0 B";
@@ -7,6 +7,16 @@ function fmtBytes(v: number): string {
   if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(1)} MB`;
   if (v >= 1024) return `${Math.round(v / 1024)} KB`;
   return `${v} B`;
+}
+
+/** What the scan actually did — so "no corruption" shows its work instead of
+ *  being an opaque green tick. `verified` = fresh piece hashes this run. */
+function statsLine(s: CorruptionScanStats): string {
+  const parts = [`hashed ${s.verified} file${s.verified === 1 ? "" : "s"}`];
+  if (s.bytes) parts.push(fmtBytes(s.bytes));
+  if (s.cached) parts.push(`${s.cached} cached`);
+  if (s.unverifiable) parts.push(`${s.unverifiable} unverifiable`);
+  return parts.join(" · ");
 }
 
 function parentDir(p: string): string {
@@ -25,6 +35,7 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
   const [message, setMessage] = useState("Starting…");
   const [scanned, setScanned] = useState(0);
   const [skipped, setSkipped] = useState(0);
+  const [stats, setStats] = useState<CorruptionScanStats | null>(null);
   const [findings, setFindings] = useState<CorruptFinding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -43,6 +54,7 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
       .then((res) => {
         setScanned(res.scanned);
         setSkipped(res.skipped);
+        setStats(res.stats);
         setFindings(res.findings);
         setRunning(false);
       })
@@ -79,7 +91,10 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
               </div>
             </div>
           ) : findings && findings.length === 0 ? (
-            <div className="integrity-ok">No corruption found — verified {scanned} saved tracker(s){skipped > 0 ? `, skipped ${skipped} still downloading` : ""}.</div>
+            <div className="integrity-ok">
+              <div>No corruption found — verified {scanned} saved tracker(s){skipped > 0 ? `, skipped ${skipped} still downloading` : ""}.</div>
+              {stats && <div className="integrity-sub">{statsLine(stats)}</div>}
+            </div>
           ) : findings ? (
             <div className="corruption-panel has-findings">
               <div className="corruption-head">
@@ -110,7 +125,9 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
         </div>
         <div className="modal-actions">
           <span className="integrity-note">
-            {running ? "Scanning… you can close this; it keeps running." : `Verified ${scanned} saved tracker(s)${skipped > 0 ? `, skipped ${skipped} still downloading` : ""}.`}
+            {running
+              ? "Scanning… you can close this; it keeps running."
+              : `Verified ${scanned} saved tracker(s)${skipped > 0 ? `, skipped ${skipped} still downloading` : ""}${stats ? ` · ${statsLine(stats)}` : ""}.`}
           </span>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>

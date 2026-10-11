@@ -277,6 +277,12 @@ const PIECE_HASH_LEN = 20;
  *  "OK" can never survive a corruption. */
 const verifyCache = new Map<string, boolean | null>();
 
+/** Per-scan work counters, reset by `scanCorruptedFiles`. `fresh` = a piece was
+ *  actually read and SHA-1'd this run (cache miss); `cached` re-used a verdict;
+ *  `unverifiable` is the `null` verdict (no whole piece / unreadable / no hashes)
+ *  and is reported so "no corruption" can never hide "nothing was checked". */
+const scanStats = { fresh: 0, cached: 0, unverifiable: 0, bytes: 0 };
+
 /**
  * Does `absPath` really hold this torrent's data for the entry occupying global
  * bytes `[offset, offset+length)`? SHA-1s the FIRST piece lying wholly inside the
@@ -299,8 +305,13 @@ function verifyTorrentFile(
   cacheKey: string,
 ): boolean | null {
   const cached = verifyCache.get(cacheKey);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    scanStats.cached++;
+    return cached;
+  }
   const verdict = computeVerify(absPath, offset, length, pieceLength, pieces, totalSize);
+  if (verdict === null) scanStats.unverifiable++;
+  else scanStats.fresh++;
   verifyCache.set(cacheKey, verdict);
   return verdict;
 }
@@ -332,6 +343,7 @@ function computeVerify(
       const buf = Buffer.allocUnsafe(pieceEnd - pieceStart);
       const got = fs.readSync(fd, buf, 0, buf.length, pieceStart - offset);
       if (got !== buf.length) return false; // short read → wrong/truncated
+      scanStats.bytes += buf.length;
       const digest = crypto.createHash("sha1").update(buf).digest();
       return digest.equals(pieces.subarray(hashOff, hashOff + PIECE_HASH_LEN));
     }
@@ -565,6 +577,22 @@ export interface CorruptFinding {
   goodCopy: string | null;
 }
 
+/** What the scan actually did. `verified` is fresh piece hashes this run,
+ *  `cached` re-used in-process verdicts, `unverifiable` could not be judged
+ *  (smaller than one whole piece / unreadable / no piece hashes), `bytes` was
+ *  read and SHA-1'd this run. Lets "no corruption" show its work. */
+export interface CorruptionScanStats {
+  verified: number;
+  cached: number;
+  unverifiable: number;
+  bytes: number;
+}
+
+export interface CorruptionScanResult {
+  findings: CorruptFinding[];
+  stats: CorruptionScanStats;
+}
+
 /**
  * Full integrity scan: verify every candidate against every saved tracker's own
  * piece hashes and report the entries whose file does not match. This is the
@@ -592,7 +620,11 @@ export async function scanCorruptedFiles(
    * file mid-download cannot be judged; only a finished one can.
    */
   skipHashes?: ReadonlySet<string>,
-): Promise<CorruptFinding[]> {
+): Promise<CorruptionScanResult> {
+  scanStats.fresh = 0;
+  scanStats.cached = 0;
+  scanStats.unverifiable = 0;
+  scanStats.bytes = 0;
   const bySize = new Map<number, VideoEntry[]>();
   for (const v of videos) {
     const list = bySize.get(v.size) || [];
@@ -739,7 +771,15 @@ export async function scanCorruptedFiles(
     const { tag: _tag, ...finding } = s;
     findings.push(finding);
   }
-  return findings;
+  return {
+    findings,
+    stats: {
+      verified: scanStats.fresh,
+      cached: scanStats.cached,
+      unverifiable: scanStats.unverifiable,
+      bytes: scanStats.bytes,
+    },
+  };
 }
 
 /**
