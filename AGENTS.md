@@ -118,7 +118,12 @@ session can start with P0 without re-deriving the design.
   `Atmos` is a mixing format, not a layout, so letting `5.1` append to a standalone
   `[Atmos]` is wrong when a codec sits beside it: a name saying `[EAC3 Atmos 5.1]`
   must attach the `5.1` to the E-AC3, not the Atmos. A bare channel number therefore
-  attaches to the nearest entry naming a real codec family. When NO codec is stated
+  attaches to the nearest entry naming a real codec family — **searched from the
+  start of the CURRENT bracket**, so the canonical `[AC3 5.1][Atmos 7.1]` puts the
+  `7.1` on the Atmos instead of reaching back into the previous bracket's AC3
+  (that reach produced `[AC3 5.1 5.1]` and left the Atmos bare, so the canonical
+  name did not round-trip). The loose tail keeps the cross-token reach, because
+  its codec and channel arrive as separate tokens (`TrueHD.7.1`). When NO codec is stated
   the number is dropped — with one exception: a lone `Atmos` is still a track the
   name explicitly laid out, so `Atmos.7.1` (or glued `Atmos7.1`) keeps the layout as
   `[Atmos 7.1]`, which round-trips. A disc remux named `...HEVC.ATMOS7.1-DENDA` was
@@ -1517,6 +1522,7 @@ SEERR_API_KEY=
 - [ ] A file with an embedded id still blocks folder ownership even when the folder's year matches the request's
 - [ ] `[EAC3 Atmos 5.1]` round-trips as itself (streaming Atmos ships as E-AC3, so Atmos is not TrueHD-only)
 - [ ] A channel number lands on the nearest codec (`[EAC3 Atmos 5.1]`), never on a standalone `[Atmos]` beside one — but a lone `Atmos` with no codec keeps its stated layout (`Atmos.7.1`/`Atmos7.1` → `[Atmos 7.1]`, round-trips)
+- [ ] The channel search is bracket-scoped: the canonical `[AC3 5.1][Atmos 7.1]` re-parses to itself (the `7.1` stays on the Atmos, never reaches the previous bracket's AC3 → no `[AC3 5.1 5.1]`), while the loose tail still joins `TrueHD.7.1`
 - [ ] A bare `[Atmos]` never attaches to a non-TrueHD family (Soul's DTS must stay `[DTS-HD MA 7.1]`)
 - [ ] A bare `[Atmos]` still merges into a TrueHD track regardless of token order (`...TrueHD.7.1.[Atmos]`)
 - [ ] A probed codec does not inherit Atmos from another family's track (AAC 2.0 Polish dub stays `[AAC 2.0]`)

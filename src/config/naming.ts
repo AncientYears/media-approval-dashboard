@@ -219,13 +219,6 @@ function withChannel(label: string, tok: string): string {
   return ch ? `${label} ${ch[1]}` : label;
 }
 
-/** Entries in `audio` that name a real codec family, i.e. can carry a channel
- *  number or an Atmos flag. "Atmos" and "Dolby" on their own are mixing formats. */
-function lastAudioCodecIndex(audio: string[]): number {
-  for (let i = audio.length - 1; i >= 0; i--) if (!/^(atmos|dolby)$/i.test(audio[i].trim())) return i;
-  return -1;
-}
-
 function parseAudioToken(tok: string): string | null {
   const m = tok.match(/\b(AC3|AAC)\s*[- ]\s*(\d\.\d)/i);
   if (m) return `${m[1].toUpperCase()} ${m[2]}`;
@@ -1629,10 +1622,21 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     // ("Atmos 7.1"), so the layout is kept on it instead of discarded. A name
     // stating no audio at all still drops the number rather than invent a codec.
     if (/^\d\.\d$/.test(at) && out.audio.length) {
-      const idx = lastAudioCodecIndex(out.audio);
+      // Search scoped to the CURRENT bracket when the token came from one:
+      // "[AC3 5.1][Atmos 7.1]" must put 7.1 on the Atmos, not reach back into the
+      // previous bracket's AC3 — that reach produced "[AC3 5.1 5.1]" and left the
+      // Atmos bare, so the canonical name did not round-trip. The loose tail keeps
+      // the cross-token reach, because its codec and channel arrive as separate
+      // tokens ("TrueHD.7.1"). A codec elsewhere in the SAME bracket still wins
+      // ("[EAC3 Atmos 5.1]" → the 5.1 joins the E-AC3, not the Atmos).
+      const start = fromBracket ? audioMark : 0;
+      let idx = -1;
+      for (let i = out.audio.length - 1; i >= start; i--) {
+        if (!/^(atmos|dolby)$/i.test(out.audio[i].trim())) { idx = i; break; }
+      }
       if (idx < 0) {
         const lastIdx = out.audio.length - 1;
-        if (/^atmos$/i.test(out.audio[lastIdx].trim()) && !out.audio[lastIdx].includes(at)) {
+        if (lastIdx >= start && /^atmos$/i.test(out.audio[lastIdx].trim()) && !out.audio[lastIdx].includes(at)) {
           out.audio[lastIdx] = `${out.audio[lastIdx]} ${at}`;
         }
         return;
