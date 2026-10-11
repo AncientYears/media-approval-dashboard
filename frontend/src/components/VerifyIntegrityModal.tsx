@@ -93,7 +93,14 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
           ) : findings && findings.length === 0 ? (
             <div className="integrity-ok">
               <div>No corruption found — verified {scanned} saved tracker(s){skipped > 0 ? `, skipped ${skipped} still downloading` : ""}.</div>
-              {stats && <div className="integrity-sub">{statsLine(stats)}</div>}
+              {stats && (
+                <div
+                  className="integrity-sub"
+                  title="unverifiable = the file is smaller than one torrent piece, so it cannot be judged from the file alone"
+                >
+                  {statsLine(stats)}
+                </div>
+              )}
             </div>
           ) : findings ? (
             <div className="corruption-panel has-findings">

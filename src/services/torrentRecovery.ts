@@ -621,6 +621,11 @@ export async function scanCorruptedFiles(
    */
   skipHashes?: ReadonlySet<string>,
 ): Promise<CorruptionScanResult> {
+  // A user-initiated integrity scan is a full re-verification, not an
+  // incremental one: drop verdicts cached by an earlier scan in this process so
+  // "hashed N" reflects the true work (the only cache hits left are two paths
+  // to the SAME inode within this scan — a hardlink twin — which is correct).
+  verifyCache.clear();
   scanStats.fresh = 0;
   scanStats.cached = 0;
   scanStats.unverifiable = 0;
