@@ -648,7 +648,21 @@ export async function scanCorruptedFiles(
   // corruption. Mirrors planMatches' download leaf-name rule, on every tree.
   const candidatesFor = (f: { path: string; length: number }): VideoEntry[] => {
     const lf = leaf(f.path);
-    return (bySize.get(f.length) || []).filter((v) => leaf(v.path) === lf);
+    const seen = new Set<string>();
+    const out: VideoEntry[] = [];
+    for (const v of bySize.get(f.length) || []) {
+      if (leaf(v.path) !== lf) continue;
+      // One inode IS one file — a hardlink twin (the same file also present in
+      // processed/library under the same name) is not a second verification.
+      // Without this, every twin re-tested the same bytes and the stats read as
+      // "N cached" for what is really one file, which looked like the scan was
+      // skipping work.
+      const k = `${v.dev}:${v.ino}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(v);
+    }
+    return out;
   };
 
   // Total verifications = one per (torrent entry, leaf-matching same-size
@@ -672,7 +686,7 @@ export async function scanCorruptedFiles(
     done++;
     if (!onProgress) return;
     const now = Date.now();
-    if (done === total || now - lastTick >= 100) {
+    if (done === total || now - lastTick >= 60) {
       lastTick = now;
       await onProgress(done, total, current);
     }
