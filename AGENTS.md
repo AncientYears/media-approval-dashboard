@@ -721,15 +721,35 @@ re-hashed. `parseTorrentFile` files carry contiguous offsets (BitTorrent v1
 concatenation); the offset of file `i` is the sum of the preceding lengths.
 
 ### Retroactive corruption scan
-`GET /api/requests/trackers/corruption` → `scanCorruptedFiles` verifies every
-size-candidate against every saved tracker's pieces and returns the failures — the
-hunt for files a **past** restore already overwrote. A corrupted file usually now
-holds the OTHER release's bytes, so it still verifies against THAT torrent; the
-finding carries `matchOther` (the torrent it now matches, if any), the torrent it
-failed, and `goodCopy` (a verified copy of the same entry elsewhere). Findings are
-only possible for torrents whose `.torrent` is saved — an unsaved release has no
-piece hashes to check against. UI: "Verify integrity" button +
-`.corruption-panel`, and a `corrupt` flag (distinct from missing) on file rows.
+`GET /api/requests/trackers/corruption` (and `/trackers/corruption/stream`) →
+`scanCorruptedFiles` verifies candidate files against saved trackers' pieces and
+returns the failures — the hunt for files a **past** restore already overwrote. A
+corrupted file usually now holds the OTHER release's bytes, so it still verifies
+against THAT torrent; the finding carries `matchOther` (the torrent it now matches,
+if any), the torrent it failed, and `goodCopy` (a verified copy of the same entry
+elsewhere). Findings are only possible for torrents whose `.torrent` is saved — an
+unsaved release has no piece hashes to check against. UI: "Verify integrity" button
++ `.corruption-panel`, and a `corrupt` flag (distinct from missing) on file rows.
+
+Two rules keep the scan from crying wolf — both were learned from a real flood of
+false positives:
+
+- **A file is only tested against a torrent entry it plausibly IS — its leaf name
+  matches.** The download tree keeps release names verbatim, so a same-length file
+  under a different name is a *different release* that merely shares the length (an
+  unrelated episode, or a same-size RAR part of another film/game). The original
+  scan compared **every** same-length file against **every** entry, so a RAR part
+  of one release failed another release's same-size part and was reported "in
+  torrent: X" for a torrent it never belonged to. Mirrors `planMatches`' download
+  leaf-name rule, applied to every tree. `matchOther` is still found by re-hashing a
+  **confirmed** mismatch against other torrents' same-length entries *without* a
+  name filter — the overwriting release's entry is the one it verifies against.
+- **Torrents qBittorrent still has incomplete are skipped.** qBittorrent
+  pre-allocates a downloading file to its full length, so `stat.size` matches the
+  torrent entry while the tail is still empty — the piece hash fails and the file
+  looks corrupt until the download finishes. The routes build a `skipHashes` set
+  from `getTorrents()` where `progress < 1` and pass it to `scanCorruptedFiles`. A
+  downloading file cannot be judged; only a finished one can.
 
 ### Sidecar scoping
 Media **and** archive parts are "content"; a sidecar (nfo/srt/jpg/txt/…) only

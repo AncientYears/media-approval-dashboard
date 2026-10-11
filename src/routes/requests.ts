@@ -9171,12 +9171,27 @@ alreadyExtra = true;
     try {
       const scan = listSavedTrackers();
       const videos = collectVideos();
-      const findings = await scanCorruptedFiles(scan.trackers, videos);
+      // qBittorrent pre-allocates a downloading file to its full length, so a
+      // still-incomplete torrent's files match by size but fail the piece hash
+      // until the download finishes. Skip those torrents — a downloading file
+      // cannot be judged corrupt.
+      let skipHashes: Set<string> | undefined;
+      try {
+        skipHashes = new Set(
+          (await qbittorrent.getTorrents())
+            .filter((t: any) => (t.progress ?? 0) < 1)
+            .map((t: any) => t.hash),
+        );
+      } catch {
+        skipHashes = undefined;
+      }
+      const findings = await scanCorruptedFiles(scan.trackers, videos, undefined, skipHashes);
       findings.sort(
         (a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path),
       );
       res.json({
         scanned: scan.trackers.length,
+        skipped: skipHashes?.size ?? 0,
         findings,
         parseErrors: scan.errors,
       });
@@ -9211,12 +9226,24 @@ alreadyExtra = true;
       const videos = collectVideos();
       send("progress", { done: 0, total: 0, message: `Verifying ${scan.trackers.length} saved tracker(s)…` });
       await flush();
+      // Skip torrents qBittorrent still has incomplete — a downloading file is
+      // pre-allocated to full size, so it matches by length but not by hash yet.
+      let skipHashes: Set<string> | undefined;
+      try {
+        skipHashes = new Set(
+          (await qbittorrent.getTorrents())
+            .filter((t: any) => (t.progress ?? 0) < 1)
+            .map((t: any) => t.hash),
+        );
+      } catch {
+        skipHashes = undefined;
+      }
       const findings = await scanCorruptedFiles(scan.trackers, videos, async (done, total, current) => {
         send("progress", { done, total, message: current || "" });
         await flush();
-      });
+      }, skipHashes);
       findings.sort((a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path));
-      send("done", { scanned: scan.trackers.length, findings, parseErrors: scan.errors });
+      send("done", { scanned: scan.trackers.length, skipped: skipHashes?.size ?? 0, findings, parseErrors: scan.errors });
       res.end();
     } catch (error: any) {
       console.error("Error scanning for corruption:", error);

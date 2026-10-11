@@ -601,6 +601,7 @@ export async function scanCorruption() {
   const response = await api.get("/requests/trackers/corruption");
   return response.data as {
     scanned: number;
+    skipped: number;
     findings: CorruptFinding[];
     parseErrors: { file: string; error: string }[];
   };
@@ -612,14 +613,14 @@ export async function scanCorruption() {
 export async function streamCorruptionScan(opts?: {
   onProgress?: (done: number, total: number, message: string) => void;
   signal?: AbortSignal;
-}): Promise<{ scanned: number; findings: CorruptFinding[]; parseErrors: { file: string; error: string }[] }> {
+}): Promise<{ scanned: number; skipped: number; findings: CorruptFinding[]; parseErrors: { file: string; error: string }[] }> {
   const resp = await fetch("/api/requests/trackers/corruption/stream", { signal: opts?.signal });
   if (!resp.body) throw new Error("No response body");
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let eventType = "";
-  let result: { scanned: number; findings: CorruptFinding[]; parseErrors: { file: string; error: string }[] } | null = null;
+  let result: { scanned: number; skipped: number; findings: CorruptFinding[]; parseErrors: { file: string; error: string }[] } | null = null;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -634,7 +635,7 @@ export async function streamCorruptionScan(opts?: {
         if (eventType === "progress") {
           opts?.onProgress?.(data.done || 0, data.total || 0, data.message || "");
         } else if (eventType === "done") {
-          result = { scanned: data.scanned || 0, findings: data.findings || [], parseErrors: data.parseErrors || [] };
+          result = { scanned: data.scanned || 0, skipped: data.skipped || 0, findings: data.findings || [], parseErrors: data.parseErrors || [] };
         } else if (eventType === "error") {
           throw new Error(data.error || "Scan failed");
         }

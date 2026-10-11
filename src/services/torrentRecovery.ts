@@ -576,6 +576,14 @@ export async function scanCorruptedFiles(
   trackers: SavedTracker[],
   videos: VideoEntry[],
   onProgress?: (done: number, total: number, current?: string) => void | Promise<void>,
+  /**
+   * Info hashes to skip: torrents qBittorrent reports as not fully downloaded.
+   * A still-downloading torrent's files are PRE-ALLOCATED to their full length,
+   * so `stat.size` matches the tracker entry while the bytes are not all there
+   * yet — hashing them reads the empty tail and reports a false "corrupt". A
+   * file mid-download cannot be judged; only a finished one can.
+   */
+  skipHashes?: ReadonlySet<string>,
 ): Promise<CorruptFinding[]> {
   const bySize = new Map<number, VideoEntry[]>();
   for (const v of videos) {
@@ -583,15 +591,29 @@ export async function scanCorruptedFiles(
     list.push(v);
     bySize.set(v.size, list);
   }
+  const active = trackers.filter((t) => !skipHashes?.has(t.infoHash));
 
-  // Total verifications = one per (torrent entry, same-size candidate). Used only
-  // to drive the progress bar; cached re-checks still count, so the bar never
-  // stalls waiting on a hash.
+  // A file is only tested against a torrent entry it plausibly IS — its leaf
+  // name matches. The download tree keeps release names verbatim and the other
+  // trees are renamed, so a same-length file under a different name is a
+  // DIFFERENT release that merely shares the length (an unrelated episode, or a
+  // same-size RAR part of another film/game). Testing every same-length file
+  // against every entry flooded the report with cross-torrent false positives
+  // ("Puss in Boots.r00 in torrent: Asterix") — a length collision is not
+  // corruption. Mirrors planMatches' download leaf-name rule, on every tree.
+  const candidatesFor = (f: { path: string; length: number }): VideoEntry[] => {
+    const lf = leaf(f.path);
+    return (bySize.get(f.length) || []).filter((v) => leaf(v.path) === lf);
+  };
+
+  // Total verifications = one per (torrent entry, leaf-matching same-size
+  // candidate). Used only to drive the progress bar; cached re-checks still
+  // count, so the bar never stalls waiting on a hash.
   let total = 0;
-  for (const t of trackers) {
+  for (const t of active) {
     for (const f of t.parsed.files) {
       if (f.length <= 0) continue;
-      total += (bySize.get(f.length) || []).length;
+      total += candidatesFor(f).length;
     }
   }
   let done = 0;
@@ -620,7 +642,7 @@ export async function scanCorruptedFiles(
   // the SAME entry can be located).
   const suspects = new Map<string, CorruptFinding & { tag: string }>();
 
-  for (const t of trackers) {
+  for (const t of active) {
     const files = t.parsed.files;
     let offset = 0;
     for (let i = 0; i < files.length; i++) {
@@ -628,8 +650,8 @@ export async function scanCorruptedFiles(
       const fileOffset = offset;
       offset += f.length;
       if (f.length <= 0) continue;
-      for (const c of bySize.get(f.length) || []) {
-        const tag = `${t.infoHash}:${i}`;
+      const tag = `${t.infoHash}:${i}`;
+      for (const c of candidatesFor(f)) {
         const verdict = verifyTorrentFile(
           c.path,
           fileOffset,
@@ -639,17 +661,17 @@ export async function scanCorruptedFiles(
           t.parsed.totalSize,
           `${tag}:${c.dev}:${c.ino}:${c.mtimeMs}`,
         );
-        const key = fileKey(c);
+        const k = fileKey(c);
         if (verdict === true) {
-          let set = okEntries.get(key);
+          let set = okEntries.get(k);
           if (!set) {
             set = new Map();
-            okEntries.set(key, set);
+            okEntries.set(k, set);
           }
           set.set(tag, t.name);
-        } else if (verdict === false && !suspects.has(key)) {
+        } else if (verdict === false && !suspects.has(k)) {
           const torrentPath = t.parsed.layout === "folder" ? `${t.parsed.name}/${f.path}` : f.path;
-          suspects.set(key, {
+          suspects.set(k, {
             tag,
             infoHash: t.infoHash,
             name: t.name,
@@ -669,15 +691,34 @@ export async function scanCorruptedFiles(
 
   const findings: CorruptFinding[] = [];
   for (const [key, s] of suspects) {
-    const okFor = okEntries.get(key);
-    if (okFor) {
-      for (const nm of okFor.values()) {
-        if (nm !== s.name) {
-          s.matchOther = nm;
-          break;
+    // Which saved torrent do these bytes actually belong to? The file is tested
+    // against every same-length entry of every OTHER torrent, ignoring names —
+    // the overwriting release's entry is the one it verifies against, and that
+    // is how a bad restore reveals where the file's data went.
+    findOther: for (const t of active) {
+      if (t.infoHash === s.infoHash) continue;
+      let offset = 0;
+      for (let i = 0; i < t.parsed.files.length; i++) {
+        const f = t.parsed.files[i];
+        const fileOffset = offset;
+        offset += f.length;
+        if (f.length !== s.expectedLength) continue;
+        const verdict = verifyTorrentFile(
+          s.path,
+          fileOffset,
+          f.length,
+          t.parsed.pieceLength,
+          t.parsed.pieces,
+          t.parsed.totalSize,
+          `${t.infoHash}:${i}:${key}:match`,
+        );
+        if (verdict === true) {
+          s.matchOther = t.name;
+          break findOther;
         }
       }
     }
+    // A verified copy of the SAME entry found on a different inode.
     for (const [otherKey, entries] of okEntries) {
       if (otherKey !== key && entries.has(s.tag)) {
         const v = byKey.get(otherKey);

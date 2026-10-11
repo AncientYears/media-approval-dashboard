@@ -24,6 +24,7 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
   const [total, setTotal] = useState(0);
   const [message, setMessage] = useState("Starting…");
   const [scanned, setScanned] = useState(0);
+  const [skipped, setSkipped] = useState(0);
   const [findings, setFindings] = useState<CorruptFinding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -41,6 +42,7 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
     })
       .then((res) => {
         setScanned(res.scanned);
+        setSkipped(res.skipped);
         setFindings(res.findings);
         setRunning(false);
       })
@@ -77,11 +79,12 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
               </div>
             </div>
           ) : findings && findings.length === 0 ? (
-            <div className="integrity-ok">No corruption found — verified {scanned} saved tracker(s).</div>
+            <div className="integrity-ok">No corruption found — verified {scanned} saved tracker(s){skipped > 0 ? `, skipped ${skipped} still downloading` : ""}.</div>
           ) : findings ? (
             <div className="corruption-panel has-findings">
               <div className="corruption-head">
                 <strong>{findings.length} suspect file(s) — bytes don't match the torrent:</strong>
+                {skipped > 0 && <span className="tracker-note"> {skipped} downloading torrent(s) skipped</span>}
               </div>
               {findings.map((f, i) => (
                 <div className="corruption-row" key={`${f.path}-${i}`}>
@@ -107,7 +110,7 @@ export default function VerifyIntegrityModal({ onClose }: { onClose: () => void 
         </div>
         <div className="modal-actions">
           <span className="integrity-note">
-            {running ? "Scanning… you can close this; it keeps running." : `Verified ${scanned} saved tracker(s).`}
+            {running ? "Scanning… you can close this; it keeps running." : `Verified ${scanned} saved tracker(s)${skipped > 0 ? `, skipped ${skipped} still downloading` : ""}.`}
           </span>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>

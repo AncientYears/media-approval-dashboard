@@ -320,10 +320,11 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
       });
       setCorruption({ scanned: data.scanned, findings: data.findings || [] });
       const n = data.findings?.length || 0;
+      const skip = data.skipped ? ` (${data.skipped} downloading skipped)` : "";
       toast(
         n === 0
-          ? `No corruption found — verified ${data.scanned} saved tracker(s)`
-          : `${n} suspect file(s) found — files whose bytes don't match their torrent`,
+          ? `No corruption found — verified ${data.scanned} saved tracker(s)${skip}`
+          : `${n} suspect file(s) found — files whose bytes don't match their torrent${skip}`,
         n === 0 ? "success" : "error",
       );
     } catch (err: any) {
