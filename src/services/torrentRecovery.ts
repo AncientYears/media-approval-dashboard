@@ -243,7 +243,15 @@ function isContentTorrentPath(p: string): boolean {
 }
 
 function leaf(s: string): string {
-  return path.basename(s).replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // Strip a normal extension (`.mkv`, `.rar`) but NOT a numeric/part suffix
+  // (`.r00`, `.s00`, `.part01`, `.7z.001`) — those distinguish the volumes of
+  // one archive set, and all volumes of a RAR set share the SAME length.
+  // Collapsing them made every part a "candidate" for every other part's
+  // torrent entry, so each volume failed the other volumes' piece hashes and
+  // the whole set was flagged corrupt, each with a bogus "good copy" in the
+  // same folder. Keeping the part number keeps the volumes distinct.
+  const stripped = path.basename(s).replace(/\.(?!(?:[a-z]\d{2,3}|part\d+|\d{3})$)[^.]+$/i, "");
+  return stripped.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 /** Does the torrent's own layout already hold this file under a download root?

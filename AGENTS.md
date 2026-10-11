@@ -731,7 +731,7 @@ elsewhere). Findings are only possible for torrents whose `.torrent` is saved �
 unsaved release has no piece hashes to check against. UI: "Verify integrity" button
 + `.corruption-panel`, and a `corrupt` flag (distinct from missing) on file rows.
 
-Two rules keep the scan from crying wolf — both were learned from a real flood of
+Three rules keep the scan from crying wolf — all learned from a real flood of
 false positives:
 
 - **A file is only tested against a torrent entry it plausibly IS — its leaf name
@@ -744,6 +744,15 @@ false positives:
   leaf-name rule, applied to every tree. `matchOther` is still found by re-hashing a
   **confirmed** mismatch against other torrents' same-length entries *without* a
   name filter — the overwriting release's entry is the one it verifies against.
+- **`leaf` keeps a numeric/part extension**, stripping only a normal one
+  (`.mkv`, `.rar`). The **volumes of one RAR set all share the same length** and
+  their names differ only by that suffix (`.rar`, `.r00`…`.r71`), so stripping it
+  collapsed them into one leaf and made every volume a candidate for every other
+  volume's entry: each part failed its siblings' piece hashes, the **whole set**
+  was flagged corrupt, and each row showed a bogus "good copy" that was just the
+  sibling owning the entry it first failed. `.r00`/`.s00`/`.part01`/`.7z.001`
+  therefore survive (`leaf("x.r00") = "x r00"`, `leaf("x.rar") = "x"`), while a
+  media extension is still stripped so a renamed copy can match its release.
 - **Torrents qBittorrent still has incomplete are skipped.** qBittorrent
   pre-allocates a downloading file to its full length, so `stat.size` matches the
   torrent entry while the tail is still empty — the piece hash fails and the file
