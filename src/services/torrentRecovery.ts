@@ -572,11 +572,11 @@ export interface CorruptFinding {
  * THIS torrent can no longer be seeded from it. An unverifiable file (smaller
  * than one whole piece) is never condemned.
  */
-export function scanCorruptedFiles(
+export async function scanCorruptedFiles(
   trackers: SavedTracker[],
   videos: VideoEntry[],
-  onProgress?: (done: number, total: number, current?: string) => void,
-): CorruptFinding[] {
+  onProgress?: (done: number, total: number, current?: string) => void | Promise<void>,
+): Promise<CorruptFinding[]> {
   const bySize = new Map<number, VideoEntry[]>();
   for (const v of videos) {
     const list = bySize.get(v.size) || [];
@@ -596,13 +596,18 @@ export function scanCorruptedFiles(
   }
   let done = 0;
   let lastTick = 0;
-  const tick = (current?: string) => {
+  // Async on purpose: the scan is a synchronous CPU/disk loop, so without an
+  // await point here Node never returns to the event loop and the SSE writes
+  // stay buffered until the whole thing is done — the progress bar would sit at
+  // zero the entire time. Awaiting onProgress (which the stream route uses to
+  // send AND yield) lets each write actually flush.
+  const tick = async (current?: string) => {
     done++;
     if (!onProgress) return;
     const now = Date.now();
-    if (done === total || now - lastTick >= 120) {
+    if (done === total || now - lastTick >= 100) {
       lastTick = now;
-      onProgress(done, total, current);
+      await onProgress(done, total, current);
     }
   };
 
@@ -634,7 +639,6 @@ export function scanCorruptedFiles(
           t.parsed.totalSize,
           `${tag}:${c.dev}:${c.ino}:${c.mtimeMs}`,
         );
-        tick(c.path);
         const key = fileKey(c);
         if (verdict === true) {
           let set = okEntries.get(key);
@@ -658,6 +662,7 @@ export function scanCorruptedFiles(
             goodCopy: null,
           });
         }
+        await tick(c.path);
       }
     }
   }

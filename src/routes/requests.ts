@@ -9171,7 +9171,7 @@ alreadyExtra = true;
     try {
       const scan = listSavedTrackers();
       const videos = collectVideos();
-      const findings = scanCorruptedFiles(scan.trackers, videos);
+      const findings = await scanCorruptedFiles(scan.trackers, videos);
       findings.sort(
         (a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path),
       );
@@ -9200,13 +9200,20 @@ alreadyExtra = true;
       res.write(`event: ${eventType}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
+    // Yield so a buffered write actually reaches the socket. Without this the
+    // synchronous scan blocks the event loop and no progress ever flushes.
+    const flush = () => new Promise<void>((r) => setImmediate(r));
 
     try {
+      send("progress", { done: 0, total: 0, message: "Collecting files…" });
+      await flush();
       const scan = listSavedTrackers();
       const videos = collectVideos();
-      send("progress", { done: 0, total: 0, message: `Checking ${scan.trackers.length} saved tracker(s)…` });
-      const findings = scanCorruptedFiles(scan.trackers, videos, (done, total, current) => {
+      send("progress", { done: 0, total: 0, message: `Verifying ${scan.trackers.length} saved tracker(s)…` });
+      await flush();
+      const findings = await scanCorruptedFiles(scan.trackers, videos, async (done, total, current) => {
         send("progress", { done, total, message: current || "" });
+        await flush();
       });
       findings.sort((a, b) => a.tree.localeCompare(b.tree) || a.path.localeCompare(b.path));
       send("done", { scanned: scan.trackers.length, findings, parseErrors: scan.errors });
