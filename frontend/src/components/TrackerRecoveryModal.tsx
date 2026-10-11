@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { scanTrackers, streamCorruptionScan, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
+import { scanTrackers, restoreTrackers, linkTrackerTorrent, moveOrphans, deleteOrphans, removeDuplicateTrackers } from "../api";
 import { useToast } from "./Toast";
 
 interface MissingFile {
@@ -61,21 +61,6 @@ interface ScanData {
   duplicates: { infoHash: string; sourcePath: string }[];
   parseErrors: { file: string; error: string }[];
   healed?: { request_id: number; title: string }[];
-}
-
-interface CorruptFinding {
-  infoHash: string;
-  name: string;
-  torrentPath: string;
-  expectedLength: number;
-  path: string;
-  tree: "download" | "processed" | "library";
-  type: "movie" | "series";
-  /** Another saved torrent this same file verifies against — the corruption is
-   *  the OTHER release's bytes written through the hardlink. null = matches none. */
-  matchOther: string | null;
-  /** A verified copy of the same entry found elsewhere, if any. */
-  goodCopy: string | null;
 }
 
 function fmtMB(v: number): string {
@@ -241,9 +226,6 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
   const [orphanPicks, setOrphanPicks] = useState<Set<string>>(new Set());
   const [allowMissingMap, setAllowMissingMap] = useState<Record<string, boolean>>({});
   const [healNote, setHealNote] = useState<string | null>(null);
-  const [corruption, setCorruption] = useState<{ scanned: number; findings: CorruptFinding[] } | null>(null);
-  const [corruptBusy, setCorruptBusy] = useState(false);
-  const [corruptProgress, setCorruptProgress] = useState<number | null>(null);
   const { toast } = useToast();
 
   // Busy is PER-ROW, so restoring/linking one tracker keeps every other row's
@@ -310,30 +292,6 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
     const t = setInterval(() => load(true), 3000);
     return () => clearInterval(t);
   }, [load, scan?.trackers]);
-
-  async function runCorruptionScan() {
-    setCorruptBusy(true);
-    setCorruptProgress(null);
-    try {
-      const data = await streamCorruptionScan({
-        onProgress: (done, total) => setCorruptProgress(total > 0 ? Math.round((done / total) * 100) : 0),
-      });
-      setCorruption({ scanned: data.scanned, findings: data.findings || [] });
-      const n = data.findings?.length || 0;
-      const skip = data.skipped ? ` (${data.skipped} downloading skipped)` : "";
-      toast(
-        n === 0
-          ? `No corruption found — verified ${data.scanned} saved tracker(s)${skip}`
-          : `${n} suspect file(s) found — files whose bytes don't match their torrent${skip}`,
-        n === 0 ? "success" : "error",
-      );
-    } catch (err: any) {
-      toast(err?.response?.data?.error || err.message, "error");
-    } finally {
-      setCorruptBusy(false);
-      setCorruptProgress(null);
-    }
-  }
 
   async function restore(t: TrackerRow) {
     markBusy(t.infoHash);
@@ -507,47 +465,7 @@ export default function TrackerRecoveryModal({ onClose }: { onClose: () => void 
                   </button>
                 )}
                 {scan.parseErrors.length > 0 && <span className="tracker-note tracker-note-err">{scan.parseErrors.length} unreadable</span>}
-                <button
-                  className="tracker-note tracker-note-btn"
-                  title="Verify every download/processed/library file against the saved trackers' own piece hashes. Finds files a past bad restore overwrote with another release's bytes — same size, wrong content."
-                  disabled={corruptBusy || busy.size > 0}
-                  onClick={runCorruptionScan}
-                >
-                  {corruptBusy ? (corruptProgress != null ? `Verifying… ${corruptProgress}%` : "Verifying…") : "Verify integrity"}
-                </button>
               </div>
-
-              {corruption && (
-                <div className={`corruption-panel ${corruption.findings.length ? "has-findings" : ""}`}>
-                  <div className="corruption-head">
-                    <strong>
-                      {corruption.findings.length === 0
-                        ? `No corruption found — verified ${corruption.scanned} saved tracker(s).`
-                        : `${corruption.findings.length} suspect file(s) — bytes don't match the torrent:`}
-                    </strong>
-                    <button className="tracker-note-btn" onClick={() => setCorruption(null)}>dismiss</button>
-                  </div>
-                  {corruption.findings.map((f, i) => (
-                    <div className="corruption-row" key={`${f.path}-${i}`}>
-                      <span className="corruption-flag">!</span>
-                      <div className="corruption-info">
-                        <div className="corruption-path" title={f.path}>{f.path}</div>
-                        <div className="corruption-sub">
-                          <span className="corruption-tree">{f.tree}</span>
-                          <span>expected {fmtBytes(f.expectedLength)}</span>
-                          <span className="corruption-tor" title={f.name}>in torrent: {f.name}</span>
-                          {f.matchOther && (
-                            <span className="corruption-other" title={f.matchOther}>holds another release's bytes: {f.matchOther}</span>
-                          )}
-                          {f.goodCopy && (
-                            <span className="corruption-good" title={f.goodCopy}>good copy: {parentDir(f.goodCopy)}</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
 
               {visible.length === 0 && (
                 <div className="tor-empty">
