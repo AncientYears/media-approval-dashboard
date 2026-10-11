@@ -237,7 +237,10 @@ function parseAudioToken(tok: string): string | null {
   if (/ac3/i.test(tok)) return withChannel("AC3", tok);
   if (/aac/i.test(tok)) return withChannel("AAC", tok);
   if (/flac/i.test(tok)) return "FLAC";
-  if (/atmos/i.test(tok)) return "Atmos";
+  // Atmos is a mixing format, but a name may glue its (base) layout to the word
+  // ("Atmos7.1"). Keep that number rather than eating the track's only stated
+  // layout; a lone "Atmos" is unchanged (withChannel adds nothing).
+  if (/atmos/i.test(tok)) return withChannel("Atmos", tok);
   if (/dolby/i.test(tok)) return "Dolby";
   if (/opus/i.test(tok)) return "Opus";
   if (/mp3/i.test(tok)) return "MP3";
@@ -1600,13 +1603,20 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
     }
     // A bare channel number ("7.1", "2.0") right after an audio token appends
     // to that track ("TrueHD Atmos" + "7.1" → "TrueHD Atmos 7.1"). It must land
-    // on a CODEC: "Atmos" is a mixing format, not a layout, so letting "5.1"
-    // attach to a standalone "[Atmos]" rendered a meaningless "[Atmos 5.1]" —
-    // which is what a title saying "[EAC3 Atmos 5.1]" produced. Attach to the
-    // nearest real codec, or drop the number when the name states no codec.
+    // on a CODEC, so that "5.1" in "[EAC3 Atmos 5.1]" joins the E-AC3 rather than
+    // the standalone "Atmos". When there is NO codec, the number is dropped — with
+    // one exception: a lone "Atmos" is still a track the name explicitly laid out
+    // ("Atmos 7.1"), so the layout is kept on it instead of discarded. A name
+    // stating no audio at all still drops the number rather than invent a codec.
     if (/^\d\.\d$/.test(at) && out.audio.length) {
       const idx = lastAudioCodecIndex(out.audio);
-      if (idx < 0) return;
+      if (idx < 0) {
+        const lastIdx = out.audio.length - 1;
+        if (/^atmos$/i.test(out.audio[lastIdx].trim()) && !out.audio[lastIdx].includes(at)) {
+          out.audio[lastIdx] = `${out.audio[lastIdx]} ${at}`;
+        }
+        return;
+      }
       const last = out.audio[idx];
       if (!last.includes(at)) out.audio[idx] = `${last} ${at}`;
       return;
@@ -1634,7 +1644,16 @@ export function parseReleaseTags(baseName: string, vendors?: readonly string[] |
       // umbrella adds nothing, which is the same shape as a bare "HDR" being
       // dropped once a specific HDR10/DV flag is present.
       const bareWeb = next === "WEB";
-      if (!bareWeb || fromBracket || at === up) out.source = next;
+      if (!bareWeb || fromBracket || at === up) {
+        // "Remux" is the strongest provenance claim (a bit-exact copy of the
+        // disc's main track) and the only source the probe may refute
+        // (`sourceRefutedByProbe`). A remux name routinely also names the disc it
+        // came from ("...REMUX.2160p.UHD.Blu-ray..."), and plain last-token-wins
+        // let that later "Blu-ray" overwrite it — silently downgrading a remux to
+        // a generic Bluray. So Remux outranks every other source token; only the
+        // probe's contradiction drops it.
+        if (out.source !== "Remux" || next === "Remux") out.source = next;
+      }
     }
     if (resM) {
       // An explicit pixel count is the most specific claim there is, so it wins

@@ -114,11 +114,24 @@ session can start with P0 without re-deriving the design.
   `DTS-HD.MA.TrueHD.7.1.Atmos` let the bare `Atmos` reach back to the DTS. And a
   bracketed `[Atmos]` is read *before* the dotted tail that may hold its carrier,
   so the TrueHD fallback is re-run once every token is parsed.
-- **A channel number must land on a CODEC.** `Atmos` is not a layout, so letting
-  `5.1` append to a standalone `[Atmos]` rendered a meaningless `[Atmos 5.1]` —
-  which is exactly what a name saying `[EAC3 Atmos 5.1]` produced. A bare channel
-  number attaches to the nearest entry naming a real codec family, or is dropped
-  when the name states none.
+- **A channel number must land on a CODEC — unless the only track is a bare `Atmos`.**
+  `Atmos` is a mixing format, not a layout, so letting `5.1` append to a standalone
+  `[Atmos]` is wrong when a codec sits beside it: a name saying `[EAC3 Atmos 5.1]`
+  must attach the `5.1` to the E-AC3, not the Atmos. A bare channel number therefore
+  attaches to the nearest entry naming a real codec family. When NO codec is stated
+  the number is dropped — with one exception: a lone `Atmos` is still a track the
+  name explicitly laid out, so `Atmos.7.1` (or glued `Atmos7.1`) keeps the layout as
+  `[Atmos 7.1]`, which round-trips. A disc remux named `...HEVC.ATMOS7.1-DENDA` was
+  losing its `7.1` this way. The exception is narrow: a DETACHED `Atmos` with no
+  channel still folds into a probed carrier (`[EAC3 Atmos 5.1]`), and a standalone
+  `[Atmos]` with no channel is unchanged.
+- **`Remux` outranks every other source token** — source parsing is otherwise
+  last-token-wins, and a remux name routinely also names the disc it came from
+  (`...REMUX.2160p.UHD.Blu-ray...`). Plain last-wins let that later `Blu-ray`
+  overwrite `Remux`, silently downgrading a remux to a generic Bluray. So a stated
+  `Remux` is never replaced by another source token (`if (out.source !== "Remux" ||
+  next === "Remux") out.source = next` in `tryToken`); `sourceRefutedByProbe` remains
+  the sole way it is dropped.
 - **A probed codec does not inherit an Atmos from a DIFFERENT family's track.** The
   flag describes the track it was written beside, so the Polish Soul dub (measured
   AAC 2.0, named after a TrueHD Atmos remux) rendered `[AAC Atmos 2.0]`. The flag
@@ -1499,12 +1512,13 @@ SEERR_API_KEY=
 - [ ] `nativeMovieLibraryFolders` falls back to IDENTITY when no name signal can reach a folder: a Polish-titled folder holding an id-less file (`Asterix i Obelix W sluzbie Jej Krolewskiej Mosci (2012)`) is found via a registered hardlink twin, so Fix Names proposes the FOLDER and not just the file. Deliberately last — it walks every library folder, so title/id matching still wins; a twin registered to another `library_key` is never claimed
 - [ ] A file with an embedded id still blocks folder ownership even when the folder's year matches the request's
 - [ ] `[EAC3 Atmos 5.1]` round-trips as itself (streaming Atmos ships as E-AC3, so Atmos is not TrueHD-only)
-- [ ] A channel number never renders as `[Atmos 5.1]` — it lands on the nearest codec, or is dropped
+- [ ] A channel number lands on the nearest codec (`[EAC3 Atmos 5.1]`), never on a standalone `[Atmos]` beside one — but a lone `Atmos` with no codec keeps its stated layout (`Atmos.7.1`/`Atmos7.1` → `[Atmos 7.1]`, round-trips)
 - [ ] A bare `[Atmos]` never attaches to a non-TrueHD family (Soul's DTS must stay `[DTS-HD MA 7.1]`)
 - [ ] A bare `[Atmos]` still merges into a TrueHD track regardless of token order (`...TrueHD.7.1.[Atmos]`)
 - [ ] A probed codec does not inherit Atmos from another family's track (AAC 2.0 Polish dub stays `[AAC 2.0]`)
 - [ ] A **detached** `Atmos` rides a probed E-AC3 carrier: `2160p.NF.WEB-DL.DDP5.1.Atmos` renders `[EAC3 Atmos 5.1]`, not `[EAC3 5.1][Atmos]` — the dotted tail gives each loose token its own group, so `Atmos` cannot reach its own carrier in-token
 - [ ] A streaming provider renders INSIDE the source bracket (`[WEBDL-2160p NF]`, `[WEBRip-1080p HMAX]`), not as a standalone `[NF]`, and round-trips
+- [ ] A stated `Remux` is never overwritten by a later source token: `...REMUX.2160p.UHD.Blu-ray...` keeps `[Remux-2160p]`, not `[Bluray-2160p]`; `sourceRefutedByProbe` is still the only drop
 - [ ] A provider is matched case-sensitively (`nf` is title text, not a provider) and only `truehd`/`eac3` may claim a detached Atmos
 - [ ] An on-disk episode title is cut at a **dotted** resolution too, not just a spaced one: `Death.in.Paradise.S11E00.Episode.1.1080p.AMZN.WEB-DL` yields `Episode 1`, never `Episode.1.1080p.AMZN.WEB-DL.DDP2.0.H.264` — dots/underscores in the remainder are then normalized to spaces so it agrees with a cached TMDB title
 - [ ] A season that owns no processed file of its own (S00 whose specials live only in the library) still lists the franchise's **processed** show folder — the processed side is found via same-`library_key` siblings, since the library side is resolved independently and used to show `LIB DIR` alone
