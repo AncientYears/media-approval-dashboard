@@ -25,16 +25,42 @@ export interface TorrentInfo {
   eta: number;
 }
 
+/** qBittorrent's session cookie is named `SID` up to 5.1 and `QBT_SID_<port>`
+ *  from 5.2 (the port suffix makes it instance-specific; the rename is upstream
+ *  commit 753fb80 and is not configurable back). The login reply is `200 Ok.`
+ *  before 5.2 but `204 No Content` from 5.2, so the cookie is the only success
+ *  signal there. The FULL `name=value` pair is kept, because qBittorrent looks up
+ *  the exact cookie NAME — sending `SID=…` when it expects `QBT_SID_8080` is a
+ *  403 with a valid-looking login. */
+function extractSessionCookie(setCookie: string[] | string | undefined): string | null {
+  if (!setCookie) return null;
+  const list = Array.isArray(setCookie) ? setCookie : [setCookie];
+  for (const c of list) {
+    const m = /^\s*(?:QBT_SID_\d+|SID)=[^;]+/.exec(c);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
 export class QBittorrentService {
   private client: AxiosInstance;
-  private sid: string | null = null;
+  private cookie: string | null = null;
   private user: string;
   private pass: string;
 
   constructor(baseURL: string, user: string, pass: string) {
+    // qBittorrent >= 4.6 enables CSRF protection by default and rejects requests
+    // whose Origin/Referer does not match the WebUI host ("Origin header & Target
+    // origin mismatch"), so both are sent on every call. Set here, not just on
+    // login: the session cookie alone is not enough with CSRF on.
+    const origin = baseURL.replace(/\/+$/, "");
     this.client = axios.create({
-      baseURL,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      baseURL: origin,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Origin: origin,
+        Referer: origin + "/",
+      },
       maxRedirects: 5,
     });
     this.user = user;
@@ -49,14 +75,12 @@ export class QBittorrentService {
         { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
       );
       const cookies = response.headers["set-cookie"];
-      if (cookies) {
-        const sidCookie = cookies.find((c: string) => c.startsWith("SID="));
-        if (sidCookie) {
-          this.sid = sidCookie.split(";")[0].split("=")[1];
-        }
-      }
-      if (!this.sid) {
-        console.warn("[qBittorrent] Login succeeded but no SID cookie found, will re-login as needed");
+      this.cookie = extractSessionCookie(cookies);
+      if (!this.cookie) {
+        // No cookie is set when the client is on a WebUI auth-bypass subnet;
+        // those requests authenticate by IP and still succeed, so this is only a
+        // warning. A genuinely failed login is a non-2xx status and throws above.
+        console.warn("[qBittorrent] Login succeeded but no session cookie was returned");
       }
     } catch (error) {
       console.error("[qBittorrent] Login failed:", error);
@@ -65,11 +89,11 @@ export class QBittorrentService {
   }
 
   private getHeaders() {
-    return this.sid ? { Cookie: `SID=${this.sid}` } : {};
+    return this.cookie ? { Cookie: this.cookie } : {};
   }
 
   async ensureAuth() {
-    if (!this.sid) await this.login();
+    if (!this.cookie) await this.login();
   }
 
   private async post(url: string, data: string): Promise<void> {
@@ -79,7 +103,7 @@ export class QBittorrentService {
     } catch (error: any) {
       console.error(`[qBittorrent] POST ${url} failed:`, error?.response?.status, error?.response?.data || error.message);
       if (error?.response?.status === 403) {
-        this.sid = null;
+        this.cookie = null;
         await this.login();
         await this.client.post(url, data, { headers: this.getHeaders() });
       } else {
@@ -100,7 +124,7 @@ export class QBittorrentService {
       return response.data as TorrentInfo[];
     } catch (error: any) {
       if (error?.response?.status === 403) {
-        this.sid = null;
+        this.cookie = null;
         await this.login();
         const response = await this.client.get("/api/v2/torrents/info", {
           params: filter ? { filter } : {},
@@ -197,7 +221,7 @@ export class QBittorrentService {
       });
     } catch (error: any) {
       if (error?.response?.status === 403) {
-        this.sid = null;
+        this.cookie = null;
         await this.login();
         await this.client.post("/api/v2/torrents/add", form, {
           headers: { ...this.getHeaders(), ...form.getHeaders() },
