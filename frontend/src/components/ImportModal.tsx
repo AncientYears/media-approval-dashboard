@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { importTorrent } from "../api";
 
 export interface ImportModalProps {
@@ -17,6 +17,18 @@ export default function ImportModal({ open, requestId, onClose, onImported }: Im
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{ success: boolean; title?: string; error?: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setMode("magnet");
+    setMagnetUrl("");
+    setFileName("");
+    setFileBase64("");
+    setBypassApproval(true);
+    setImporting(false);
+    setResult(null);
+    if (fileRef.current) fileRef.current.value = "";
+  }, [open]);
 
   if (!open) return null;
 
